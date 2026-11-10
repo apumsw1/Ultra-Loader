@@ -1,3 +1,4 @@
+
 package com.apumsw1.ultraloader
 
 import android.Manifest
@@ -20,6 +21,7 @@ import android.view.Gravity
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
@@ -90,7 +92,9 @@ class MainActivity : Activity() {
         startMonitorService()
 
         if (intent?.action == ACTION_OPEN_PORTAL) {
-            handler.postDelayed({ startPortalProcess() }, 500)
+            handler.postDelayed({
+                startPortalProcess()
+            }, 500)
         }
 
         updateInternetStatus()
@@ -156,7 +160,7 @@ class MainActivity : Activity() {
             val pass = passwordInput.text.toString()
 
             if (user.isBlank() || pass.isBlank()) {
-                toast("User ID এবং Password লিখুন")
+                toast("Please enter User ID and Password")
             } else if (saveCredentials(user, pass)) {
                 toast("Login details encrypted and saved")
                 statusText("● LOGIN DETAILS SAVED", green)
@@ -191,8 +195,9 @@ class MainActivity : Activity() {
             settings.loadsImagesAutomatically = true
             settings.javaScriptCanOpenWindowsAutomatically = false
             settings.setSupportMultipleWindows(false)
+
             settings.userAgentString =
-                WebView.getDefaultUserAgent(this@MainActivity)
+                WebSettings.getDefaultUserAgent(this@MainActivity)
                     .replace("; wv", "")
 
             CookieManager.getInstance().setAcceptCookie(true)
@@ -354,7 +359,7 @@ class MainActivity : Activity() {
 
         AlertDialog.Builder(this)
             .setTitle("Portal Login")
-            .setMessage("তোমার Portal User ID ও Password লিখে Save করো।")
+            .setMessage("Enter your Portal User ID and Password.")
             .setView(box)
             .setPositiveButton("SAVE") { _, _ ->
                 val u = user.text.toString().trim()
@@ -366,10 +371,10 @@ class MainActivity : Activity() {
                         passwordInput.setText(p)
                         startPortalProcess()
                     } else {
-                        toast("Credentials save করা যায়নি")
+                        toast("Unable to save credentials")
                     }
                 } else {
-                    toast("দুটো তথ্যই লিখতে হবে")
+                    toast("Both fields are required")
                 }
             }
             .setNegativeButton("CANCEL", null)
@@ -581,10 +586,7 @@ class MainActivity : Activity() {
                     checkPortalLogin()
                 }, 3000)
             } else if (result?.contains("FORM_NOT_FOUND") == true) {
-                statusText(
-                    "● PORTAL LOGIN FORM NOT FOUND",
-                    red
-                )
+                statusText("● PORTAL LOGIN FORM NOT FOUND", red)
             } else {
                 statusText("● CHECKING PORTAL FORM...", cyan)
                 handler.postDelayed({
@@ -703,8 +705,8 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this)
             .setTitle("Thunder VPN")
             .setMessage(
-                "Thunder VPN-এ Connect চাপুন। " +
-                "তারপর Ultra Loader-এ ফিরে Check করুন।"
+                "Tap Connect in Thunder VPN. " +
+                "Then return to Ultra Loader and check again."
             )
             .setPositiveButton("OPEN THUNDER VPN") { _, _ ->
                 vpnOpened = false
@@ -799,7 +801,7 @@ class MainActivity : Activity() {
     }
 
     /*
-     * The second login form is detected, but NOT submitted.
+     * Detect the second login form, but do NOT submit it.
      */
     private fun checkSecondLoginForm() {
         if (stage != Stage.WAIT_SECOND_LOGIN) return
@@ -825,7 +827,7 @@ class MainActivity : Activity() {
                     "● NEXT LOGIN PAGE READY - STOPPED",
                     green
                 )
-                toast("পরবর্তী Login page পাওয়া গেছে। দ্বিতীয় Login করা হয়নি।")
+                toast("Next login page found. Second login was not submitted.")
             } else {
                 handler.postDelayed({
                     checkSecondLoginForm()
