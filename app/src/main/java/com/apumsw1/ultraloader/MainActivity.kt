@@ -18,6 +18,8 @@ import android.util.Base64
 import android.view.Gravity
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceError
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
@@ -35,9 +37,9 @@ import javax.crypto.spec.GCMParameterSpec
 class MainActivity : Activity() {
 
     companion object {
-        // তোমার দেওয়া DIRECT PEPLINK LOGIN URL
+        // User requested this exact login URL.
         private const val PORTAL_URL =
-            "https://guest7.ic.peplink.com/cp/login?_=1794295720245&access_mode=guest&username=jn30&resume=true&command=login&lang=en&sn=1931-AED4-E0FD&ssid=~CP_KEY_zmzKdYvIxSy-_Oghe37X5Q&ip=192.168.40.55&client_mac=5A-70-3D-C9-DA-8C&host_ip=192.168.40.1&host_mac=10%3A56%3ACA%3ADE%3A9D%3A80&name=&orig_url=https%3A%2F%2Flog.v-videoapp.com%2Flog&time=1794295673&cp_id=~CP_KEY_zmzKdYvIxSy-_Oghe37X5Q&checksum=b1fbf3903fe8192bdc584ec1a262100569a1526f&browser=generic"
+            "https://guest7.ic.peplink.com/cp/login?"
 
         private const val VPN_PACKAGE =
             "com.fast.free.unblock.thunder.vpn"
@@ -136,7 +138,7 @@ class MainActivity : Activity() {
         }
 
         val portalTitle = TextView(this).apply {
-            text = "DIRECT PEPLINK LOGIN"
+            text = "PEPLINK DIRECT LOGIN"
             textSize = 12f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(cyan)
@@ -161,7 +163,7 @@ class MainActivity : Activity() {
                     url: String?,
                     favicon: android.graphics.Bitmap?
                 ) {
-                    status.text = "● PEPLINK PAGE LOADING..."
+                    status.text = "● LOGIN PAGE LOADING..."
                     status.setTextColor(cyan)
                 }
 
@@ -169,16 +171,8 @@ class MainActivity : Activity() {
                     view: WebView?,
                     url: String?
                 ) {
-                    val currentUrl = url ?: ""
-
                     status.text = "● PAGE LOADED"
                     status.setTextColor(green)
-
-                    // Detect whether the requested login URL redirected
-                    if (!currentUrl.contains("/cp/login")) {
-                        status.text = "● REDIRECTED - CHECK LOGIN PAGE"
-                        status.setTextColor(red)
-                    }
 
                     if (!loginAttempted) {
                         loginAttempted = true
@@ -188,20 +182,19 @@ class MainActivity : Activity() {
 
                 override fun shouldOverrideUrlLoading(
                     view: WebView?,
-                    request: android.webkit.WebResourceRequest?
+                    request: WebResourceRequest?
                 ): Boolean {
-                    // Keep Peplink navigation inside this WebView.
-                    // Do not force unrelated external pages into the app.
                     val target = request?.url ?: return false
 
+                    // Keep normal HTTP/HTTPS portal navigation in WebView.
                     return target.scheme != "https" &&
                            target.scheme != "http"
                 }
 
                 override fun onReceivedError(
                     view: WebView?,
-                    request: android.webkit.WebResourceRequest?,
-                    error: android.webkit.WebResourceError?
+                    request: WebResourceRequest?,
+                    error: WebResourceError?
                 ) {
                     if (request?.isForMainFrame == true) {
                         status.text = "● LOGIN PAGE LOAD ERROR"
@@ -262,9 +255,7 @@ class MainActivity : Activity() {
             return
         }
 
-        val credentials = readCredentials()
-
-        if (credentials == null) {
+        if (readCredentials() == null) {
             showCredentialDialog()
             return
         }
@@ -276,12 +267,12 @@ class MainActivity : Activity() {
         startButton.isEnabled = false
         startButton.text = "OPENING LOGIN..."
 
-        status.text = "● OPENING YOUR DIRECT LOGIN LINK..."
+        status.text = "● OPENING PEPLINK LOGIN..."
         status.setTextColor(cyan)
 
         webView.visibility = android.view.View.VISIBLE
 
-        // Load the exact URL supplied by the user.
+        // Exact URL requested by the user.
         webView.loadUrl(PORTAL_URL)
     }
 
@@ -309,7 +300,7 @@ class MainActivity : Activity() {
             .setTitle("Save Portal Login")
             .setMessage(
                 "Enter your Peplink Portal credentials. " +
-                    "They will be encrypted on this phone."
+                "They will be encrypted on this phone."
             )
             .setView(box)
             .setPositiveButton("SAVE AND START") { _, _ ->
@@ -418,17 +409,16 @@ class MainActivity : Activity() {
         webView.evaluateJavascript(script) { result ->
 
             if (result?.contains("LOGIN_FORM_SUBMITTED") == true) {
-                status.text = "● LOGIN SUBMITTED - VERIFYING..."
+                status.text = "● LOGIN SUBMITTED - CHECKING..."
                 status.setTextColor(green)
 
-                // Do not claim login success until connectivity is checked.
                 handler.postDelayed({
                     updateInternetStatus()
                     openThunderVpn()
                 }, 5000)
 
             } else {
-                status.text = "● LOGIN FORM NOT FOUND - CHECK PAGE"
+                status.text = "● LOGIN FORM NOT FOUND"
                 status.setTextColor(red)
 
                 startInProgress = false
@@ -448,10 +438,7 @@ class MainActivity : Activity() {
                 packageManager.getLaunchIntentForPackage(VPN_PACKAGE)
 
             if (launchIntent != null) {
-                launchIntent.addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK
-                )
-
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(launchIntent)
 
                 status.text = "● THUNDER VPN OPENED"
@@ -463,7 +450,7 @@ class MainActivity : Activity() {
 
                 Toast.makeText(
                     this,
-                    "Thunder VPN package not found: $VPN_PACKAGE",
+                    "Thunder VPN package not found",
                     Toast.LENGTH_LONG
                 ).show()
             }
