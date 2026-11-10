@@ -1,4 +1,3 @@
-
 package com.apumsw1.ultraloader
 
 import android.Manifest
@@ -19,6 +18,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
@@ -242,10 +242,12 @@ class MainActivity : Activity() {
         }
 
         val scroll = ScrollView(this)
+
+        // FIXED: Use ViewGroup.LayoutParams instead of ScrollView.LayoutParams.
         scroll.addView(
             webView,
-            ScrollView.LayoutParams(
-                ScrollView.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
                 850
             )
         )
@@ -396,10 +398,6 @@ class MainActivity : Activity() {
         discoverPortalUrl()
     }
 
-    /*
-     * Best-effort captive portal discovery.
-     * The portal may use a fresh, session-specific redirect URL.
-     */
     private fun discoverPortalUrl() {
         executor.execute {
             var found: String? = null
@@ -419,8 +417,10 @@ class MainActivity : Activity() {
             for (probe in probes) {
                 if (found != null) break
 
+                var connection: HttpURLConnection? = null
+
                 try {
-                    val connection = if (network != null) {
+                    connection = if (network != null) {
                         network.openConnection(URL(probe))
                     } else {
                         URL(probe).openConnection()
@@ -445,9 +445,10 @@ class MainActivity : Activity() {
                     ) {
                         found = location
                     }
-
-                    connection.disconnect()
                 } catch (_: Exception) {
+                    // Try the next connectivity probe.
+                } finally {
+                    connection?.disconnect()
                 }
             }
 
@@ -526,7 +527,6 @@ class MainActivity : Activity() {
                     x.dispatchEvent(new Event('change',{bubbles:true}));
                 });
 
-                // Tick only a remember/save checkbox.
                 Array.from(document.querySelectorAll(
                     'input[type=checkbox]'
                 )).forEach(function(c) {
@@ -800,9 +800,6 @@ class MainActivity : Activity() {
         }
     }
 
-    /*
-     * Detect the second login form, but do NOT submit it.
-     */
     private fun checkSecondLoginForm() {
         if (stage != Stage.WAIT_SECOND_LOGIN) return
 
