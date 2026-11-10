@@ -16,7 +16,6 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.view.Gravity
-import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -36,8 +35,9 @@ import javax.crypto.spec.GCMParameterSpec
 class MainActivity : Activity() {
 
     companion object {
+        // তোমার দেওয়া DIRECT PEPLINK LOGIN URL
         private const val PORTAL_URL =
-            "https://guest7.ic.peplink.com/cp/"
+            "https://guest7.ic.peplink.com/cp/login?_=1794295720245&access_mode=guest&username=jn30&resume=true&command=login&lang=en&sn=1931-AED4-E0FD&ssid=~CP_KEY_zmzKdYvIxSy-_Oghe37X5Q&ip=192.168.40.55&client_mac=5A-70-3D-C9-DA-8C&host_ip=192.168.40.1&host_mac=10%3A56%3ACA%3ADE%3A9D%3A80&name=&orig_url=https%3A%2F%2Flog.v-videoapp.com%2Flog&time=1794295673&cp_id=~CP_KEY_zmzKdYvIxSy-_Oghe37X5Q&checksum=b1fbf3903fe8192bdc584ec1a262100569a1526f&browser=generic"
 
         private const val VPN_PACKAGE =
             "com.fast.free.unblock.thunder.vpn"
@@ -136,7 +136,7 @@ class MainActivity : Activity() {
         }
 
         val portalTitle = TextView(this).apply {
-            text = "PEPLINK PORTAL"
+            text = "DIRECT PEPLINK LOGIN"
             textSize = 12f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(cyan)
@@ -161,7 +161,7 @@ class MainActivity : Activity() {
                     url: String?,
                     favicon: android.graphics.Bitmap?
                 ) {
-                    status.text = "● PORTAL LOADING..."
+                    status.text = "● PEPLINK PAGE LOADING..."
                     status.setTextColor(cyan)
                 }
 
@@ -169,13 +169,33 @@ class MainActivity : Activity() {
                     view: WebView?,
                     url: String?
                 ) {
-                    status.text = "● PORTAL PAGE LOADED"
+                    val currentUrl = url ?: ""
+
+                    status.text = "● PAGE LOADED"
                     status.setTextColor(green)
+
+                    // Detect whether the requested login URL redirected
+                    if (!currentUrl.contains("/cp/login")) {
+                        status.text = "● REDIRECTED - CHECK LOGIN PAGE"
+                        status.setTextColor(red)
+                    }
 
                     if (!loginAttempted) {
                         loginAttempted = true
                         attemptPortalLogin()
                     }
+                }
+
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?,
+                    request: android.webkit.WebResourceRequest?
+                ): Boolean {
+                    // Keep Peplink navigation inside this WebView.
+                    // Do not force unrelated external pages into the app.
+                    val target = request?.url ?: return false
+
+                    return target.scheme != "https" &&
+                           target.scheme != "http"
                 }
 
                 override fun onReceivedError(
@@ -184,14 +204,13 @@ class MainActivity : Activity() {
                     error: android.webkit.WebResourceError?
                 ) {
                     if (request?.isForMainFrame == true) {
-                        status.text = "● PORTAL LOAD ERROR"
+                        status.text = "● LOGIN PAGE LOAD ERROR"
                         status.setTextColor(red)
                     }
                 }
             }
         }
 
-        // FIXED: Use ViewGroup.LayoutParams instead of ScrollView.LayoutParams
         val scroll = ScrollView(this).apply {
             addView(
                 webView,
@@ -255,12 +274,14 @@ class MainActivity : Activity() {
         loginAttempted = false
 
         startButton.isEnabled = false
-        startButton.text = "STARTING..."
+        startButton.text = "OPENING LOGIN..."
 
-        status.text = "● OPENING PEPLINK PORTAL..."
+        status.text = "● OPENING YOUR DIRECT LOGIN LINK..."
         status.setTextColor(cyan)
 
-        webView.visibility = View.VISIBLE
+        webView.visibility = android.view.View.VISIBLE
+
+        // Load the exact URL supplied by the user.
         webView.loadUrl(PORTAL_URL)
     }
 
@@ -397,20 +418,22 @@ class MainActivity : Activity() {
         webView.evaluateJavascript(script) { result ->
 
             if (result?.contains("LOGIN_FORM_SUBMITTED") == true) {
-                status.text = "● LOGIN SUBMITTED"
+                status.text = "● LOGIN SUBMITTED - VERIFYING..."
                 status.setTextColor(green)
 
+                // Do not claim login success until connectivity is checked.
                 handler.postDelayed({
-                    openThunderVpn()
-                }, 3500)
-
-            } else {
-                status.text = "● PORTAL READY - CHECK PAGE"
-                status.setTextColor(cyan)
-
-                handler.postDelayed({
+                    updateInternetStatus()
                     openThunderVpn()
                 }, 5000)
+
+            } else {
+                status.text = "● LOGIN FORM NOT FOUND - CHECK PAGE"
+                status.setTextColor(red)
+
+                startInProgress = false
+                startButton.isEnabled = true
+                startButton.text = "RETRY LOGIN"
             }
         }
     }
