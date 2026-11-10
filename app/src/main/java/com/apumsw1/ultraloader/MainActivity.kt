@@ -1,10 +1,10 @@
-
 package com.apumsw1.ultraloader
 
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
+import android.content.ActivityNotFoundException
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.ConnectivityManager
@@ -16,6 +16,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.view.Gravity
+import android.view.View
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -37,6 +38,7 @@ class MainActivity : Activity() {
         private const val PORTAL_URL =
             "https://guest7.ic.peplink.com/cp/"
 
+        // আপনার ফোনের আসল Thunder VPN Package ID
         private const val VPN_PACKAGE =
             "com.fast.free.unblock.thunder.vpn"
 
@@ -77,12 +79,6 @@ class MainActivity : Activity() {
             setPadding(18, 18, 18, 12)
         }
 
-        val scroll = ScrollView(this)
-
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-
         val title = TextView(this).apply {
             text = "ULTRA LOADER"
             textSize = 29f
@@ -95,7 +91,6 @@ class MainActivity : Activity() {
         val subtitle = TextView(this).apply {
             text = "SMART NETWORK ACCESS"
             textSize = 11f
-            letterSpacing = 0.22f
             gravity = Gravity.CENTER
             setTextColor(Color.LTGRAY)
             setPadding(5, 0, 5, 20)
@@ -196,22 +191,22 @@ class MainActivity : Activity() {
             }
         }
 
-        content.addView(title)
-        content.addView(subtitle)
-        content.addView(statusPanel)
-        content.addView(internetPanel)
-        content.addView(startButton)
-        content.addView(portalTitle)
-
-        scroll.addView(webView)
-
-        root.addView(
-            content,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
+        val scroll = ScrollView(this).apply {
+            addView(
+                webView,
+                ScrollView.LayoutParams(
+                    ScrollView.LayoutParams.MATCH_PARENT,
+                    900
+                )
             )
-        )
+        }
+
+        root.addView(title)
+        root.addView(subtitle)
+        root.addView(statusPanel)
+        root.addView(internetPanel)
+        root.addView(startButton)
+        root.addView(portalTitle)
 
         root.addView(
             scroll,
@@ -264,7 +259,7 @@ class MainActivity : Activity() {
         status.text = "● OPENING PEPLINK PORTAL..."
         status.setTextColor(cyan)
 
-        webView.visibility = android.view.View.VISIBLE
+        webView.visibility = View.VISIBLE
         webView.loadUrl(PORTAL_URL)
     }
 
@@ -419,28 +414,48 @@ class MainActivity : Activity() {
         }
     }
 
+    // Package ID দিয়ে Thunder VPN খুঁজে ওপেন করা
     private fun openThunderVpn() {
         if (vpnLaunchRequested) return
 
         vpnLaunchRequested = true
 
-        val launchIntent =
-            packageManager.getLaunchIntentForPackage(VPN_PACKAGE)
+        try {
+            val launchIntent =
+                packageManager.getLaunchIntentForPackage(VPN_PACKAGE)
 
-        if (launchIntent != null) {
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(launchIntent)
+            if (launchIntent != null) {
+                launchIntent.addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK
+                )
 
-            status.text = "● THUNDER VPN OPENED"
-            status.setTextColor(cyan)
+                startActivity(launchIntent)
 
-        } else {
-            status.text = "● THUNDER VPN NOT INSTALLED"
+                status.text = "● THUNDER VPN OPENED"
+                status.setTextColor(cyan)
+
+            } else {
+                status.text = "● THUNDER VPN NOT FOUND"
+                status.setTextColor(red)
+
+                Toast.makeText(
+                    this,
+                    "Thunder VPN package not found: $VPN_PACKAGE",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+
+        } catch (e: ActivityNotFoundException) {
+            status.text = "● THUNDER VPN CANNOT OPEN"
+            status.setTextColor(red)
+
+        } catch (e: Exception) {
+            status.text = "● VPN OPEN ERROR"
             status.setTextColor(red)
 
             Toast.makeText(
                 this,
-                "Install Thunder VPN first",
+                e.message ?: "Unknown error",
                 Toast.LENGTH_LONG
             ).show()
         }
