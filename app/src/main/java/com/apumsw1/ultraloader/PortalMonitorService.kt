@@ -1,3 +1,4 @@
+
 package com.apumsw1.ultraloader
 
 import android.app.Notification
@@ -25,6 +26,9 @@ class PortalMonitorService : Service() {
     private lateinit var connectivityManager: ConnectivityManager
     private var callbackRegistered = false
     private var lastWifiNetwork: Network? = null
+
+    private var wifiCallback:
+        ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -75,13 +79,12 @@ class PortalMonitorService : Service() {
                 Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
 
-        val pendingFlags =
-            PendingIntent.FLAG_UPDATE_CURRENT or
-                if (Build.VERSION.SDK_INT >= 23) {
-                    PendingIntent.FLAG_IMMUTABLE
-                } else {
-                    0
-                }
+        val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or
+            (if (Build.VERSION.SDK_INT >= 23) {
+                PendingIntent.FLAG_IMMUTABLE
+            } else {
+                0
+            })
 
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -116,7 +119,8 @@ class PortalMonitorService : Service() {
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .build()
 
-        val callback = object : ConnectivityManager.NetworkCallback() {
+        val callback = object :
+            ConnectivityManager.NetworkCallback() {
 
             override fun onAvailable(network: Network) {
                 val caps =
@@ -146,16 +150,11 @@ class PortalMonitorService : Service() {
                 callback
             )
             callbackRegistered = true
-
-            // Keep the callback alive for the service lifetime.
             wifiCallback = callback
         } catch (_: Exception) {
             stopSelf()
         }
     }
-
-    private var wifiCallback:
-        ConnectivityManager.NetworkCallback? = null
 
     private fun showWifiNotification() {
         val notification = buildNotification(
