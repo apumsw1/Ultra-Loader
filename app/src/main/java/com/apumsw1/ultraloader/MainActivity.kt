@@ -17,6 +17,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -38,7 +39,6 @@ class MainActivity : Activity() {
         private const val PORTAL_URL =
             "https://guest7.ic.peplink.com/cp/"
 
-        // আপনার ফোনের আসল Thunder VPN Package ID
         private const val VPN_PACKAGE =
             "com.fast.free.unblock.thunder.vpn"
 
@@ -191,11 +191,12 @@ class MainActivity : Activity() {
             }
         }
 
+        // FIXED: Use ViewGroup.LayoutParams instead of ScrollView.LayoutParams
         val scroll = ScrollView(this).apply {
             addView(
                 webView,
-                ScrollView.LayoutParams(
-                    ScrollView.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
                     900
                 )
             )
@@ -414,7 +415,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // Package ID দিয়ে Thunder VPN খুঁজে ওপেন করা
     private fun openThunderVpn() {
         if (vpnLaunchRequested) return
 
