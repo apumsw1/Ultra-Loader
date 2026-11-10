@@ -16,7 +16,6 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.view.Gravity
-import android.view.View
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -51,7 +50,6 @@ class MainActivity : Activity() {
     private val cyan = Color.rgb(0, 220, 255)
     private val dark = Color.rgb(7, 13, 27)
     private val panel = Color.rgb(17, 29, 49)
-    private val white = Color.WHITE
     private val green = Color.rgb(0, 230, 140)
     private val red = Color.rgb(255, 75, 85)
 
@@ -73,7 +71,6 @@ class MainActivity : Activity() {
     }
 
     private fun createUI() {
-
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(dark)
@@ -81,6 +78,7 @@ class MainActivity : Activity() {
         }
 
         val scroll = ScrollView(this)
+
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
@@ -136,6 +134,7 @@ class MainActivity : Activity() {
             setBackgroundColor(cyan)
             isAllCaps = false
             setPadding(10, 15, 10, 15)
+
             setOnClickListener {
                 startFreeNet()
             }
@@ -150,7 +149,6 @@ class MainActivity : Activity() {
         }
 
         webView = WebView(this).apply {
-
             setBackgroundColor(Color.WHITE)
 
             settings.javaScriptEnabled = true
@@ -244,7 +242,6 @@ class MainActivity : Activity() {
     }
 
     private fun startFreeNet() {
-
         if (startInProgress) {
             updateInternetStatus()
             return
@@ -267,12 +264,11 @@ class MainActivity : Activity() {
         status.text = "● OPENING PEPLINK PORTAL..."
         status.setTextColor(cyan)
 
-        webView.visibility = View.VISIBLE
+        webView.visibility = android.view.View.VISIBLE
         webView.loadUrl(PORTAL_URL)
     }
 
     private fun showCredentialDialog() {
-
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(24, 12, 24, 5)
@@ -280,12 +276,12 @@ class MainActivity : Activity() {
 
         val userInput = EditText(this).apply {
             hint = "User ID"
-            singleLine = true
+            setSingleLine(true)
         }
 
         val passwordInput = EditText(this).apply {
             hint = "Password"
-            singleLine = true
+            setSingleLine(true)
             inputType = 129
         }
 
@@ -296,7 +292,7 @@ class MainActivity : Activity() {
             .setTitle("Save Portal Login")
             .setMessage(
                 "Enter your Peplink Portal credentials. " +
-                "They will be encrypted on this phone."
+                    "They will be encrypted on this phone."
             )
             .setView(box)
             .setPositiveButton("SAVE AND START") { _, _ ->
@@ -325,17 +321,16 @@ class MainActivity : Activity() {
     }
 
     private fun attemptPortalLogin() {
-
         val credentials = readCredentials() ?: return
 
-        val user = android.util.Base64.encodeToString(
+        val user = Base64.encodeToString(
             credentials.first.toByteArray(StandardCharsets.UTF_8),
-            android.util.Base64.NO_WRAP
+            Base64.NO_WRAP
         )
 
-        val pass = android.util.Base64.encodeToString(
+        val pass = Base64.encodeToString(
             credentials.second.toByteArray(StandardCharsets.UTF_8),
-            android.util.Base64.NO_WRAP
+            Base64.NO_WRAP
         )
 
         val script = """
@@ -359,6 +354,7 @@ class MainActivity : Activity() {
                     var t = (el.type || '').toLowerCase();
                     var n = (el.name || '').toLowerCase();
                     var p = (el.placeholder || '').toLowerCase();
+
                     return t === 'email' ||
                            t === 'text' ||
                            n.includes('user') ||
@@ -424,15 +420,14 @@ class MainActivity : Activity() {
     }
 
     private fun openThunderVpn() {
-
         if (vpnLaunchRequested) return
+
         vpnLaunchRequested = true
 
         val launchIntent =
             packageManager.getLaunchIntentForPackage(VPN_PACKAGE)
 
         if (launchIntent != null) {
-
             launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             startActivity(launchIntent)
 
@@ -440,7 +435,6 @@ class MainActivity : Activity() {
             status.setTextColor(cyan)
 
         } else {
-
             status.text = "● THUNDER VPN NOT INSTALLED"
             status.setTextColor(red)
 
@@ -457,7 +451,6 @@ class MainActivity : Activity() {
     }
 
     private fun updateInternetStatus() {
-
         val manager =
             getSystemService(Context.CONNECTIVITY_SERVICE)
                 as ConnectivityManager
@@ -486,7 +479,6 @@ class MainActivity : Activity() {
     }
 
     private fun getSecretKey(): SecretKey {
-
         val keyStore = java.security.KeyStore.getInstance(
             "AndroidKeyStore"
         )
@@ -524,9 +516,7 @@ class MainActivity : Activity() {
         username: String,
         password: String
     ): Boolean {
-
         return try {
-
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, getSecretKey())
 
@@ -552,16 +542,13 @@ class MainActivity : Activity() {
                 .apply()
 
             true
-
         } catch (e: Exception) {
             false
         }
     }
 
     private fun readCredentials(): Pair<String, String>? {
-
         return try {
-
             val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
 
             val ivText = prefs.getString("iv", null) ?: return null
@@ -586,7 +573,6 @@ class MainActivity : Activity() {
             if (parts.size != 2) return null
 
             Pair(parts[0], parts[1])
-
         } catch (e: Exception) {
             null
         }
