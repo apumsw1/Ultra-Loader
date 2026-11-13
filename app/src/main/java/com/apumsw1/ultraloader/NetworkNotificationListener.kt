@@ -17,7 +17,6 @@ class NetworkNotificationListener : NotificationListenerService() {
         private const val PREFS = "network_notification_monitor"
         private const val LAST_KEY = "last_notification"
         private const val LAST_TIME = "last_notification_time"
-
         private const val DUPLICATE_WINDOW = 12000L
     }
 
@@ -44,10 +43,6 @@ class NetworkNotificationListener : NotificationListenerService() {
                 Notification.EXTRA_SUB_TEXT
             )?.toString().orEmpty()
 
-            val summary = extras.getCharSequence(
-                Notification.EXTRA_SUMMARY_TEXT
-            )?.toString().orEmpty()
-
             val lines = extras.getCharSequenceArray(
                 Notification.EXTRA_TEXT_LINES
             )?.joinToString(" ") { it.toString() }.orEmpty()
@@ -59,28 +54,15 @@ class NetworkNotificationListener : NotificationListenerService() {
 
             val packageName = sbn.packageName.lowercase()
 
-            // Ignore Ultra Loader's own notification.
-            if (
-                packageName ==
-                applicationContext.packageName.lowercase()
-            ) {
+            if (packageName == applicationContext.packageName.lowercase()) {
                 return
             }
 
             val originalText = listOf(
-                title,
-                text,
-                bigText,
-                subText,
-                summary,
-                lines,
-                actionText
+                title, text, bigText, subText, lines, actionText
             ).joinToString(" ")
 
-            val combined = originalText.lowercase()
-
-            // Normalize punctuation but retain the original text too.
-            val normalized = combined
+            val normalized = originalText.lowercase()
                 .replace("•", " ")
                 .replace("·", " ")
                 .replace("/", " ")
@@ -88,25 +70,22 @@ class NetworkNotificationListener : NotificationListenerService() {
                 .replace(Regex("\\s+"), " ")
                 .trim()
 
-            val systemNetworkPackage =
+            val systemPackage =
                 packageName == "android" ||
                 packageName.contains("networkstack") ||
                 packageName.contains("captiveportal") ||
                 packageName.contains("networkmanager") ||
-                packageName.contains("connectivity")
+                packageName.contains("connectivity") ||
+                packageName.contains("systemui")
 
-            // Exact wording supplied by the user is included.
-            val portalPhrases = listOf(
-                "Connected/tap to view website",
-                "Connected / tap to view website",
-                "connected tap to view website",
+            val exactConnectedPhrase =
+                normalized.contains("connected tap to view website")
+
+            val otherPortalPhrase = listOf(
                 "tap to view website",
                 "tap to login",
                 "tap to log in",
                 "tap to sign in",
-                "tap to connect",
-                "view website",
-                "open website",
                 "sign in to network",
                 "sign in to wi-fi network",
                 "sign in to wifi network",
@@ -115,53 +94,16 @@ class NetworkNotificationListener : NotificationListenerService() {
                 "captive portal",
                 "login required",
                 "log in required"
-            )
+            ).any { normalized.contains(it) }
 
-            val hasPortalPhrase = portalPhrases.any { phrase ->
-                val lowerPhrase = phrase.lowercase()
+            val isPortalNotification =
+                exactConnectedPhrase ||
+                (systemPackage && otherPortalPhrase)
 
-                combined.contains(lowerPhrase) ||
-                normalized.contains(
-                    lowerPhrase
-                        .replace("/", " ")
-                        .replace("-", " ")
-                        .replace(Regex("\\s+"), " ")
-                        .trim()
-                )
-            }
+            if (!isPortalNotification) return
 
-            val hasConnectedWebsiteText =
-                combined.contains("connected/tap to view website") ||
-                combined.contains("connected / tap to view website") ||
-                normalized.contains("connected tap to view website")
-
-            val networkNotification =
-                hasConnectedWebsiteText ||
-                (
-                    systemNetworkPackage &&
-                    hasPortalPhrase
-                ) ||
-                (
-                    (
-                        combined.contains("network manager") ||
-                        title.contains("network manager", true)
-                    ) &&
-                    hasPortalPhrase
-                ) ||
-                (
-                    combined.contains("captive portal") &&
-                    hasPortalPhrase
-                )
-
-            if (!networkNotification) return
-
-            // Avoid opening repeatedly for the same notification.
             val signature = "$packageName|$originalText"
-
-            val prefs = getSharedPreferences(
-                PREFS,
-                MODE_PRIVATE
-            )
+            val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
 
             val previous = prefs.getString(LAST_KEY, "")
             val previousTime = prefs.getLong(LAST_TIME, 0L)
@@ -170,9 +112,7 @@ class NetworkNotificationListener : NotificationListenerService() {
             if (
                 signature == previous &&
                 now - previousTime < DUPLICATE_WINDOW
-            ) {
-                return
-            }
+            ) return
 
             prefs.edit()
                 .putString(LAST_KEY, signature)
@@ -181,8 +121,6 @@ class NetworkNotificationListener : NotificationListenerService() {
 
             val portalUrl = extractUrl(originalText)
 
-            // Open Ultra Loader automatically when Android permits it.
-            // If no URL is present, MainActivity must discover the portal.
             val launchIntent = Intent(
                 this,
                 MainActivity::class.java
@@ -202,14 +140,7 @@ class NetworkNotificationListener : NotificationListenerService() {
             startActivity(launchIntent)
 
         } catch (_: Exception) {
-            // Ignore inaccessible or malformed notifications.
         }
-    }
-
-    override fun onNotificationRemoved(
-        sbn: StatusBarNotification?
-    ) {
-        super.onNotificationRemoved(sbn)
     }
 
     private fun extractUrl(value: String): String? {
