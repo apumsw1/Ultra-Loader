@@ -29,7 +29,6 @@ class PortalMonitorService : Service() {
     private lateinit var notificationManager: NotificationManager
 
     private var callbackRegistered = false
-    private var currentStatus = WifiStatus.CHECKING
 
     private enum class WifiStatus {
         CHECKING,
@@ -38,31 +37,25 @@ class PortalMonitorService : Service() {
         DISCONNECTED
     }
 
+    private var currentStatus = WifiStatus.CHECKING
+
     private val wifiCallback =
         object : ConnectivityManager.NetworkCallback() {
 
             override fun onAvailable(network: Network) {
-                val caps =
-                    connectivityManager.getNetworkCapabilities(network)
-
-                if (caps?.hasTransport(
-                        NetworkCapabilities.TRANSPORT_WIFI
-                    ) == true
-                ) {
-                    updateStatusFromCapabilities(caps)
-                }
+                refreshCurrentWifiStatus()
             }
 
             override fun onCapabilitiesChanged(
                 network: Network,
                 capabilities: NetworkCapabilities
             ) {
-                if (!capabilities.hasTransport(
+                if (capabilities.hasTransport(
                         NetworkCapabilities.TRANSPORT_WIFI
                     )
-                ) return
-
-                updateStatusFromCapabilities(capabilities)
+                ) {
+                    updateStatusFromCapabilities(capabilities)
+                }
             }
 
             override fun onLost(network: Network) {
@@ -83,7 +76,6 @@ class PortalMonitorService : Service() {
 
         createNotificationChannel()
 
-        // Remove the previous separate portal alert.
         notificationManager.cancel(OLD_NOTIFICATION_ID)
 
         startForeground(
@@ -117,7 +109,6 @@ class PortalMonitorService : Service() {
     ): Notification {
 
         val message = when (status) {
-
             WifiStatus.CHECKING ->
                 "Checking Wi-Fi connection…"
 
@@ -136,7 +127,6 @@ class PortalMonitorService : Service() {
             MainActivity::class.java
         ).apply {
             action = ACTION_OPEN_PORTAL
-
             flags =
                 Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP or
@@ -158,7 +148,7 @@ class PortalMonitorService : Service() {
             pendingFlags
         )
 
-        val builder =
+        val builder: Notification.Builder =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 Notification.Builder(this, CHANNEL_ID)
             } else {
@@ -167,7 +157,7 @@ class PortalMonitorService : Service() {
             }
 
         return builder
-            .setSmallIcon(android.R.drawable.stat_sys_wifi)
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("ULTRA LOADER • WI-FI")
             .setContentText(message)
             .setStyle(
@@ -195,9 +185,7 @@ class PortalMonitorService : Service() {
                 request,
                 wifiCallback
             )
-
             callbackRegistered = true
-
         } catch (_: Exception) {
             updateWifiStatus(WifiStatus.CHECKING)
         }
@@ -229,7 +217,6 @@ class PortalMonitorService : Service() {
     private fun updateStatusFromCapabilities(
         capabilities: NetworkCapabilities
     ) {
-
         val validated = capabilities.hasCapability(
             NetworkCapabilities.NET_CAPABILITY_VALIDATED
         )
@@ -266,9 +253,7 @@ class PortalMonitorService : Service() {
         flags: Int,
         startId: Int
     ): Int {
-
         refreshCurrentWifiStatus()
-
         return START_STICKY
     }
 
@@ -283,7 +268,6 @@ class PortalMonitorService : Service() {
         }
 
         callbackRegistered = false
-
         super.onDestroy()
     }
 
