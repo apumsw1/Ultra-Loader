@@ -17,10 +17,13 @@ import android.os.IBinder
 class PortalMonitorService : Service() {
 
     companion object {
-        private const val CHANNEL_ID = "ultra_loader_wifi_status_v3"
+        private const val CHANNEL_ID = "ultra_loader_wifi_status_v4"
         private const val NOTIFICATION_ID = 7101
+
         private const val ACTION_OPEN_PORTAL =
             "com.apumsw1.ultraloader.OPEN_PORTAL"
+
+        private const val EXTRA_PORTAL_URL = "portal_url"
     }
 
     private lateinit var connectivityManager: ConnectivityManager
@@ -40,7 +43,7 @@ class PortalMonitorService : Service() {
         object : ConnectivityManager.NetworkCallback() {
 
             override fun onAvailable(network: Network) {
-                updateWifiStatus(WifiStatus.WIFI_AVAILABLE)
+                refreshCurrentWifiStatus()
             }
 
             override fun onCapabilitiesChanged(
@@ -52,7 +55,6 @@ class PortalMonitorService : Service() {
                         NetworkCapabilities.TRANSPORT_WIFI
                     )
                 ) {
-                    // Connected/Validated মানেই Portal Login শেষ নয়।
                     updateWifiStatus(WifiStatus.WIFI_AVAILABLE)
                 }
             }
@@ -91,8 +93,7 @@ class PortalMonitorService : Service() {
                 "Ultra Loader Wi-Fi Monitor",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description =
-                    "Wi-Fi detection and portal access"
+                description = "Wi-Fi detection and portal access"
                 setShowBadge(false)
             }
 
@@ -106,10 +107,10 @@ class PortalMonitorService : Service() {
 
         val message = when (status) {
             WifiStatus.CHECKING ->
-                "Checking network • Tap to view"
+                "Checking network • Tap to open"
 
             WifiStatus.WIFI_AVAILABLE ->
-                "Wi-Fi detected • Tap to continue"
+                "Wi-Fi detected • Tap to open Portal"
 
             WifiStatus.DISCONNECTED ->
                 "Wi-Fi not detected • Waiting for network"
@@ -122,8 +123,8 @@ class PortalMonitorService : Service() {
             action = ACTION_OPEN_PORTAL
             flags =
                 Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
 
         val pendingFlags =
@@ -186,13 +187,13 @@ class PortalMonitorService : Service() {
 
     private fun refreshCurrentWifiStatus() {
         try {
-            // VPN active থাকলেও Wi-Fi network আলাদাভাবে খুঁজবে।
-            val wifiExists = connectivityManager.allNetworks.any { network ->
-                connectivityManager.getNetworkCapabilities(network)
-                    ?.hasTransport(
-                        NetworkCapabilities.TRANSPORT_WIFI
-                    ) == true
-            }
+            val wifiExists =
+                connectivityManager.allNetworks.any { network ->
+                    connectivityManager.getNetworkCapabilities(network)
+                        ?.hasTransport(
+                            NetworkCapabilities.TRANSPORT_WIFI
+                        ) == true
+                }
 
             updateWifiStatus(
                 if (wifiExists) {
@@ -201,7 +202,6 @@ class PortalMonitorService : Service() {
                     WifiStatus.DISCONNECTED
                 }
             )
-
         } catch (_: Exception) {
             updateWifiStatus(WifiStatus.CHECKING)
         }
