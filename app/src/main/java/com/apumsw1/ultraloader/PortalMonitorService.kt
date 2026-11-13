@@ -17,13 +17,11 @@ import android.os.IBinder
 class PortalMonitorService : Service() {
 
     companion object {
-        private const val CHANNEL_ID = "ultra_loader_wifi_status_v4"
+        private const val CHANNEL_ID = "ultra_loader_wifi_status_v5"
         private const val NOTIFICATION_ID = 7101
 
         private const val ACTION_OPEN_PORTAL =
             "com.apumsw1.ultraloader.OPEN_PORTAL"
-
-        private const val EXTRA_PORTAL_URL = "portal_url"
     }
 
     private lateinit var connectivityManager: ConnectivityManager
@@ -33,8 +31,10 @@ class PortalMonitorService : Service() {
 
     private enum class WifiStatus {
         CHECKING,
+        DISCONNECTED,
         WIFI_AVAILABLE,
-        DISCONNECTED
+        CAPTIVE_PORTAL,
+        INTERNET_AVAILABLE
     }
 
     private var currentStatus = WifiStatus.CHECKING
@@ -50,13 +50,24 @@ class PortalMonitorService : Service() {
                 network: Network,
                 capabilities: NetworkCapabilities
             ) {
-                if (
-                    capabilities.hasTransport(
+                if (!capabilities.hasTransport(
                         NetworkCapabilities.TRANSPORT_WIFI
                     )
-                ) {
-                    updateWifiStatus(WifiStatus.WIFI_AVAILABLE)
+                ) return
+
+                val status = when {
+                    capabilities.hasCapability(
+                        NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL
+                    ) -> WifiStatus.CAPTIVE_PORTAL
+
+                    capabilities.hasCapability(
+                        NetworkCapabilities.NET_CAPABILITY_VALIDATED
+                    ) -> WifiStatus.INTERNET_AVAILABLE
+
+                    else -> WifiStatus.WIFI_AVAILABLE
                 }
+
+                updateWifiStatus(status)
             }
 
             override fun onLost(network: Network) {
@@ -93,7 +104,7 @@ class PortalMonitorService : Service() {
                 "Ultra Loader Wi-Fi Monitor",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Wi-Fi detection and portal access"
+                description = "Wi-Fi and captive portal monitoring"
                 setShowBadge(false)
             }
 
@@ -109,11 +120,17 @@ class PortalMonitorService : Service() {
             WifiStatus.CHECKING ->
                 "Checking network • Tap to open"
 
-            WifiStatus.WIFI_AVAILABLE ->
-                "Wi-Fi detected • Tap to open Portal"
-
             WifiStatus.DISCONNECTED ->
                 "Wi-Fi not detected • Waiting for network"
+
+            WifiStatus.WIFI_AVAILABLE ->
+                "Wi-Fi connected • Checking portal"
+
+            WifiStatus.CAPTIVE_PORTAL ->
+                "Wi-Fi login may be required • Tap to open Portal"
+
+            WifiStatus.INTERNET_AVAILABLE ->
+                "Internet verified • Tap to open Ultra Loader"
         }
 
         val openIntent = Intent(
@@ -123,8 +140,8 @@ class PortalMonitorService : Service() {
             action = ACTION_OPEN_PORTAL
             flags =
                 Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
 
         val pendingFlags =
@@ -154,9 +171,7 @@ class PortalMonitorService : Service() {
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("ULTRA LOADER • NETWORK")
             .setContentText(message)
-            .setStyle(
-                Notification.BigTextStyle().bigText(message)
-            )
+            .setStyle(Notification.BigTextStyle().bigText(message))
             .setContentIntent(pendingIntent)
             .setOnlyAlertOnce(true)
             .setOngoing(true)
@@ -169,9 +184,7 @@ class PortalMonitorService : Service() {
         if (callbackRegistered) return
 
         val request = NetworkRequest.Builder()
-            .addTransportType(
-                NetworkCapabilities.TRANSPORT_WIFI
-            )
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .build()
 
         try {
@@ -187,21 +200,39 @@ class PortalMonitorService : Service() {
 
     private fun refreshCurrentWifiStatus() {
         try {
-            val wifiExists =
-                connectivityManager.allNetworks.any { network ->
-                    connectivityManager.getNetworkCapabilities(network)
-                        ?.hasTransport(
-                            NetworkCapabilities.TRANSPORT_WIFI
-                        ) == true
-                }
+            val wifiNetwork = connectivityManager.allNetworks.firstOrNull {
+                connectivityManager.getNetworkCapabilities(it)
+                    ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+            }
 
-            updateWifiStatus(
-                if (wifiExists) {
+            if (wifiNetwork == null) {
+                updateWifiStatus(WifiStatus.DISCONNECTED)
+                return
+            }
+
+            val capabilities =
+                connectivityManager.getNetworkCapabilities(wifiNetwork)
+
+            val status = when {
+                capabilities == null ->
+                    WifiStatus.CHECKING
+
+                capabilities.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL
+                ) ->
+                    WifiStatus.CAPTIVE_PORTAL
+
+                capabilities.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_VALIDATED
+                ) ->
+                    WifiStatus.INTERNET_AVAILABLE
+
+                else ->
                     WifiStatus.WIFI_AVAILABLE
-                } else {
-                    WifiStatus.DISCONNECTED
-                }
-            )
+            }
+
+            updateWifiStatus(status)
+
         } catch (_: Exception) {
             updateWifiStatus(WifiStatus.CHECKING)
         }
