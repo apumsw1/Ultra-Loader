@@ -1,4 +1,3 @@
-
 package com.apumsw1.ultraloader
 
 import android.app.Notification
@@ -21,11 +20,14 @@ class PortalMonitorService : Service() {
         private const val CHANNEL_ID = "ultra_loader_wifi"
         private const val NOTIFICATION_ID = 7101
         private const val WIFI_NOTIFICATION_ID = 7102
+        private const val ACTION_OPEN_PORTAL =
+            "com.apumsw1.ultraloader.OPEN_PORTAL"
     }
 
     private lateinit var connectivityManager: ConnectivityManager
     private var callbackRegistered = false
-    private var lastWifiNetwork: Network? = null
+
+    private val captiveNetworks = mutableSetOf<Network>()
 
     private var wifiCallback:
         ConnectivityManager.NetworkCallback? = null
@@ -43,7 +45,7 @@ class PortalMonitorService : Service() {
             NOTIFICATION_ID,
             buildNotification(
                 "Ultra Loader is monitoring Wi-Fi",
-                "Wi-Fi monitoring is active"
+                "Captive portal monitoring is active"
             )
         )
 
@@ -57,7 +59,7 @@ class PortalMonitorService : Service() {
                 "Ultra Loader Wi-Fi",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Wi-Fi connection alerts"
+                description = "Captive portal login alerts"
             }
 
             getSystemService(NotificationManager::class.java)
@@ -73,7 +75,7 @@ class PortalMonitorService : Service() {
             this,
             MainActivity::class.java
         ).apply {
-            action = "com.apumsw1.ultraloader.OPEN_PORTAL"
+            action = ACTION_OPEN_PORTAL
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP or
                 Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -126,20 +128,57 @@ class PortalMonitorService : Service() {
                 val caps =
                     connectivityManager.getNetworkCapabilities(network)
 
-                val isWifi =
-                    caps?.hasTransport(
+                if (caps?.hasTransport(
                         NetworkCapabilities.TRANSPORT_WIFI
                     ) == true
+                ) {
+                    // Wait for capability information before alerting.
+                }
+            }
 
-                if (!isWifi || network == lastWifiNetwork) return
+            override fun onCapabilitiesChanged(
+                network: Network,
+                capabilities: NetworkCapabilities
+            ) {
+                if (!capabilities.hasTransport(
+                        NetworkCapabilities.TRANSPORT_WIFI
+                    )
+                ) return
 
-                lastWifiNetwork = network
-                showWifiNotification()
+                val captive = capabilities.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL
+                )
+
+                val validated = capabilities.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_VALIDATED
+                )
+
+                val notifications =
+                    getSystemService(Context.NOTIFICATION_SERVICE)
+                        as NotificationManager
+
+                if (captive) {
+                    if (captiveNetworks.add(network)) {
+                        showWifiNotification()
+                    }
+                } else if (validated) {
+                    captiveNetworks.remove(network)
+
+                    if (captiveNetworks.isEmpty()) {
+                        notifications.cancel(WIFI_NOTIFICATION_ID)
+                    }
+                }
             }
 
             override fun onLost(network: Network) {
-                if (network == lastWifiNetwork) {
-                    lastWifiNetwork = null
+                captiveNetworks.remove(network)
+
+                if (captiveNetworks.isEmpty()) {
+                    val notifications =
+                        getSystemService(Context.NOTIFICATION_SERVICE)
+                            as NotificationManager
+
+                    notifications.cancel(WIFI_NOTIFICATION_ID)
                 }
             }
         }
@@ -158,8 +197,8 @@ class PortalMonitorService : Service() {
 
     private fun showWifiNotification() {
         val notification = buildNotification(
-            "Ultra Loader - Wi-Fi Connected",
-            "TAP TO VIEW"
+            "Ultra Loader - Captive Portal Detected",
+            "Tap to open the Wi-Fi login page"
         )
 
         val manager =
@@ -186,6 +225,7 @@ class PortalMonitorService : Service() {
         }
 
         callbackRegistered = false
+        captiveNetworks.clear()
         super.onDestroy()
     }
 
