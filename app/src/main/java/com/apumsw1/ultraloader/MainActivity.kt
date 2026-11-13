@@ -57,7 +57,6 @@ class MainActivity : Activity() {
 
         private const val EXTRA_PORTAL_URL = "portal_url"
 
-        // Second login search settings
         private const val MAX_SECOND_LOGIN_ATTEMPTS = 10
         private const val SECOND_LOGIN_RETRY_DELAY = 2000L
         private const val FIRST_SECOND_LOGIN_DELAY = 2500L
@@ -92,8 +91,6 @@ class MainActivity : Activity() {
     private var portalNetwork: Network? = null
     private var dashboardShown = false
     private var appInitialized = false
-
-    // Counts attempts to find the second Login action
     private var secondLoginAttempts = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -353,6 +350,8 @@ class MainActivity : Activity() {
         }
     }
 
+    // Notification must provide the actual detected Portal URL.
+    // No fallback URL is opened when the notification has no URL.
     private fun handlePortalNotification(source: Intent?) {
         if (!checkActivationBeforeAction()) return
 
@@ -366,7 +365,9 @@ class MainActivity : Activity() {
         if (detectedUrl != null) {
             openDetectedPortal(detectedUrl)
         } else {
-            startPortalProcess()
+            statusText("● PORTAL URL NOT FOUND", red)
+            webTitle.text = "▣ PORTAL URL NOT FOUND"
+            toast("Notification did not provide a Portal URL")
         }
     }
 
@@ -544,6 +545,8 @@ class MainActivity : Activity() {
             .show()
     }
 
+    // Manual Start button still performs portal discovery.
+    // This is detection through connectivity probes, not a fixed fallback Portal URL.
     private fun startPortalProcess() {
         if (!checkActivationBeforeAction()) return
 
@@ -853,7 +856,6 @@ class MainActivity : Activity() {
             if (result?.contains("LOGOUT_CLICKED") == true) {
                 statusText("● LOGOUT CLICKED", green)
 
-                // Wait 2.5 seconds after Logout before searching Login.
                 secondLoginAttempts = 0
                 handler.postDelayed({
                     clickPortalLoginAgent()
@@ -864,8 +866,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // Searches for the next Login action.
-    // If not found, retries every 2 seconds, up to 10 attempts.
     private fun clickPortalLoginAgent() {
         if (stage != Stage.LOGOUT) return
 
@@ -892,7 +892,6 @@ class MainActivity : Activity() {
 
         webView.evaluateJavascript(script) { result ->
 
-            // Ignore an old callback if the process has moved to another stage.
             if (stage != Stage.LOGOUT) return@evaluateJavascript
 
             if (result?.contains("LOGIN_AGENT_CLICKED") == true) {
