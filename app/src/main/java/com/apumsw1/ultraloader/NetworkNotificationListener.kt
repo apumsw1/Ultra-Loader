@@ -57,13 +57,21 @@ class NetworkNotificationListener : NotificationListenerService() {
 
             val packageName = sbn.packageName.lowercase()
 
+            // Ignore Ultra Loader's own notification.
+            if (packageName == applicationContext.packageName.lowercase()) {
+                return
+            }
+
             val networkNotification =
                 title.contains("network manager", true) ||
                 packageName.contains("networkstack") ||
                 packageName.contains("captiveportal") ||
                 packageName.contains("networkmanager") ||
+                packageName.contains("connectivity.resources") ||
                 combined.contains("captive portal") ||
-                combined.contains("network manager")
+                combined.contains("network manager") ||
+                combined.contains("tap to view website") ||
+                combined.contains("connected/tap to view")
 
             val loginAction = listOf(
                 "tap to login",
@@ -102,6 +110,8 @@ class NetworkNotificationListener : NotificationListenerService() {
                     .joinToString(" ")
             )
 
+            // Open Ultra Loader for a detected Network Manager portal.
+            // If no URL is included, MainActivity will discover the redirect.
             val intent = Intent(
                 this,
                 MainActivity::class.java
@@ -120,7 +130,7 @@ class NetworkNotificationListener : NotificationListenerService() {
             startActivity(intent)
 
         } catch (_: Exception) {
-            // Ignore malformed or inaccessible notifications.
+            // Ignore inaccessible notifications.
         }
     }
 
@@ -135,7 +145,7 @@ class NetworkNotificationListener : NotificationListenerService() {
             ?.trimEnd('.', ',', ')', ']', ';')
             ?.takeIf {
                 it.startsWith("https://") ||
-                it.startsWith("http://")
+                    it.startsWith("http://")
             }
     }
 }
