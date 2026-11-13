@@ -17,10 +17,8 @@ import android.os.IBinder
 class PortalMonitorService : Service() {
 
     companion object {
-        private const val CHANNEL_ID = "ultra_loader_wifi_status_v2"
+        private const val CHANNEL_ID = "ultra_loader_wifi_status_v3"
         private const val NOTIFICATION_ID = 7101
-        private const val OLD_NOTIFICATION_ID = 7102
-
         private const val ACTION_OPEN_PORTAL =
             "com.apumsw1.ultraloader.OPEN_PORTAL"
     }
@@ -32,8 +30,7 @@ class PortalMonitorService : Service() {
 
     private enum class WifiStatus {
         CHECKING,
-        SIGN_IN_REQUIRED,
-        CONNECTED,
+        WIFI_AVAILABLE,
         DISCONNECTED
     }
 
@@ -43,18 +40,20 @@ class PortalMonitorService : Service() {
         object : ConnectivityManager.NetworkCallback() {
 
             override fun onAvailable(network: Network) {
-                refreshCurrentWifiStatus()
+                updateWifiStatus(WifiStatus.WIFI_AVAILABLE)
             }
 
             override fun onCapabilitiesChanged(
                 network: Network,
                 capabilities: NetworkCapabilities
             ) {
-                if (capabilities.hasTransport(
+                if (
+                    capabilities.hasTransport(
                         NetworkCapabilities.TRANSPORT_WIFI
                     )
                 ) {
-                    updateStatusFromCapabilities(capabilities)
+                    // Connected/Validated মানেই Portal Login শেষ নয়।
+                    updateWifiStatus(WifiStatus.WIFI_AVAILABLE)
                 }
             }
 
@@ -76,8 +75,6 @@ class PortalMonitorService : Service() {
 
         createNotificationChannel()
 
-        notificationManager.cancel(OLD_NOTIFICATION_ID)
-
         startForeground(
             NOTIFICATION_ID,
             buildStatusNotification(WifiStatus.CHECKING)
@@ -89,14 +86,13 @@ class PortalMonitorService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Ultra Loader Wi-Fi Status",
+                "Ultra Loader Wi-Fi Monitor",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description =
-                    "Automatically displays Wi-Fi login and connection status"
+                    "Wi-Fi detection and portal access"
                 setShowBadge(false)
             }
 
@@ -110,16 +106,13 @@ class PortalMonitorService : Service() {
 
         val message = when (status) {
             WifiStatus.CHECKING ->
-                "Checking Wi-Fi connection…"
+                "Checking network • Tap to view"
 
-            WifiStatus.SIGN_IN_REQUIRED ->
-                "Tap to sign in"
-
-            WifiStatus.CONNECTED ->
-                "✓ Already connected • Internet available"
+            WifiStatus.WIFI_AVAILABLE ->
+                "Wi-Fi detected • Tap to continue"
 
             WifiStatus.DISCONNECTED ->
-                "Wi-Fi not connected"
+                "Wi-Fi not detected • Waiting for network"
         }
 
         val openIntent = Intent(
@@ -135,11 +128,11 @@ class PortalMonitorService : Service() {
 
         val pendingFlags =
             PendingIntent.FLAG_UPDATE_CURRENT or
-                (if (Build.VERSION.SDK_INT >= 23) {
+                if (Build.VERSION.SDK_INT >= 23) {
                     PendingIntent.FLAG_IMMUTABLE
                 } else {
                     0
-                })
+                }
 
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -148,7 +141,7 @@ class PortalMonitorService : Service() {
             pendingFlags
         )
 
-        val builder: Notification.Builder =
+        val builder =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 Notification.Builder(this, CHANNEL_ID)
             } else {
@@ -158,7 +151,7 @@ class PortalMonitorService : Service() {
 
         return builder
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("ULTRA LOADER • WI-FI")
+            .setContentTitle("ULTRA LOADER • NETWORK")
             .setContentText(message)
             .setStyle(
                 Notification.BigTextStyle().bigText(message)
@@ -193,47 +186,24 @@ class PortalMonitorService : Service() {
 
     private fun refreshCurrentWifiStatus() {
         try {
-            val active = connectivityManager.activeNetwork
-
-            val caps = active?.let {
-                connectivityManager.getNetworkCapabilities(it)
+            // VPN active থাকলেও Wi-Fi network আলাদাভাবে খুঁজবে।
+            val wifiExists = connectivityManager.allNetworks.any { network ->
+                connectivityManager.getNetworkCapabilities(network)
+                    ?.hasTransport(
+                        NetworkCapabilities.TRANSPORT_WIFI
+                    ) == true
             }
 
-            if (
-                caps?.hasTransport(
-                    NetworkCapabilities.TRANSPORT_WIFI
-                ) == true
-            ) {
-                updateStatusFromCapabilities(caps)
-            } else {
-                updateWifiStatus(WifiStatus.DISCONNECTED)
-            }
+            updateWifiStatus(
+                if (wifiExists) {
+                    WifiStatus.WIFI_AVAILABLE
+                } else {
+                    WifiStatus.DISCONNECTED
+                }
+            )
 
         } catch (_: Exception) {
             updateWifiStatus(WifiStatus.CHECKING)
-        }
-    }
-
-    private fun updateStatusFromCapabilities(
-        capabilities: NetworkCapabilities
-    ) {
-        val validated = capabilities.hasCapability(
-            NetworkCapabilities.NET_CAPABILITY_VALIDATED
-        )
-
-        val captivePortal = capabilities.hasCapability(
-            NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL
-        )
-
-        when {
-            validated ->
-                updateWifiStatus(WifiStatus.CONNECTED)
-
-            captivePortal ->
-                updateWifiStatus(WifiStatus.SIGN_IN_REQUIRED)
-
-            else ->
-                updateWifiStatus(WifiStatus.SIGN_IN_REQUIRED)
         }
     }
 
