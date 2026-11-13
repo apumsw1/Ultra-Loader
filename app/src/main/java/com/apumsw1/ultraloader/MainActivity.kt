@@ -350,8 +350,10 @@ class MainActivity : Activity() {
         }
     }
 
-    // Notification must provide the actual detected Portal URL.
-    // No fallback URL is opened when the notification has no URL.
+    // UPDATED:
+    // Use the URL supplied by the notification when available.
+    // Otherwise, discover the current Wi-Fi portal through redirects.
+    // No fixed fallback portal URL is used.
     private fun handlePortalNotification(source: Intent?) {
         if (!checkActivationBeforeAction()) return
 
@@ -365,9 +367,14 @@ class MainActivity : Activity() {
         if (detectedUrl != null) {
             openDetectedPortal(detectedUrl)
         } else {
-            statusText("● PORTAL URL NOT FOUND", red)
-            webTitle.text = "▣ PORTAL URL NOT FOUND"
-            toast("Notification did not provide a Portal URL")
+            statusText("● SEARCHING REAL WIFI PORTAL...", cyan)
+            webTitle.text = "▣ DETECTING PORTAL"
+
+            if (readCredentials() == null) {
+                showCredentialDialog()
+            } else {
+                startPortalProcess()
+            }
         }
     }
 
@@ -546,7 +553,7 @@ class MainActivity : Activity() {
     }
 
     // Manual Start button still performs portal discovery.
-    // This is detection through connectivity probes, not a fixed fallback Portal URL.
+    // No fixed fallback Portal URL is used.
     private fun startPortalProcess() {
         if (!checkActivationBeforeAction()) return
 
@@ -637,6 +644,8 @@ class MainActivity : Activity() {
 
                 if (found.isNullOrBlank()) {
                     statusText("● PORTAL URL NOT FOUND", red)
+                    webTitle.text = "▣ PORTAL URL NOT FOUND"
+                    toast("Wi-Fi portal could not be detected through redirects")
                     return@runOnUiThread
                 }
 
@@ -648,6 +657,7 @@ class MainActivity : Activity() {
                 }
 
                 statusText("● CURRENT PORTAL FOUND", green)
+                webTitle.text = "▣ PORTAL LOGIN PAGE"
                 webView.visibility = View.VISIBLE
                 webView.loadUrl(portalUrl)
             }
