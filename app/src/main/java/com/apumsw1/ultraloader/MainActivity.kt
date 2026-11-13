@@ -1,3 +1,4 @@
+
 package com.apumsw1.ultraloader
 
 import android.Manifest
@@ -8,6 +9,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
@@ -56,13 +58,8 @@ class MainActivity : Activity() {
     }
 
     private enum class Stage {
-        IDLE,
-        LOGIN,
-        CHECK_LOGIN,
-        WAIT_VPN,
-        LOGOUT,
-        WAIT_SECOND_LOGIN,
-        FINISHED
+        IDLE, LOGIN, CHECK_LOGIN, WAIT_VPN,
+        LOGOUT, WAIT_SECOND_LOGIN, FINISHED
     }
 
     private val cyan = Color.rgb(0, 220, 255)
@@ -83,6 +80,7 @@ class MainActivity : Activity() {
     private var vpnOpened = false
     private var loginSubmitted = false
     private var portalUrl = FALLBACK_PORTAL
+    private var portalNetwork: Network? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -92,9 +90,7 @@ class MainActivity : Activity() {
         startMonitorService()
 
         if (intent?.action == ACTION_OPEN_PORTAL) {
-            handler.postDelayed({
-                startPortalProcess()
-            }, 500)
+            handler.postDelayed({ startPortalProcess() }, 500)
         }
 
         updateInternetStatus()
@@ -170,8 +166,7 @@ class MainActivity : Activity() {
         }
 
         val startButton = makeButton("START ULTRA LOADER") {
-            val saved = readCredentials()
-            if (saved == null) {
+            if (readCredentials() == null) {
                 showCredentialDialog()
             } else {
                 startPortalProcess()
@@ -195,7 +190,6 @@ class MainActivity : Activity() {
             settings.loadsImagesAutomatically = true
             settings.javaScriptCanOpenWindowsAutomatically = false
             settings.setSupportMultipleWindows(false)
-
             settings.userAgentString =
                 WebSettings.getDefaultUserAgent(this@MainActivity)
                     .replace("; wv", "")
@@ -242,8 +236,6 @@ class MainActivity : Activity() {
         }
 
         val scroll = ScrollView(this)
-
-        // FIXED: Use ViewGroup.LayoutParams instead of ScrollView.LayoutParams.
         scroll.addView(
             webView,
             ViewGroup.LayoutParams(
@@ -334,7 +326,7 @@ class MainActivity : Activity() {
             } else {
                 startService(serviceIntent)
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             statusText("● WIFI MONITOR NOT STARTED", red)
         }
     }
@@ -394,7 +386,6 @@ class MainActivity : Activity() {
         vpnOpened = false
 
         statusText("● FINDING CURRENT PORTAL...", cyan)
-
         discoverPortalUrl()
     }
 
@@ -406,7 +397,13 @@ class MainActivity : Activity() {
                 getSystemService(Context.CONNECTIVITY_SERVICE)
                     as ConnectivityManager
 
-            val network = manager.activeNetwork
+            val wifi = manager.allNetworks.firstOrNull { network ->
+                manager.getNetworkCapabilities(network)
+                    ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+            }
+
+            val network = wifi ?: manager.activeNetwork
+            portalNetwork = wifi ?: network
 
             val probes = listOf(
                 "http://connectivitycheck.gstatic.com/generate_204",
@@ -427,8 +424,8 @@ class MainActivity : Activity() {
                     } as HttpURLConnection
 
                     connection.instanceFollowRedirects = false
-                    connection.connectTimeout = 5000
-                    connection.readTimeout = 5000
+                    connection.connectTimeout = 7000
+                    connection.readTimeout = 7000
                     connection.requestMethod = "GET"
                     connection.setRequestProperty(
                         "User-Agent",
@@ -446,13 +443,26 @@ class MainActivity : Activity() {
                         found = location
                     }
                 } catch (_: Exception) {
-                    // Try the next connectivity probe.
+                    // Continue with the next probe.
                 } finally {
                     connection?.disconnect()
                 }
             }
 
             runOnUiThread {
+                val selectedNetwork = portalNetwork
+
+                if (selectedNetwork != null) {
+                    val bound = (getSystemService(
+                        Context.CONNECTIVITY_SERVICE
+                    ) as ConnectivityManager)
+                        .bindProcessToNetwork(selectedNetwork)
+
+                    if (!bound) {
+                        statusText("● WIFI ROUTING NOT AVAILABLE", red)
+                    }
+                }
+
                 portalUrl = found ?: FALLBACK_PORTAL
 
                 statusText(
@@ -533,14 +543,14 @@ class MainActivity : Activity() {
                     var label = (
                         (c.name || '') + ' ' +
                         (c.id || '') + ' ' +
-                        (c.parentElement ? c.parentElement.innerText : '')
+                        (c.parentElement ? c.parentElement.innerText : '') +
+                        ' ' + (c.labels ? Array.from(c.labels)
+                            .map(function(x) { return x.innerText; }).join(' ') : '')
                     ).toLowerCase();
 
-                    if (/remember|save|keep me/.test(label)) {
-                        c.checked = true;
-                        c.dispatchEvent(
-                            new Event('change',{bubbles:true})
-                        );
+                    if (/terms?|conditions?|agreement|accept|policy/.test(label) &&
+                        !c.checked && !c.disabled) {
+                        c.click();
                     }
                 });
 
@@ -623,6 +633,10 @@ class MainActivity : Activity() {
             when {
                 result?.contains("LOGIN_OK") == true -> {
                     statusText("● PORTAL LOGIN VERIFIED", green)
+
+                    (getSystemService(Context.CONNECTIVITY_SERVICE)
+                        as ConnectivityManager).bindProcessToNetwork(null)
+
                     handler.postDelayed({
                         openThunderVpn()
                     }, 2500)
@@ -666,7 +680,7 @@ class MainActivity : Activity() {
             handler.postDelayed({
                 checkVpnStatus()
             }, 2500)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             statusText("● VPN OPEN FAILED", red)
             showVpnDialog()
         }
@@ -724,6 +738,11 @@ class MainActivity : Activity() {
 
         statusText("● LOOKING FOR PORTAL LOGOUT...", cyan)
 
+        portalNetwork?.let { network ->
+            (getSystemService(Context.CONNECTIVITY_SERVICE)
+                as ConnectivityManager).bindProcessToNetwork(network)
+        }
+
         val script = """
             (function() {
                 var nodes = Array.from(document.querySelectorAll(
@@ -751,10 +770,7 @@ class MainActivity : Activity() {
                     clickPortalLoginAgent()
                 }, 2500)
             } else {
-                statusText(
-                    "● PORTAL LOGOUT BUTTON NOT FOUND",
-                    red
-                )
+                statusText("● PORTAL LOGOUT BUTTON NOT FOUND", red)
             }
         }
     }
@@ -783,19 +799,13 @@ class MainActivity : Activity() {
         webView.evaluateJavascript(script) { result ->
             if (result?.contains("LOGIN_AGENT_CLICKED") == true) {
                 stage = Stage.WAIT_SECOND_LOGIN
-                statusText(
-                    "● WAITING FOR NEXT LOGIN FORM...",
-                    cyan
-                )
+                statusText("● WAITING FOR NEXT LOGIN FORM...", cyan)
 
                 handler.postDelayed({
                     checkSecondLoginForm()
                 }, 1500)
             } else {
-                statusText(
-                    "● PORTAL LOGIN ACTION NOT FOUND",
-                    red
-                )
+                statusText("● PORTAL LOGIN ACTION NOT FOUND", red)
             }
         }
     }
@@ -819,12 +829,13 @@ class MainActivity : Activity() {
 
         webView.evaluateJavascript(script) { result ->
             if (result?.contains("SECOND_FORM_READY") == true) {
-                stage = Stage.FINISHED
-                statusText(
-                    "● NEXT LOGIN PAGE READY - STOPPED",
-                    green
-                )
-                toast("Next login page found. Second login was not submitted.")
+                stage = Stage.LOGIN
+                loginSubmitted = false
+                statusText("● SECOND LOGIN FORM FOUND", green)
+
+                handler.postDelayed({
+                    tryAutoLogin()
+                }, 700)
             } else {
                 handler.postDelayed({
                     checkSecondLoginForm()
@@ -973,6 +984,12 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         executor.shutdownNow()
+
+        try {
+            (getSystemService(Context.CONNECTIVITY_SERVICE)
+                as ConnectivityManager).bindProcessToNetwork(null)
+        } catch (_: Exception) {
+        }
 
         if (::webView.isInitialized) {
             webView.stopLoading()
