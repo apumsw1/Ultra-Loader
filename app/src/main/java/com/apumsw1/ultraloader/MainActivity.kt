@@ -350,10 +350,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // UPDATED:
-    // Use the URL supplied by the notification when available.
-    // Otherwise, discover the current Wi-Fi portal through redirects.
-    // No fixed fallback portal URL is used.
     private fun handlePortalNotification(source: Intent?) {
         if (!checkActivationBeforeAction()) return
 
@@ -552,8 +548,6 @@ class MainActivity : Activity() {
             .show()
     }
 
-    // Manual Start button still performs portal discovery.
-    // No fixed fallback Portal URL is used.
     private fun startPortalProcess() {
         if (!checkActivationBeforeAction()) return
 
@@ -574,68 +568,107 @@ class MainActivity : Activity() {
         discoverPortalUrl()
     }
 
+    // Captive portal discovery.
+    // Uses the Peplink example's original connectivity-check URL first.
+    // No session-dependent portal URL or credentials are hardcoded.
     private fun discoverPortalUrl() {
         executor.execute {
             var found: String? = null
+            var selectedNetwork: Network? = null
 
-            val manager =
-                getSystemService(Context.CONNECTIVITY_SERVICE)
-                    as ConnectivityManager
+            try {
+                val manager =
+                    getSystemService(Context.CONNECTIVITY_SERVICE)
+                        as ConnectivityManager
 
-            val wifi = manager.allNetworks.firstOrNull { network ->
-                manager.getNetworkCapabilities(network)
-                    ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-            }
-
-            val network = wifi ?: manager.activeNetwork
-            portalNetwork = wifi ?: network
-
-            val probes = listOf(
-                "http://connectivitycheck.gstatic.com/generate_204",
-                "http://www.google.com/generate_204",
-                "http://clients3.google.com/generate_204"
-            )
-
-            for (probe in probes) {
-                if (found != null) break
-
-                var connection: HttpURLConnection? = null
-
-                try {
-                    connection = (
-                        if (network != null) {
-                            network.openConnection(URL(probe))
-                        } else {
-                            URL(probe).openConnection()
-                        }
-                    ) as HttpURLConnection
-
-                    connection.instanceFollowRedirects = false
-                    connection.connectTimeout = 7000
-                    connection.readTimeout = 7000
-                    connection.requestMethod = "GET"
-                    connection.setRequestProperty(
-                        "User-Agent",
-                        "Mozilla/5.0 Android"
-                    )
-
-                    val code = connection.responseCode
-                    val location = connection.getHeaderField("Location")
-
-                    if (
-                        code in 300..399 &&
-                        !location.isNullOrBlank() &&
-                        location.startsWith("http")
-                    ) {
-                        found = location
-                    }
-                } catch (_: Exception) {
-                } finally {
-                    connection?.disconnect()
+                val wifi = manager.allNetworks.firstOrNull { network ->
+                    manager.getNetworkCapabilities(network)
+                        ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
                 }
+
+                val network = wifi ?: manager.activeNetwork
+                selectedNetwork = wifi ?: network
+
+                val probes = listOf(
+                    "http://www.google.in/generate_204",
+                    "http://connectivitycheck.gstatic.com/generate_204",
+                    "http://www.google.com/generate_204",
+                    "http://clients3.google.com/generate_204"
+                )
+
+                for (probe in probes) {
+                    if (found != null) break
+
+                    var connection: HttpURLConnection? = null
+
+                    try {
+                        connection = (
+                            if (network != null) {
+                                network.openConnection(URL(probe))
+                            } else {
+                                URL(probe).openConnection()
+                            }
+                        ) as HttpURLConnection
+
+                        connection.instanceFollowRedirects = false
+                        connection.connectTimeout = 7000
+                        connection.readTimeout = 7000
+                        connection.requestMethod = "GET"
+
+                        connection.setRequestProperty(
+                            "User-Agent",
+                            "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
+                        )
+
+                        connection.setRequestProperty(
+                            "Cache-Control",
+                            "no-cache"
+                        )
+
+                        val code = connection.responseCode
+                        val location =
+                            connection.getHeaderField("Location")
+
+                        if (
+                            code in 300..399 &&
+                            !location.isNullOrBlank()
+                        ) {
+                            val resolvedUrl = try {
+                                URL(URL(probe), location).toString()
+                            } catch (_: Exception) {
+                                null
+                            }
+
+                            if (
+                                resolvedUrl != null &&
+                                (
+                                    resolvedUrl.startsWith("http://") ||
+                                    resolvedUrl.startsWith("https://")
+                                )
+                            ) {
+                                val originalHost = URL(probe).host
+                                val targetHost = URL(resolvedUrl).host
+
+                                if (!targetHost.equals(originalHost, true)) {
+                                    found = resolvedUrl
+                                }
+                            }
+                        }
+
+                    } catch (_: Exception) {
+                        // Try the next connectivity-check URL.
+                    } finally {
+                        connection?.disconnect()
+                    }
+                }
+
+            } catch (_: Exception) {
+                // Connectivity manager or Wi-Fi network unavailable.
             }
 
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+
                 if (!ActivationManager.hasAccess(this)) {
                     statusText("● ACTIVATION EXPIRED", red)
                     updateActivationStatus()
@@ -645,16 +678,29 @@ class MainActivity : Activity() {
                 if (found.isNullOrBlank()) {
                     statusText("● PORTAL URL NOT FOUND", red)
                     webTitle.text = "▣ PORTAL URL NOT FOUND"
-                    toast("Wi-Fi portal could not be detected through redirects")
+
+                    toast(
+                        "Wi-Fi portal redirect was not detected. " +
+                            "The network may not expose a redirect."
+                    )
                     return@runOnUiThread
                 }
 
                 portalUrl = found
+                portalNetwork = selectedNetwork
 
-                portalNetwork?.let {
-                    (getSystemService(Context.CONNECTIVITY_SERVICE)
-                        as ConnectivityManager).bindProcessToNetwork(it)
+                portalNetwork?.let { selected ->
+                    try {
+                        (getSystemService(Context.CONNECTIVITY_SERVICE)
+                            as ConnectivityManager)
+                            .bindProcessToNetwork(selected)
+                    } catch (_: Exception) {
+                    }
                 }
+
+                dashboardShown = false
+                stage = Stage.LOGIN
+                loginSubmitted = false
 
                 statusText("● CURRENT PORTAL FOUND", green)
                 webTitle.text = "▣ PORTAL LOGIN PAGE"
