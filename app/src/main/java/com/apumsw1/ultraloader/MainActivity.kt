@@ -56,6 +56,11 @@ class MainActivity : Activity() {
             "com.apumsw1.ultraloader.OPEN_PORTAL"
 
         private const val EXTRA_PORTAL_URL = "portal_url"
+
+        // Second login search settings
+        private const val MAX_SECOND_LOGIN_ATTEMPTS = 10
+        private const val SECOND_LOGIN_RETRY_DELAY = 2000L
+        private const val FIRST_SECOND_LOGIN_DELAY = 2500L
     }
 
     private enum class Stage {
@@ -87,6 +92,9 @@ class MainActivity : Activity() {
     private var portalNetwork: Network? = null
     private var dashboardShown = false
     private var appInitialized = false
+
+    // Counts attempts to find the second Login action
+    private var secondLoginAttempts = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -374,6 +382,7 @@ class MainActivity : Activity() {
         stage = Stage.LOGIN
         loginSubmitted = false
         vpnOpened = false
+        secondLoginAttempts = 0
         portalUrl = url
 
         statusText("● NETWORK PORTAL DETECTED", cyan)
@@ -547,6 +556,7 @@ class MainActivity : Activity() {
         stage = Stage.LOGIN
         loginSubmitted = false
         vpnOpened = false
+        secondLoginAttempts = 0
 
         statusText("● FINDING CURRENT PORTAL...", cyan)
         webTitle.text = "▣ PORTAL LOGIN PAGE"
@@ -791,6 +801,7 @@ class MainActivity : Activity() {
 
             if (stage == Stage.WAIT_VPN) {
                 stage = Stage.LOGOUT
+                secondLoginAttempts = 0
                 handler.postDelayed({ clickPortalLogout() }, 1000)
             }
 
@@ -841,32 +852,78 @@ class MainActivity : Activity() {
         webView.evaluateJavascript(script) { result ->
             if (result?.contains("LOGOUT_CLICKED") == true) {
                 statusText("● LOGOUT CLICKED", green)
-                handler.postDelayed({ clickPortalLoginAgent() }, 2500)
+
+                // Wait 2.5 seconds after Logout before searching Login.
+                secondLoginAttempts = 0
+                handler.postDelayed({
+                    clickPortalLoginAgent()
+                }, FIRST_SECOND_LOGIN_DELAY)
             } else {
                 statusText("● PORTAL LOGOUT BUTTON NOT FOUND", red)
             }
         }
     }
 
+    // Searches for the next Login action.
+    // If not found, retries every 2 seconds, up to 10 attempts.
     private fun clickPortalLoginAgent() {
         if (stage != Stage.LOGOUT) return
 
+        secondLoginAttempts++
+
+        statusText(
+            "● SEARCHING LOGIN PAGE: $secondLoginAttempts/$MAX_SECOND_LOGIN_ATTEMPTS",
+            cyan
+        )
+
         val script = """
             (function(){
-              var a=Array.from(document.querySelectorAll('a,button,input[type=button],input[type=submit]'));
-              var x=a.find(n=>/log.?in|sign.?in/i.test((n.innerText||'')+' '+(n.value||'')));
+              var a=Array.from(document.querySelectorAll(
+                'a,button,input[type=button],input[type=submit]'
+              ));
+              var x=a.find(n=>/log.?in|sign.?in/i.test(
+                (n.innerText||'')+' '+(n.value||'')
+              ));
               if(!x)return 'LOGIN_AGENT_NOT_FOUND';
-              x.click();return 'LOGIN_AGENT_CLICKED';
+              x.click();
+              return 'LOGIN_AGENT_CLICKED';
             })();
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
+
+            // Ignore an old callback if the process has moved to another stage.
+            if (stage != Stage.LOGOUT) return@evaluateJavascript
+
             if (result?.contains("LOGIN_AGENT_CLICKED") == true) {
                 stage = Stage.WAIT_SECOND_LOGIN
+
                 statusText("● WAITING FOR NEXT LOGIN FORM...", cyan)
-                handler.postDelayed({ checkSecondLoginForm() }, 1500)
+
+                handler.postDelayed({
+                    checkSecondLoginForm()
+                }, 1500)
+
+            } else if (secondLoginAttempts < MAX_SECOND_LOGIN_ATTEMPTS) {
+
+                statusText(
+                    "● LOGIN NOT FOUND — RETRY $secondLoginAttempts/$MAX_SECOND_LOGIN_ATTEMPTS",
+                    cyan
+                )
+
+                handler.postDelayed({
+                    clickPortalLoginAgent()
+                }, SECOND_LOGIN_RETRY_DELAY)
+
             } else {
-                statusText("● PORTAL LOGIN ACTION NOT FOUND", red)
+
+                statusText(
+                    "● LOGIN PAGE NOT FOUND AFTER 10 ATTEMPTS",
+                    red
+                )
+
+                stage = Stage.IDLE
+                toast("Login page not found after 10 attempts")
             }
         }
     }
