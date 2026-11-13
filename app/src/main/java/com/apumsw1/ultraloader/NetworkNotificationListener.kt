@@ -71,13 +71,13 @@ class NetworkNotificationListener : NotificationListenerService() {
                 combined.contains("captive portal") ||
                 combined.contains("network manager") ||
                 combined.contains("tap to view website") ||
-                combined.contains("connected/tap to view")
+                combined.contains("connected/tap to view website")
 
             val loginAction = listOf(
                 "tap to login",
                 "tap to sign in",
                 "tap to connect",
-                "connected/tap to view",
+                "connected/tap to view website",
                 "connected / tap to view",
                 "tap to view website",
                 "connect",
