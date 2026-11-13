@@ -1,4 +1,3 @@
-
 package com.apumsw1.ultraloader
 
 import android.Manifest
