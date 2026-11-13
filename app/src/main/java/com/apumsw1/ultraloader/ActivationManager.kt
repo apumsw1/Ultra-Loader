@@ -26,7 +26,7 @@ object ActivationManager {
     private const val MASTER_HASH =
         "0daba0afd7c14e53f5c14c5c438454bd8a10fe0c9d55819b998a8ed7d6aec553"
 
-    // Original 50 phone activation code hashes.
+    // 50 verified phone activation code hashes.
     private val activationHashes = setOf(
         "d9d28611418785fd2abb5a69fbadd943e334d4fc1cebb602470792f5e9c13e20",
         "1384a2eceee6a4e19652e017e04ffda4c77ffeb79514e0fd9bea1aa574f73c97",
@@ -39,7 +39,7 @@ object ActivationManager {
         "f446704525bd3b729cad89a767c80d6ea9cf4a345e7e21c8932386e6c58ad426",
         "ad263c3ecd5e9b528533e00bf1e168b4ce077af7a1e3481b3d2d59a35a226188",
         "1e2cc2b59f6ccbc4ec88920ff619ff32f2715765b91f10d0e1fe50c1088646b5",
-        "e591a28acebe2be49ab0f165ed232e4285c558ec9afec4584786e382d13e",
+        "e591a28acebe2be49ab0f1654050dd232e4285c558ec9afec4584786e382d13e",
         "56dd93132aa5c43c13fc598faba0862fb6c03b261948c3551e6bbb8d1691a163",
         "c506162e4526b34f4e49466fe7213dd523a63e81656b72a6febc33661b929026",
         "4233d8230b4291f91f883f576b568ef4e1bac6b03cb9bcac8f2587c5e3b545ff",
@@ -51,7 +51,7 @@ object ActivationManager {
         "38c852729eceb79fe8c4ba5317bb8b2042fc23c2313a00b212704979b213e9b3",
         "1ec8838eb3c3b37b42aa82c6c0b4d53b1d084104958ed3a868a55c1cef74524f",
         "e4e6ce2f09dd458a2b6fa4732b3a5f0a18fc6402ff095afd32ab95af04370e31",
-        "fecc29c6ae6026be1da44d48181b9a6cacc8a7c764e55b93ce5614876dc563dd",
+        "fecc29c6ae6026be1da44d48181b9a6cacc7c8a764e55b93ce5614876dc563dd",
         "9c2b3442aae14c78bcd1b847bc798e5ef9aeef88ea3fb760ef33d5dd9059ff84",
         "a823bb72966858159c664d850d1a52595a0846e8fdb8be12306d8310a7fd4e9b",
         "1e63b6dcec08881edc03e640ea6392d83c71108bcf0f01a497e59dc30239ab7e",
