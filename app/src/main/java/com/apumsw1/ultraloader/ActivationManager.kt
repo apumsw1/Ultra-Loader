@@ -5,7 +5,6 @@ import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Color
 import android.text.InputType
-import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -21,13 +20,13 @@ object ActivationManager {
     private const val KEY_MASTER = "master_activation"
     private const val KEY_USED = "used_activation_codes"
 
-    private const val VALIDITY_MS = 30L * 24L * 60L * 60L * 1000L
+    private const val VALIDITY_MS =
+        30L * 24L * 60L * 60L * 1000L
 
-    // Permanent Master Code: no 30-day expiry.
     private const val MASTER_HASH =
         "0daba0afd7c14e53f5c14c5c438454bd8a10fe0c9d55819b998a8ed7d6aec553"
 
-    // SHA-256 hashes of the original 50 activation codes.
+    // Original 50 phone activation code hashes.
     private val activationHashes = setOf(
         "d9d28611418785fd2abb5a69fbadd943e334d4fc1cebb602470792f5e9c13e20",
         "1384a2eceee6a4e19652e017e04ffda4c77ffeb79514e0fd9bea1aa574f73c97",
@@ -36,11 +35,11 @@ object ActivationManager {
         "0a7f15ba80fbf855c98c9149ed72d4527be04a3de6b43412f5690ec663f28b7a",
         "fc530115723459f6109ef465d5179fedcf6cba8742e292c6f6a9fc960c30d1b9",
         "a0375d063a47ffc87a90f56ddf5fbe6832a3078fab8cec94f42522a87c2bc9f9",
-        "82e9c4aca25cee0a3f7f41f7f3d6d3ff312d15fe721f4714a7c617953ade0ce8",
+        "82e9c4aca25cee0a3f7f41f5f6d3d6ff312d15fe721f4714a7c617953ade0ce8",
         "f446704525bd3b729cad89a767c80d6ea9cf4a345e7e21c8932386e6c58ad426",
         "ad263c3ecd5e9b528533e00bf1e168b4ce077af7a1e3481b3d2d59a35a226188",
         "1e2cc2b59f6ccbc4ec88920ff619ff32f2715765b91f10d0e1fe50c1088646b5",
-        "e591a28acebe2be49ab0f1654050dd232e4285c558ec9afec4584786e382d13e",
+        "e591a28acebe2be49ab0f165ed232e4285c558ec9afec4584786e382d13e",
         "56dd93132aa5c43c13fc598faba0862fb6c03b261948c3551e6bbb8d1691a163",
         "c506162e4526b34f4e49466fe7213dd523a63e81656b72a6febc33661b929026",
         "4233d8230b4291f91f883f576b568ef4e1bac6b03cb9bcac8f2587c5e3b545ff",
@@ -61,7 +60,7 @@ object ActivationManager {
         "2ef4f9ec7dc32627e4d0de50d6122657d00ef1c0a27061dd6bc35bcbd2efeb32",
         "ceb3432fb30aaf4ed3ec909e8aa943ecd2c329dc95bf2687aa05ed34f650cdd3",
         "546afff9fc66c7e3e4dd6b014aff889555e4615589a911bfafdea3469cdf7d93",
-        "2ea5d489b5e0a5cf5bf292d2d7254b74d9f740c4f966dc845b11c2014c8f4c",
+        "2ea5d489b5e0a5cf5bf292d2d7254bcb74d9f740c4f966dc845b11c2014c8f4c",
         "7e37a527758a3d1ff397add6a4538475011c24156a235010afd74cf1c3c85e15",
         "60c8fd848229dbc5da0c10a8c9de728a2147ebed0d6cbbc43af174ef06b423be",
         "6fa738322d451107c2bfc62ca01f3d7516a19c1a197627de9cdeb58d6453ada4",
@@ -93,17 +92,27 @@ object ActivationManager {
 
     private fun hash(value: String): String {
         val bytes = MessageDigest.getInstance("SHA-256")
-            .digest(value.trim().uppercase(Locale.US).toByteArray(Charsets.UTF_8))
-        return bytes.joinToString("") { "%02x".format(it) }
+            .digest(
+                value.trim()
+                    .uppercase(Locale.US)
+                    .toByteArray(Charsets.UTF_8)
+            )
+
+        return bytes.joinToString("") {
+            "%02x".format(it)
+        }
     }
 
     private fun sameDevice(context: Context): Boolean {
-        val saved = prefs(context).getString(KEY_DEVICE, null) ?: return true
+        val saved = prefs(context).getString(KEY_DEVICE, null)
+            ?: return true
+
         return saved == deviceId(context)
     }
 
     fun hasAccess(context: Context): Boolean {
         val p = prefs(context)
+
         if (!sameDevice(context)) return false
 
         if (p.getBoolean(KEY_MASTER, false)) return true
@@ -112,7 +121,9 @@ object ActivationManager {
         if (started <= 0L) return false
 
         val now = System.currentTimeMillis()
-        return now >= started && now < started + VALIDITY_MS
+
+        return now >= started &&
+            now < started + VALIDITY_MS
     }
 
     fun statusText(context: Context): String {
@@ -127,10 +138,17 @@ object ActivationManager {
         }
 
         val started = p.getLong(KEY_TIME, 0L)
-        if (started <= 0L) return "ACTIVATION: NOT ACTIVATED"
 
-        val remaining = started + VALIDITY_MS - System.currentTimeMillis()
-        if (remaining <= 0L) return "ACTIVATION: EXPIRED"
+        if (started <= 0L) {
+            return "ACTIVATION: NOT ACTIVATED"
+        }
+
+        val remaining =
+            started + VALIDITY_MS - System.currentTimeMillis()
+
+        if (remaining <= 0L) {
+            return "ACTIVATION: EXPIRED"
+        }
 
         val days = remaining / 86_400_000L
         val hours = (remaining % 86_400_000L) / 3_600_000L
@@ -184,40 +202,61 @@ object ActivationManager {
             .create()
 
         dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val entered = input.text.toString().trim().uppercase(Locale.US)
-                val result = activate(activity, entered)
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener {
 
-                if (result == "MASTER") {
-                    dialog.dismiss()
-                    Toast.makeText(
-                        activity,
-                        "MASTER ACTIVATION SUCCESSFUL",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    onGranted()
-                } else if (result == "PHONE") {
-                    dialog.dismiss()
-                    Toast.makeText(
-                        activity,
-                        "ACTIVATED FOR 30 DAYS",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    onGranted()
-                } else {
-                    input.error = when (result) {
-                        "USED" -> "This activation code has already been used on this device."
-                        "DEVICE" -> "This activation belongs to another device."
-                        else -> "Invalid activation code."
+                    val entered = input.text.toString()
+                        .trim()
+                        .uppercase(Locale.US)
+
+                    val result = activate(activity, entered)
+
+                    when (result) {
+                        "MASTER" -> {
+                            dialog.dismiss()
+                            Toast.makeText(
+                                activity,
+                                "MASTER ACTIVATION SUCCESSFUL",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            onGranted()
+                        }
+
+                        "PHONE" -> {
+                            dialog.dismiss()
+                            Toast.makeText(
+                                activity,
+                                "ACTIVATED FOR 30 DAYS",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            onGranted()
+                        }
+
+                        "USED" -> {
+                            input.error =
+                                "This activation code has already been used on this device."
+                        }
+
+                        "DEVICE" -> {
+                            input.error =
+                                "This activation belongs to another device."
+                        }
+
+                        else -> {
+                            input.error = "Invalid activation code."
+                        }
                     }
                 }
-            }
         }
 
         dialog.show()
     }
 
-    private fun activate(context: Context, code: String): String {
+    private fun activate(
+        context: Context,
+        code: String
+    ): String {
+
         if (code.isBlank()) return "INVALID"
 
         val p = prefs(context)
@@ -230,21 +269,28 @@ object ActivationManager {
 
         val enteredHash = hash(code)
 
+        // Master code: permanent access.
         if (enteredHash == MASTER_HASH) {
             p.edit()
                 .putString(KEY_DEVICE, currentDevice)
                 .putBoolean(KEY_MASTER, true)
                 .putLong(KEY_TIME, 0L)
                 .apply()
+
             return "MASTER"
         }
 
-        if (enteredHash !in activationHashes) return "INVALID"
+        if (enteredHash !in activationHashes) {
+            return "INVALID"
+        }
 
-        val used = p.getStringSet(KEY_USED, emptySet())?.toMutableSet()
+        val used = p.getStringSet(KEY_USED, emptySet())
+            ?.toMutableSet()
             ?: mutableSetOf()
 
-        if (enteredHash in used) return "USED"
+        if (enteredHash in used) {
+            return "USED"
+        }
 
         used.add(enteredHash)
 
