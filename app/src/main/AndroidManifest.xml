@@ -44,18 +44,6 @@
 
         </service>
 
-        <service
-            android:name=".NetworkNotificationListener"
-            android:label="Ultra Loader Network Notification Access"
-            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
-            android:exported="true">
-
-            <intent-filter>
-                <action android:name="android.service.notification.NotificationListenerService" />
-            </intent-filter>
-
-        </service>
-
     </application>
 
 </manifest>
