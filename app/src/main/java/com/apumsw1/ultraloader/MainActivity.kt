@@ -98,10 +98,15 @@ class MainActivity : Activity() {
     private var dashboardShown = false
     private var appInitialized = false
 
-    // Retry counters
+    // Portal automation search controls.
     private var logoutSearchAttempts = 0
-    private var loginAgentSearchAttempts = 0
-    private var secondLoginFormAttempts = 0
+    private var loginActionSearchAttempts = 0
+    private var secondLoginButtonFound = false
+
+    // Prevent overlapping WebView JavaScript checks.
+    private var logoutSearchRunning = false
+    private var loginActionSearchRunning = false
+    private var secondFormCheckRunning = false
 
     private val backgroundPulse = object : Runnable {
         override fun run() {
@@ -137,6 +142,7 @@ class MainActivity : Activity() {
         window.statusBarColor = Color.rgb(3, 8, 20)
         window.navigationBarColor = Color.rgb(3, 8, 20)
 
+        // Activation is required before opening the application.
         ActivationManager.requireActivation(this) {
             initializeApplication()
         }
@@ -659,9 +665,14 @@ class MainActivity : Activity() {
         loginSubmitted = false
         vpnOpened = false
 
+        // Reset all search counters and running flags for a new run.
         logoutSearchAttempts = 0
-        loginAgentSearchAttempts = 0
-        secondLoginFormAttempts = 0
+        loginActionSearchAttempts = 0
+        secondLoginButtonFound = false
+
+        logoutSearchRunning = false
+        loginActionSearchRunning = false
+        secondFormCheckRunning = false
 
         statusText(
             "● FINDING CURRENT PORTAL...",
@@ -999,6 +1010,7 @@ class MainActivity : Activity() {
     }
 
     private fun checkVpnStatus() {
+        // Keep the existing real Android VPN status detection.
         if (isVpnConnected()) {
             statusText(
                 "● VPN CONNECTION DETECTED",
@@ -1007,11 +1019,15 @@ class MainActivity : Activity() {
 
             if (stage == Stage.WAIT_VPN) {
                 stage = Stage.LOGOUT
+
+                // Wait 5 seconds after VPN connection is detected.
+                // Logout searching begins only after this delay.
                 logoutSearchAttempts = 0
+                logoutSearchRunning = false
 
                 handler.postDelayed({
                     clickPortalLogout()
-                }, 3000)
+                }, 5000)
             }
 
             updateInternetStatus()
@@ -1045,8 +1061,11 @@ class MainActivity : Activity() {
             .show()
     }
 
+    // Search for the portal logout button up to 10 times.
+    // Each retry is separated by 3 seconds.
     private fun clickPortalLogout() {
         if (stage != Stage.LOGOUT) return
+        if (logoutSearchRunning) return
 
         if (logoutSearchAttempts >= 10) {
             statusText(
@@ -1056,10 +1075,11 @@ class MainActivity : Activity() {
             return
         }
 
+        logoutSearchRunning = true
         logoutSearchAttempts++
 
         statusText(
-            "● LOOKING FOR PORTAL LOGOUT... $logoutSearchAttempts/10",
+            "● SEARCHING PORTAL LOGOUT... $logoutSearchAttempts/10",
             cyan
         )
 
@@ -1082,51 +1102,52 @@ class MainActivity : Activity() {
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
+            logoutSearchRunning = false
+
             if (stage != Stage.LOGOUT) return@evaluateJavascript
 
             if (result?.contains("LOGOUT_CLICKED") == true) {
                 statusText("● LOGOUT CLICKED", green)
 
-                loginAgentSearchAttempts = 0
-
+                // Begin searching for the second login action.
                 handler.postDelayed({
                     clickPortalLoginAgent()
                 }, 2500)
 
-            } else if (logoutSearchAttempts < 10) {
-                statusText(
-                    "● LOGOUT NOT FOUND — RETRY $logoutSearchAttempts/10",
-                    cyan
-                )
-
-                handler.postDelayed({
-                    clickPortalLogout()
-                }, 3000)
-
             } else {
-                statusText(
-                    "● PORTAL LOGOUT BUTTON NOT FOUND (10 ATTEMPTS)",
-                    red
-                )
+                if (logoutSearchAttempts < 10) {
+                    handler.postDelayed({
+                        clickPortalLogout()
+                    }, 3000)
+                } else {
+                    statusText(
+                        "● PORTAL LOGOUT BUTTON NOT FOUND (10 ATTEMPTS)",
+                        red
+                    )
+                }
             }
         }
     }
 
+    // Initial search: maximum 60 attempts, one attempt every 2 seconds.
+    // Once found, the next phase repeatedly clicks it until the form appears.
     private fun clickPortalLoginAgent() {
         if (stage != Stage.LOGOUT) return
+        if (loginActionSearchRunning) return
 
-        if (loginAgentSearchAttempts >= 30) {
+        if (loginActionSearchAttempts >= 60) {
             statusText(
-                "● PORTAL LOGIN ACTION NOT FOUND (30 ATTEMPTS)",
+                "● PORTAL LOGIN ACTION NOT FOUND (60 ATTEMPTS)",
                 red
             )
             return
         }
 
-        loginAgentSearchAttempts++
+        loginActionSearchRunning = true
+        loginActionSearchAttempts++
 
         statusText(
-            "● SEARCHING PORTAL LOGIN... $loginAgentSearchAttempts/30",
+            "● SEARCHING SECOND LOGIN BUTTON... $loginActionSearchAttempts/60",
             cyan
         )
 
@@ -1143,59 +1164,51 @@ class MainActivity : Activity() {
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
+            loginActionSearchRunning = false
+
             if (stage != Stage.LOGOUT) return@evaluateJavascript
 
             if (result?.contains("LOGIN_AGENT_CLICKED") == true) {
+                secondLoginButtonFound = true
                 stage = Stage.WAIT_SECOND_LOGIN
-                secondLoginFormAttempts = 0
 
                 statusText(
-                    "● WAITING FOR NEXT LOGIN FORM...",
-                    cyan
+                    "● SECOND LOGIN BUTTON FOUND — CHECKING FORM...",
+                    green
                 )
 
                 handler.postDelayed({
                     checkSecondLoginForm()
-                }, 1500)
-
-            } else if (loginAgentSearchAttempts < 30) {
-                statusText(
-                    "● LOGIN ACTION NOT FOUND — RETRY $loginAgentSearchAttempts/30",
-                    cyan
-                )
-
-                handler.postDelayed({
-                    clickPortalLoginAgent()
                 }, 2000)
 
             } else {
-                statusText(
-                    "● PORTAL LOGIN ACTION NOT FOUND (30 ATTEMPTS)",
-                    red
-                )
+                if (loginActionSearchAttempts < 60) {
+                    handler.postDelayed({
+                        clickPortalLoginAgent()
+                    }, 2000)
+                } else {
+                    statusText(
+                        "● PORTAL LOGIN ACTION NOT FOUND (60 ATTEMPTS)",
+                        red
+                    )
+                }
             }
         }
     }
 
+    // After the second login button is first found:
+    // 1. Check whether the second login form has appeared.
+    // 2. If not, search for and click the login button again.
+    // 3. Repeat every 2 seconds without a limit.
+    // 4. Stop immediately when the username/password form appears.
     private fun checkSecondLoginForm() {
         if (stage != Stage.WAIT_SECOND_LOGIN) return
+        if (!secondLoginButtonFound) return
+        if (secondFormCheckRunning) return
 
-        if (secondLoginFormAttempts >= 30) {
-            statusText(
-                "● SECOND LOGIN FORM NOT FOUND (30 ATTEMPTS)",
-                red
-            )
-            return
-        }
+        secondFormCheckRunning = true
 
-        secondLoginFormAttempts++
-
-        statusText(
-            "● SEARCHING SECOND LOGIN FORM... $secondLoginFormAttempts/30",
-            cyan
-        )
-
-        val script = """
+        val formScript = """
             (function(){
               var u=document.querySelector('input[type=text],input[type=email],input[name*=user i]');
               var p=document.querySelector('input[type=password]');
@@ -1203,42 +1216,68 @@ class MainActivity : Activity() {
             })();
         """.trimIndent()
 
-        webView.evaluateJavascript(script) { result ->
-            if (stage != Stage.WAIT_SECOND_LOGIN) return@evaluateJavascript
+        webView.evaluateJavascript(formScript) { result ->
+            if (stage != Stage.WAIT_SECOND_LOGIN) {
+                secondFormCheckRunning = false
+                return@evaluateJavascript
+            }
 
             if (result?.contains("SECOND_FORM_READY") == true) {
+                // The second login form has appeared.
+                // Stop all portal automation at this point.
                 stage = Stage.FINISHED
                 loginSubmitted = true
+                secondFormCheckRunning = false
 
                 statusText(
                     "● FINAL LOGIN PAGE READY — AUTOMATION STOPPED",
                     green
                 )
 
-                if (
-                    isVpnConnected() &&
-                    hasValidatedInternet()
-                ) {
-                    handler.postDelayed({
-                        loadIpDashboard()
-                    }, 1800)
-                }
-
-            } else if (secondLoginFormAttempts < 30) {
-                statusText(
-                    "● SECOND FORM NOT FOUND — RETRY $secondLoginFormAttempts/30",
-                    cyan
-                )
-
-                handler.postDelayed({
-                    checkSecondLoginForm()
-                }, 2000)
+                // Open the existing Live IP Dashboard.
+                // Its existing VPN and validated-internet checks remain active.
+                loadIpDashboard()
 
             } else {
-                statusText(
-                    "● SECOND LOGIN FORM NOT FOUND (30 ATTEMPTS)",
-                    red
-                )
+                // Form has not appeared yet. Click the second login action
+                // again if it is currently present.
+                val loginButtonScript = """
+                    (function(){
+                      var a=Array.from(document.querySelectorAll('a,button,input[type=button],input[type=submit]'));
+                      var x=a.find(function(n){
+                        return /log.?in|sign.?in/i.test((n.innerText||'')+' '+(n.value||''));
+                      });
+                      if(!x)return 'LOGIN_AGENT_NOT_FOUND';
+                      x.click();
+                      return 'LOGIN_AGENT_CLICKED';
+                    })();
+                """.trimIndent()
+
+                webView.evaluateJavascript(loginButtonScript) { clickResult ->
+                    secondFormCheckRunning = false
+
+                    if (stage != Stage.WAIT_SECOND_LOGIN) {
+                        return@evaluateJavascript
+                    }
+
+                    if (clickResult?.contains("LOGIN_AGENT_CLICKED") == true) {
+                        statusText(
+                            "● SECOND LOGIN BUTTON CLICKED — WAITING FOR FORM",
+                            cyan
+                        )
+                    } else {
+                        statusText(
+                            "● WAITING FOR SECOND LOGIN FORM...",
+                            cyan
+                        )
+                    }
+
+                    // Continue checking and clicking indefinitely until
+                    // the second login form is detected.
+                    handler.postDelayed({
+                        checkSecondLoginForm()
+                    }, 2000)
+                }
             }
         }
     }
