@@ -15,7 +15,10 @@ const encoder = new TextEncoder();
 function base64url(bytes) {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  return btoa(binary)
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
 }
 
 function decodeBase64url(value) {
@@ -25,7 +28,11 @@ function decodeBase64url(value) {
 }
 
 async function sha256(value) {
-  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    encoder.encode(value)
+  );
+
   return [...new Uint8Array(digest)]
     .map(b => b.toString(16).padStart(2, "0"))
     .join("");
@@ -68,6 +75,7 @@ async function verifyToken(token, secret) {
     if (expected.length !== supplied.length) return false;
 
     let difference = 0;
+
     for (let i = 0; i < expected.length; i++) {
       difference |= expected[i] ^ supplied[i];
     }
@@ -108,28 +116,44 @@ const ADMIN_PAGE = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ULTRA LOADER Admin</title>
+
 <style>
 *{box-sizing:border-box}
 body{margin:0;background:#080e19;color:#edf4ff;font-family:Arial,sans-serif}
 main{max-width:950px;margin:25px auto;padding:14px}
 h1{color:#58d9ff}
 .panel{background:#121e31;border:1px solid #293d5b;border-radius:15px;padding:18px;margin:15px 0}
-input,textarea{width:100%;padding:13px;border-radius:8px;background:#081321;color:white;border:1px solid #405574;margin:9px 0}
+input,textarea,select{
+width:100%;padding:13px;border-radius:8px;
+background:#081321;color:white;border:1px solid #405574;margin:9px 0
+}
+input[type=checkbox]{width:auto}
 textarea{min-height:85px;resize:vertical}
 label{display:block;margin-top:12px;color:#bcd0e8}
-button{padding:11px 15px;background:#0788b5;color:white;border:0;border-radius:8px;font-weight:bold;margin:5px 3px;cursor:pointer}
+button{
+padding:11px 15px;background:#0788b5;color:white;
+border:0;border-radius:8px;font-weight:bold;margin:5px 3px;cursor:pointer
+}
+button:disabled{opacity:.5;cursor:not-allowed}
 .secondary{background:#30415b}
 .danger{background:#bd3548}
 .success{background:#16885d}
 .hidden{display:none}
-.key{background:#0b1728;border:1px solid #30415b;border-radius:10px;padding:14px;margin:12px 0;overflow-wrap:anywhere}
+.key{
+background:#0b1728;border:1px solid #30415b;
+border-radius:10px;padding:14px;margin:12px 0;overflow-wrap:anywhere
+}
 .keycode{color:#58d9ff;font-weight:bold;font-size:15px;margin-bottom:8px}
 small,.muted{color:#a9bad0}
 .status{font-weight:bold;margin:8px 0}
-pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#081321;padding:13px;border-radius:8px}
+pre{
+white-space:pre-wrap;overflow-wrap:anywhere;
+background:#081321;padding:13px;border-radius:8px
+}
 hr{border:0;border-top:1px solid #30415b;margin:18px 0}
 </style>
 </head>
+
 <body>
 <main>
 
@@ -147,17 +171,41 @@ hr{border:0;border-top:1px solid #30415b;margin:18px 0}
 
 <section class="panel">
 <h2>Activation Key Management</h2>
-<label>Validity in days</label>
-<input id="days" type="number" min="1" max="3650" value="30">
+
+<label>Key Validity Type</label>
+<select id="validityType">
+  <option value="duration">Duration (Days / Hours / Minutes)</option>
+  <option value="expiry">Exact Expiry Date & Time</option>
+</select>
+
+<div id="durationFields">
+  <label>Days</label>
+  <input id="days" type="number" min="0" max="3650" value="30">
+
+  <label>Hours</label>
+  <input id="hours" type="number" min="0" max="23" value="0">
+
+  <label>Minutes</label>
+  <input id="minutes" type="number" min="0" max="59" value="0">
+</div>
+
+<div id="expiryFields" class="hidden">
+  <label>Expiry Date & Time</label>
+  <input id="expiryDate" type="datetime-local">
+</div>
+
 <button id="generateBtn">Generate One Key</button>
 <button class="secondary" id="refreshBtn">Refresh Keys</button>
+
 <p id="keyStatus"></p>
+
 <div id="newKeyBox" class="hidden">
 <h3>New Activation Key</h3>
 <p class="muted">Save this key safely.</p>
 <pre id="newKey"></pre>
 <button id="copyKeyBtn">Copy Key</button>
 </div>
+
 <hr>
 <h3>All Activation Keys</h3>
 <div id="keys">Loading...</div>
@@ -174,13 +222,14 @@ hr{border:0;border-top:1px solid #30415b;margin:18px 0}
 <input id="versionName" type="text" placeholder="Example: 1.1">
 
 <label>GitHub Release APK Download URL</label>
-<input id="downloadUrl" type="url" placeholder="https://github.com/OWNER/REPO/releases/download/.../app.apk">
+<input id="downloadUrl" type="url"
+placeholder="https://github.com/OWNER/REPO/releases/download/.../app.apk">
 
 <label>Update Message</label>
 <textarea id="updateMessage" placeholder="What's new in this version?"></textarea>
 
 <label>
-<input id="forceUpdate" type="checkbox" style="width:auto">
+<input id="forceUpdate" type="checkbox">
 Force Update (users must update)
 </label>
 
@@ -204,25 +253,37 @@ const el = id => document.getElementById(id);
 
 function escapeHTML(value) {
   return String(value ?? "").replace(/[&<>"']/g, char => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    "&":"&amp;",
+    "<":"&lt;",
+    ">":"&gt;",
+    '"':"&quot;",
+    "'":"&#39;"
   }[char]));
 }
 
 function formatDate(value) {
   if (!value) return "Not activated";
+
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "Unknown" : date.toLocaleString();
+
+  return Number.isNaN(date.getTime())
+    ? "Unknown"
+    : date.toLocaleString();
 }
 
 function remainingTime(value) {
   const difference = new Date(value).getTime() - Date.now();
-  if (!Number.isFinite(difference) || difference <= 0) return "Expired";
+
+  if (!Number.isFinite(difference) || difference <= 0) {
+    return "Expired";
+  }
 
   const days = Math.floor(difference / 86400000);
   const hours = Math.floor((difference % 86400000) / 3600000);
   const minutes = Math.floor((difference % 3600000) / 60000);
 
-  return days + " days, " + hours + " hours, " + minutes + " minutes";
+  return days + " days, " + hours + " hours, " +
+    minutes + " minutes";
 }
 
 async function api(path, method = "GET", body) {
@@ -236,7 +297,11 @@ async function api(path, method = "GET", body) {
   });
 
   const data = await response.json();
-  if (!response.ok) throw Error(data.error || "Request failed");
+
+  if (!response.ok) {
+    throw Error(data.error || "Request failed");
+  }
+
   return data;
 }
 
@@ -250,18 +315,25 @@ async function login() {
     const response = await fetch("/api/admin/login", {
       method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({password:el("password").value})
+      body:JSON.stringify({
+        password:el("password").value
+      })
     });
 
     const data = await response.json();
-    if (!response.ok) throw Error(data.error || "Login failed");
+
+    if (!response.ok) {
+      throw Error(data.error || "Login failed");
+    }
 
     token = data.token;
     sessionStorage.setItem("ul_token", token);
+
     showDashboard();
 
     await loadKeys();
     await loadUpdate();
+
   } catch(error) {
     el("loginMsg").textContent = error.message;
   }
@@ -270,7 +342,10 @@ async function login() {
 async function loadKeys() {
   try {
     const data = await api("/admin/keys");
-    el("keyStatus").textContent = "Total keys: " + data.keys.length;
+
+    el("keyStatus").textContent =
+      "Total keys: " + data.keys.length;
+
     el("keys").innerHTML = "";
 
     if (!data.keys.length) {
@@ -285,69 +360,177 @@ async function loadKeys() {
       let action = "";
 
       if (k.status === "ACTIVE") {
-        action = '<button class="danger" data-action="disable" data-key="' +
+        action =
+          '<button class="danger" data-action="disable" data-key="' +
           escapeHTML(k.key_hint) + '">Disable Key</button>';
-      } else if (k.status === "REVOKED" &&
-          new Date(k.expires_at).getTime() > Date.now()) {
-        action = '<button class="success" data-action="enable" data-key="' +
+
+      } else if (
+        k.status === "REVOKED" &&
+        new Date(k.expires_at).getTime() > Date.now()
+      ) {
+        action =
+          '<button class="success" data-action="enable" data-key="' +
           escapeHTML(k.key_hint) + '">Reactivate Key</button>';
       }
 
-      const color = k.status === "ACTIVE" ? "#45d69a" :
-        k.status === "REVOKED" ? "#ff7373" : "#ffbf69";
+      const color = k.status === "ACTIVE"
+        ? "#45d69a"
+        : k.status === "REVOKED"
+          ? "#ff7373"
+          : "#ffbf69";
 
       item.innerHTML =
-        '<div class="keycode">' + escapeHTML(k.key_hint) + '</div>' +
-        '<div class="status" style="color:' + color + '">Status: ' +
-        escapeHTML(k.status) + '</div>' +
-        '<div>Remaining: ' + escapeHTML(remainingTime(k.expires_at)) + '</div>' +
-        '<div>Created: ' + escapeHTML(formatDate(k.created_at)) + '</div>' +
-        '<div>Activated: ' + escapeHTML(formatDate(k.activated_at)) + '</div>' +
-        '<div>Expires: ' + escapeHTML(formatDate(k.expires_at)) + '</div>' +
+        '<div class="keycode">' +
+        escapeHTML(k.key_hint) + '</div>' +
+
+        '<div class="status" style="color:' + color + '">' +
+        'Status: ' + escapeHTML(k.status) + '</div>' +
+
+        '<div>Remaining: ' +
+        escapeHTML(remainingTime(k.expires_at)) + '</div>' +
+
+        '<div>Created: ' +
+        escapeHTML(formatDate(k.created_at)) + '</div>' +
+
+        '<div>Activated: ' +
+        escapeHTML(formatDate(k.activated_at)) + '</div>' +
+
+        '<div>Expires: ' +
+        escapeHTML(formatDate(k.expires_at)) + '</div>' +
+
         action;
 
       el("keys").appendChild(item);
     });
+
   } catch(error) {
     el("keyStatus").textContent = error.message;
   }
 }
 
 async function generate() {
-  const days = Number(el("days").value);
+  const type = el("validityType").value;
 
-  if (!Number.isInteger(days) || days < 1 || days > 3650) {
-    el("keyStatus").textContent = "Enter 1 to 3650 days.";
-    return;
+  let payload;
+  let description;
+
+  if (type === "duration") {
+    const days = Number(el("days").value);
+    const hours = Number(el("hours").value);
+    const minutes = Number(el("minutes").value);
+
+    if (
+      !Number.isInteger(days) ||
+      days < 0 ||
+      days > 3650 ||
+      !Number.isInteger(hours) ||
+      hours < 0 ||
+      hours > 23 ||
+      !Number.isInteger(minutes) ||
+      minutes < 0 ||
+      minutes > 59
+    ) {
+      el("keyStatus").textContent =
+        "Enter valid days, hours and minutes.";
+      return;
+    }
+
+    const durationMinutes =
+      days * 1440 + hours * 60 + minutes;
+
+    if (
+      !Number.isSafeInteger(durationMinutes) ||
+      durationMinutes < 1 ||
+      durationMinutes > 3650 * 1440
+    ) {
+      el("keyStatus").textContent =
+        "Validity must be between 1 minute and 3650 days.";
+      return;
+    }
+
+    payload = { durationMinutes };
+
+    description =
+      days + " days, " +
+      hours + " hours, " +
+      minutes + " minutes";
+
+  } else {
+    const selectedDate = el("expiryDate").value;
+    const expiry = new Date(selectedDate);
+
+    if (
+      !selectedDate ||
+      !Number.isFinite(expiry.getTime()) ||
+      expiry.getTime() <= Date.now()
+    ) {
+      el("keyStatus").textContent =
+        "Select a future expiry date and time.";
+      return;
+    }
+
+    if (expiry.getTime() > Date.now() + 3650 * 86400000) {
+      el("keyStatus").textContent =
+        "Expiry cannot be more than 3650 days away.";
+      return;
+    }
+
+    payload = { expiresAt: expiry.toISOString() };
+
+    description = "Expires: " + expiry.toLocaleString();
   }
 
-  if (!confirm("Generate one key for " + days + " days?")) return;
+  if (!confirm("Generate one key?\nValidity: " + description)) {
+    return;
+  }
 
   try {
     el("generateBtn").disabled = true;
 
-    const data = await api("/admin/keys/generate", "POST", {days});
+    const data = await api(
+      "/admin/keys/generate",
+      "POST",
+      payload
+    );
 
     el("newKeyBox").classList.remove("hidden");
+
     el("newKey").textContent =
-      data.key + "\\nValidity: " + data.days +
-      " days\\nExpires: " + formatDate(data.expiresAt);
+      data.key +
+      "\nValidity: " + description +
+      "\nExpires: " + formatDate(data.expiresAt);
+
+    el("keyStatus").textContent = "Key created successfully.";
 
     await loadKeys();
+
   } catch(error) {
     el("keyStatus").textContent = error.message;
+
   } finally {
     el("generateBtn").disabled = false;
   }
 }
 
 async function changeKeyStatus(key, revoked) {
-  if (!confirm(revoked ? "Disable this key?" : "Reactivate this key?")) return;
+  if (!confirm(
+    revoked ? "Disable this key?" : "Reactivate this key?"
+  )) {
+    return;
+  }
 
   try {
-    await api("/admin/keys/status", "POST", {key, revoked});
-    el("keyStatus").textContent = revoked ? "Key disabled." : "Key reactivated.";
+    await api(
+      "/admin/keys/status",
+      "POST",
+      {key, revoked}
+    );
+
+    el("keyStatus").textContent =
+      revoked ? "Key disabled." : "Key reactivated.";
+
     await loadKeys();
+
   } catch(error) {
     el("keyStatus").textContent = error.message;
   }
@@ -366,11 +549,15 @@ async function loadUpdate() {
     el("currentUpdate").textContent =
       "Version: " + (data.versionName || "Not published") +
       " (Code " + (data.versionCode || 0) + ")" +
-      "\\nForce Update: " + (data.forceUpdate ? "ON" : "OFF") +
-      "\\nDownload: " + (data.downloadUrl || "Not set") +
-      "\\nMessage: " + (data.message || "None");
+      "\nForce Update: " +
+      (data.forceUpdate ? "ON" : "OFF") +
+      "\nDownload: " +
+      (data.downloadUrl || "Not set") +
+      "\nMessage: " +
+      (data.message || "None");
 
     el("updateStatus").textContent = "Settings loaded.";
+
   } catch(error) {
     el("updateStatus").textContent = error.message;
   }
@@ -384,36 +571,60 @@ async function saveUpdate() {
   const forceUpdate = el("forceUpdate").checked;
 
   if (!Number.isInteger(versionCode) || versionCode < 1) {
-    el("updateStatus").textContent = "Enter a valid Version Code.";
+    el("updateStatus").textContent =
+      "Enter a valid Version Code.";
     return;
   }
 
   if (!versionName || !downloadUrl) {
-    el("updateStatus").textContent = "Version Name and APK URL are required.";
+    el("updateStatus").textContent =
+      "Version Name and APK URL are required.";
     return;
   }
 
   try {
     el("saveUpdateBtn").disabled = true;
 
-    const data = await api("/admin/update", "POST", {
-      versionCode,
-      versionName,
-      downloadUrl,
-      message,
-      forceUpdate
-    });
+    const data = await api(
+      "/admin/update",
+      "POST",
+      {
+        versionCode,
+        versionName,
+        downloadUrl,
+        message,
+        forceUpdate
+      }
+    );
 
     el("updateStatus").textContent =
       data.message || "Update settings saved successfully.";
 
     await loadUpdate();
+
   } catch(error) {
     el("updateStatus").textContent = error.message;
+
   } finally {
     el("saveUpdateBtn").disabled = false;
   }
 }
+
+// Validity mode selector
+el("validityType").addEventListener("change", () => {
+  const durationMode =
+    el("validityType").value === "duration";
+
+  el("durationFields").classList.toggle(
+    "hidden",
+    !durationMode
+  );
+
+  el("expiryFields").classList.toggle(
+    "hidden",
+    durationMode
+  );
+});
 
 el("loginBtn").addEventListener("click", login);
 el("generateBtn").addEventListener("click", generate);
@@ -423,8 +634,12 @@ el("loadUpdateBtn").addEventListener("click", loadUpdate);
 
 el("copyKeyBtn").addEventListener("click", async () => {
   try {
-    await navigator.clipboard.writeText(el("newKey").textContent.split("\\n")[0]);
+    await navigator.clipboard.writeText(
+      el("newKey").textContent.split("\n")[0]
+    );
+
     el("keyStatus").textContent = "Key copied.";
+
   } catch {
     el("keyStatus").textContent = "Copy manually.";
   }
@@ -432,6 +647,7 @@ el("copyKeyBtn").addEventListener("click", async () => {
 
 el("keys").addEventListener("click", event => {
   const button = event.target.closest("button[data-action]");
+
   if (!button) return;
 
   changeKeyStatus(
@@ -452,6 +668,7 @@ if (token) {
   loadUpdate();
 }
 </script>
+
 </body>
 </html>`;
 
@@ -478,7 +695,9 @@ export default {
     }
 
     if (!env.ULTRA_LOADER) {
-      return json({error:"D1 database binding ULTRA_LOADER is missing"}, 503);
+      return json({
+        error:"D1 database binding ULTRA_LOADER is missing"
+      }, 503);
     }
 
     try {
@@ -497,13 +716,18 @@ export default {
 
       // Health Check
       if (path === "/api/health" && request.method === "GET") {
-        return json({ok:true, service:"ULTRA LOADER API"});
+        return json({
+          ok:true,
+          service:"ULTRA LOADER API"
+        });
       }
 
       // Admin Login
       if (path === "/api/admin/login" && request.method === "POST") {
         if (!env.ADMIN_PASSWORD || !env.SESSION_SECRET) {
-          return json({error:"Admin secrets are not configured"}, 503);
+          return json({
+            error:"Admin secrets are not configured"
+          }, 503);
         }
 
         const body = await request.json();
@@ -512,18 +736,29 @@ export default {
           typeof body.password !== "string" ||
           body.password !== env.ADMIN_PASSWORD
         ) {
-          return json({error:"Incorrect password"}, 401);
+          return json({
+            error:"Incorrect password"
+          }, 401);
         }
 
-        return json({token:await createToken(env.SESSION_SECRET)});
+        return json({
+          token:await createToken(env.SESSION_SECRET)
+        });
       }
 
       // Public App Update Check
       if (path === "/api/update" && request.method === "GET") {
-        const currentVersion = Number(url.searchParams.get("versionCode") || 0);
+        const currentVersion = Number(
+          url.searchParams.get("versionCode") || 0
+        );
 
-        if (!Number.isInteger(currentVersion) || currentVersion < 0) {
-          return json({error:"Invalid versionCode"}, 400);
+        if (
+          !Number.isInteger(currentVersion) ||
+          currentVersion < 0
+        ) {
+          return json({
+            error:"Invalid versionCode"
+          }, 400);
         }
 
         const update = await env.ULTRA_LOADER.prepare(
@@ -559,7 +794,9 @@ export default {
         const body = await request.json();
 
         const activationKey = String(body.key || "").trim();
-        const deviceId = String(body.deviceId || "").trim().slice(0,160);
+        const deviceId = String(body.deviceId || "")
+          .trim()
+          .slice(0,160);
 
         if (!activationKey || !deviceId) {
           return json({
@@ -569,6 +806,7 @@ export default {
         }
 
         const now = new Date().toISOString();
+
         const isMaster = !!env.MASTER_KEY &&
           activationKey === env.MASTER_KEY;
 
@@ -589,8 +827,14 @@ export default {
             }, 403);
           }
 
-          if (Date.parse(record.expires_at) <= Date.now()) {
-            return json({ok:false,error:"Activation key expired"}, 403);
+          if (
+            !record.expires_at ||
+            Date.parse(record.expires_at) <= Date.now()
+          ) {
+            return json({
+              ok:false,
+              error:"Activation key expired"
+            }, 403);
           }
 
           expiresAt = record.expires_at;
@@ -598,7 +842,12 @@ export default {
 
         await env.ULTRA_LOADER.prepare(
           "INSERT INTO devices (device_id,key_hash,last_seen,created_at) VALUES (?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET key_hash=excluded.key_hash,last_seen=excluded.last_seen"
-        ).bind(deviceId,keyHash,now,now).run();
+        ).bind(
+          deviceId,
+          keyHash,
+          now,
+          now
+        ).run();
 
         return json({
           ok:true,
@@ -610,7 +859,9 @@ export default {
 
       // Admin authentication for remaining routes
       if (!(await isAdmin(request, env))) {
-        return json({error:"Unauthorized"}, 401);
+        return json({
+          error:"Unauthorized"
+        }, 401);
       }
 
       // List Activation Keys
@@ -636,59 +887,125 @@ export default {
           expires_at:k.expires_at,
           created_at:k.created_at,
           activated_at:k.activated_at,
-          status:k.revoked ? "REVOKED" :
-            Date.parse(k.expires_at) > Date.now() ? "ACTIVE" : "EXPIRED"
+          status:k.revoked
+            ? "REVOKED"
+            : Date.parse(k.expires_at) > Date.now()
+              ? "ACTIVE"
+              : "EXPIRED"
         }));
 
         return json({keys});
       }
 
       // Generate One Activation Key
-      if (path === "/api/admin/keys/generate" && request.method === "POST") {
+      if (
+        path === "/api/admin/keys/generate" &&
+        request.method === "POST"
+      ) {
         const body = await request.json();
-        const days = Number(body.days);
-
-        if (!Number.isInteger(days) || days < 1 || days > 3650) {
-          return json({error:"Validity must be 1 to 3650 days"}, 400);
-        }
 
         const now = Date.now();
         const createdAt = new Date(now).toISOString();
-        const expiresAt = new Date(now + days * 86400000).toISOString();
+
+        let expiresAt;
+
+        if (body.durationMinutes !== undefined) {
+          const durationMinutes = Number(body.durationMinutes);
+
+          if (
+            !Number.isSafeInteger(durationMinutes) ||
+            durationMinutes < 1 ||
+            durationMinutes > 3650 * 1440
+          ) {
+            return json({
+              error:"Validity must be between 1 minute and 3650 days"
+            }, 400);
+          }
+
+          expiresAt = new Date(
+            now + durationMinutes * 60000
+          ).toISOString();
+
+        } else if (body.expiresAt !== undefined) {
+          const expiryTime = Date.parse(body.expiresAt);
+
+          if (
+            !Number.isFinite(expiryTime) ||
+            expiryTime <= now ||
+            expiryTime > now + 3650 * 86400000
+          ) {
+            return json({
+              error:"Expiry must be a future date within 3650 days"
+            }, 400);
+          }
+
+          expiresAt = new Date(expiryTime).toISOString();
+
+        } else {
+          return json({
+            error:"Provide durationMinutes or expiresAt"
+          }, 400);
+        }
+
         const key = generateKey();
         const keyHash = await sha256(key);
 
         await env.ULTRA_LOADER.prepare(
           "INSERT INTO activation_keys (key_hash,key_hint,expires_at,revoked,created_at) VALUES (?,?,?,0,?)"
-        ).bind(keyHash,key,expiresAt,createdAt).run();
+        ).bind(
+          keyHash,
+          key,
+          expiresAt,
+          createdAt
+        ).run();
 
-        return json({created:1,key,days,expiresAt});
+        return json({
+          created:1,
+          key,
+          expiresAt
+        });
       }
 
       // Disable / Reactivate Activation Key
-      if (path === "/api/admin/keys/status" && request.method === "POST") {
+      if (
+        path === "/api/admin/keys/status" &&
+        request.method === "POST"
+      ) {
         const body = await request.json();
         const key = String(body.key || "").trim();
 
         if (!key || typeof body.revoked !== "boolean") {
-          return json({error:"Key and revoked boolean are required"}, 400);
+          return json({
+            error:"Key and revoked boolean are required"
+          }, 400);
         }
 
         const keyHash = await sha256(key);
 
         const result = await env.ULTRA_LOADER.prepare(
           "UPDATE activation_keys SET revoked=? WHERE key_hash=?"
-        ).bind(body.revoked ? 1 : 0,keyHash).run();
+        ).bind(
+          body.revoked ? 1 : 0,
+          keyHash
+        ).run();
 
         if (!result.meta || result.meta.changes < 1) {
-          return json({error:"Activation key not found"}, 404);
+          return json({
+            error:"Activation key not found"
+          }, 404);
         }
 
-        return json({ok:true,revoked:body.revoked});
+        return json({
+          ok:true,
+          revoked:body.revoked
+        });
       }
 
       // Read Current Update Settings
-      if (path === "/api/admin/update" && request.method === "GET") {
+      if (
+        path === "/api/admin/update" &&
+        request.method === "GET"
+      ) {
         const update = await env.ULTRA_LOADER.prepare(
           "SELECT version_code,version_name,download_url,message,force_update,updated_at FROM app_updates WHERE id=1"
         ).first();
@@ -704,21 +1021,34 @@ export default {
       }
 
       // Publish / Change Update Settings
-      if (path === "/api/admin/update" && request.method === "POST") {
+      if (
+        path === "/api/admin/update" &&
+        request.method === "POST"
+      ) {
         const body = await request.json();
 
         const versionCode = Number(body.versionCode);
         const versionName = String(body.versionName || "").trim();
         const downloadUrl = String(body.downloadUrl || "").trim();
-        const message = String(body.message || "").trim().slice(0,2000);
+        const message = String(body.message || "")
+          .trim()
+          .slice(0,2000);
+
         const forceUpdate = body.forceUpdate === true;
 
-        if (!Number.isInteger(versionCode) || versionCode < 1) {
-          return json({error:"Version Code must be a positive integer"}, 400);
+        if (
+          !Number.isInteger(versionCode) ||
+          versionCode < 1
+        ) {
+          return json({
+            error:"Version Code must be a positive integer"
+          }, 400);
         }
 
         if (!versionName || versionName.length > 50) {
-          return json({error:"Enter a valid Version Name"}, 400);
+          return json({
+            error:"Enter a valid Version Name"
+          }, 400);
         }
 
         let parsedUrl;
@@ -726,7 +1056,9 @@ export default {
         try {
           parsedUrl = new URL(downloadUrl);
         } catch {
-          return json({error:"Invalid APK download URL"}, 400);
+          return json({
+            error:"Invalid APK download URL"
+          }, 400);
         }
 
         if (
@@ -771,7 +1103,9 @@ export default {
         });
       }
 
-      return json({error:"Not found"}, 404);
+      return json({
+        error:"Not found"
+      }, 404);
 
     } catch(error) {
       return json({
