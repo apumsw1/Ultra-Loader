@@ -98,6 +98,11 @@ class MainActivity : Activity() {
     private var dashboardShown = false
     private var appInitialized = false
 
+    // Retry counters
+    private var logoutSearchAttempts = 0
+    private var loginAgentSearchAttempts = 0
+    private var secondLoginFormAttempts = 0
+
     private val backgroundPulse = object : Runnable {
         override fun run() {
             if (!::root.isInitialized) return
@@ -655,6 +660,11 @@ class MainActivity : Activity() {
         loginSubmitted = false
         vpnOpened = false
 
+        // Reset all retry counters for a fresh run.
+        logoutSearchAttempts = 0
+        loginAgentSearchAttempts = 0
+        secondLoginFormAttempts = 0
+
         statusText(
             "● FINDING CURRENT PORTAL...",
             cyan
@@ -999,10 +1009,12 @@ class MainActivity : Activity() {
 
             if (stage == Stage.WAIT_VPN) {
                 stage = Stage.LOGOUT
+                logoutSearchAttempts = 0
 
+                // Wait 3 seconds after VPN connection.
                 handler.postDelayed({
                     clickPortalLogout()
-                }, 1000)
+                }, 3000)
             }
 
             updateInternetStatus()
@@ -1039,8 +1051,18 @@ class MainActivity : Activity() {
     private fun clickPortalLogout() {
         if (stage != Stage.LOGOUT) return
 
+        if (logoutSearchAttempts >= 10) {
+            statusText(
+                "● PORTAL LOGOUT BUTTON NOT FOUND (10 ATTEMPTS)",
+                red
+            )
+            return
+        }
+
+        logoutSearchAttempts++
+
         statusText(
-            "● LOOKING FOR PORTAL LOGOUT...",
+            "● LOOKING FOR PORTAL LOGOUT... $logoutSearchAttempts/10",
             cyan
         )
 
@@ -1063,15 +1085,30 @@ class MainActivity : Activity() {
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
+            if (stage != Stage.LOGOUT) return@evaluateJavascript
+
             if (result?.contains("LOGOUT_CLICKED") == true) {
                 statusText("● LOGOUT CLICKED", green)
+
+                loginAgentSearchAttempts = 0
 
                 handler.postDelayed({
                     clickPortalLoginAgent()
                 }, 2500)
+
+            } else if (logoutSearchAttempts < 10) {
+                statusText(
+                    "● LOGOUT NOT FOUND — RETRY $logoutSearchAttempts/10",
+                    cyan
+                )
+
+                handler.postDelayed({
+                    clickPortalLogout()
+                }, 3000)
+
             } else {
                 statusText(
-                    "● PORTAL LOGOUT BUTTON NOT FOUND",
+                    "● PORTAL LOGOUT BUTTON NOT FOUND (10 ATTEMPTS)",
                     red
                 )
             }
@@ -1080,6 +1117,21 @@ class MainActivity : Activity() {
 
     private fun clickPortalLoginAgent() {
         if (stage != Stage.LOGOUT) return
+
+        if (loginAgentSearchAttempts >= 30) {
+            statusText(
+                "● PORTAL LOGIN ACTION NOT FOUND (30 ATTEMPTS)",
+                red
+            )
+            return
+        }
+
+        loginAgentSearchAttempts++
+
+        statusText(
+            "● SEARCHING PORTAL LOGIN... $loginAgentSearchAttempts/30",
+            cyan
+        )
 
         val script = """
             (function(){
@@ -1094,8 +1146,11 @@ class MainActivity : Activity() {
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
+            if (stage != Stage.LOGOUT) return@evaluateJavascript
+
             if (result?.contains("LOGIN_AGENT_CLICKED") == true) {
                 stage = Stage.WAIT_SECOND_LOGIN
+                secondLoginFormAttempts = 0
 
                 statusText(
                     "● WAITING FOR NEXT LOGIN FORM...",
@@ -1106,9 +1161,19 @@ class MainActivity : Activity() {
                     checkSecondLoginForm()
                 }, 1500)
 
+            } else if (loginAgentSearchAttempts < 30) {
+                statusText(
+                    "● LOGIN ACTION NOT FOUND — RETRY $loginAgentSearchAttempts/30",
+                    cyan
+                )
+
+                handler.postDelayed({
+                    clickPortalLoginAgent()
+                }, 2000)
+
             } else {
                 statusText(
-                    "● PORTAL LOGIN ACTION NOT FOUND",
+                    "● PORTAL LOGIN ACTION NOT FOUND (30 ATTEMPTS)",
                     red
                 )
             }
@@ -1119,6 +1184,21 @@ class MainActivity : Activity() {
     private fun checkSecondLoginForm() {
         if (stage != Stage.WAIT_SECOND_LOGIN) return
 
+        if (secondLoginFormAttempts >= 30) {
+            statusText(
+                "● SECOND LOGIN FORM NOT FOUND (30 ATTEMPTS)",
+                red
+            )
+            return
+        }
+
+        secondLoginFormAttempts++
+
+        statusText(
+            "● SEARCHING SECOND LOGIN FORM... $secondLoginFormAttempts/30",
+            cyan
+        )
+
         val script = """
             (function(){
               var u=document.querySelector('input[type=text],input[type=email],input[name*=user i]');
@@ -1128,6 +1208,8 @@ class MainActivity : Activity() {
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
+            if (stage != Stage.WAIT_SECOND_LOGIN) return@evaluateJavascript
+
             if (result?.contains("SECOND_FORM_READY") == true) {
                 stage = Stage.FINISHED
                 loginSubmitted = true
@@ -1146,10 +1228,21 @@ class MainActivity : Activity() {
                     }, 1800)
                 }
 
-            } else {
+            } else if (secondLoginFormAttempts < 30) {
+                statusText(
+                    "● SECOND FORM NOT FOUND — RETRY $secondLoginFormAttempts/30",
+                    cyan
+                )
+
                 handler.postDelayed({
                     checkSecondLoginForm()
                 }, 2000)
+
+            } else {
+                statusText(
+                    "● SECOND LOGIN FORM NOT FOUND (30 ATTEMPTS)",
+                    red
+                )
             }
         }
     }
@@ -1429,8 +1522,8 @@ class MainActivity : Activity() {
 
         val spec = KeyGenParameterSpec.Builder(
             KEY_ALIAS,
-            KeyProperties.PURPOSE_ENCRYPT or
-                KeyProperties.PURPOSE_DECRYPT
+            KeyGenParameterSpec.PURPOSE_ENCRYPT or
+                KeyGenParameterSpec.PURPOSE_DECRYPT
         )
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(
