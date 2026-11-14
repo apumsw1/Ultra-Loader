@@ -149,7 +149,7 @@ class PortalMonitorService : Service() {
                 "Wi-Fi is connected. Tap to start Ultra Loader."
         }
 
-        // No portal URL is stored or attached to this notification.
+        // Important: Never save or attach an old portal URL here.
         val openIntent = Intent(
             this,
             MainActivity::class.java
