@@ -3,7 +3,9 @@ package com.apumsw1.ultraloader
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.text.InputType
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -19,14 +21,21 @@ object ActivationManager {
     private const val KEY_TIME = "activation_time"
     private const val KEY_MASTER = "master_activation"
     private const val KEY_USED = "used_activation_codes"
+    private const val KEY_VALIDITY = "activation_validity"
 
     private const val VALIDITY_MS =
         30L * 24L * 60L * 60L * 1000L
 
+    private const val THREE_DAY_VALIDITY_MS =
+        3L * 24L * 60L * 60L * 1000L
+
+    private const val TELEGRAM_URL =
+        "https://t.me/ultraloader"
+
     private const val MASTER_HASH =
         "0daba0afd7c14e53f5c14c5c438454bd8a10fe0c9d55819b998a8ed7d6aec553"
 
-    // 50 verified phone activation code hashes.
+    // 50 existing phone activation code hashes.
     private val activationHashes = setOf(
         "d9d28611418785fd2abb5a69fbadd943e334d4fc1cebb602470792f5e9c13e20",
         "1384a2eceee6a4e19652e017e04ffda4c77ffeb79514e0fd9bea1aa574f73c97",
@@ -80,6 +89,13 @@ object ActivationManager {
         "8ca0eb0a4df19ea4832562fb67a287c764cd390188f89bd42f9abd87f1a356d4"
     )
 
+    // Three NEW activation codes: valid for 3 days.
+    private val threeDayActivationHashes = setOf(
+        "3ecf784a44dcf3435ad3a1205b06a5cb3622f11cab4bdb472475d458a881a200",
+        "bf6c97a5d55c6e2fadbe26f818dbbfa1b4b2a82bae2b57bd9973e79bfac02783",
+        "44c2160c7ae989a74cd9a446d9989b1773e2311d67364a77fb648af4d4ba2174"
+    )
+
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -110,6 +126,11 @@ object ActivationManager {
         return saved == deviceId(context)
     }
 
+    private fun savedValidity(context: Context): Long {
+        // Existing activations without this preference remain 30-day activations.
+        return prefs(context).getLong(KEY_VALIDITY, VALIDITY_MS)
+    }
+
     fun hasAccess(context: Context): Boolean {
         val p = prefs(context)
 
@@ -120,10 +141,11 @@ object ActivationManager {
         val started = p.getLong(KEY_TIME, 0L)
         if (started <= 0L) return false
 
+        val validity = savedValidity(context)
         val now = System.currentTimeMillis()
 
         return now >= started &&
-            now < started + VALIDITY_MS
+            now < started + validity
     }
 
     fun statusText(context: Context): String {
@@ -143,8 +165,9 @@ object ActivationManager {
             return "ACTIVATION: NOT ACTIVATED"
         }
 
+        val validity = savedValidity(context)
         val remaining =
-            started + VALIDITY_MS - System.currentTimeMillis()
+            started + validity - System.currentTimeMillis()
 
         if (remaining <= 0L) {
             return "ACTIVATION: EXPIRED"
@@ -154,7 +177,13 @@ object ActivationManager {
         val hours = (remaining % 86_400_000L) / 3_600_000L
         val minutes = (remaining % 3_600_000L) / 60_000L
 
-        return "ACTIVATION: ACTIVE • ${days}D ${hours}H ${minutes}M LEFT"
+        val plan = if (validity == THREE_DAY_VALIDITY_MS) {
+            "3-DAY"
+        } else {
+            "30-DAY"
+        }
+
+        return "ACTIVATION: $plan ACTIVE • ${days}D ${hours}H ${minutes}M LEFT"
     }
 
     fun requireActivation(
@@ -191,8 +220,32 @@ object ActivationManager {
                 InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
         }
 
+        val contact = TextView(activity).apply {
+            text = "BUY ACTIVATION KEY & CONTACT"
+            textSize = 14f
+            setTextColor(Color.rgb(0, 145, 220))
+            setPadding(0, 18, 0, 8)
+            setOnClickListener {
+                try {
+                    activity.startActivity(
+                        Intent(
+                            Intent.ACTION_VIEW,
+                            Uri.parse(TELEGRAM_URL)
+                        )
+                    )
+                } catch (_: Exception) {
+                    Toast.makeText(
+                        activity,
+                        "Unable to open Telegram link.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+
         container.addView(message)
         container.addView(input)
+        container.addView(contact)
 
         val dialog = AlertDialog.Builder(activity)
             .setTitle("ULTRA LOADER ACTIVATION")
@@ -222,7 +275,17 @@ object ActivationManager {
                             onGranted()
                         }
 
-                        "PHONE" -> {
+                        "PHONE_3_DAYS" -> {
+                            dialog.dismiss()
+                            Toast.makeText(
+                                activity,
+                                "ACTIVATED FOR 3 DAYS",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            onGranted()
+                        }
+
+                        "PHONE_30_DAYS" -> {
                             dialog.dismiss()
                             Toast.makeText(
                                 activity,
@@ -280,7 +343,13 @@ object ActivationManager {
             return "MASTER"
         }
 
-        if (enteredHash !in activationHashes) {
+        val isThreeDayCode =
+            enteredHash in threeDayActivationHashes
+
+        if (
+            !isThreeDayCode &&
+            enteredHash !in activationHashes
+        ) {
             return "INVALID"
         }
 
@@ -294,13 +363,24 @@ object ActivationManager {
 
         used.add(enteredHash)
 
+        val validity = if (isThreeDayCode) {
+            THREE_DAY_VALIDITY_MS
+        } else {
+            VALIDITY_MS
+        }
+
         p.edit()
             .putString(KEY_DEVICE, currentDevice)
             .putStringSet(KEY_USED, used)
             .putLong(KEY_TIME, System.currentTimeMillis())
+            .putLong(KEY_VALIDITY, validity)
             .putBoolean(KEY_MASTER, false)
             .apply()
 
-        return "PHONE"
+        return if (isThreeDayCode) {
+            "PHONE_3_DAYS"
+        } else {
+            "PHONE_30_DAYS"
+        }
     }
 }
