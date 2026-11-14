@@ -760,6 +760,11 @@ class MainActivity : Activity() {
         }
     }
 
+    // Updated automatic login:
+    // - Fills User ID and Password.
+    // - Detects native and custom Terms checkboxes.
+    // - Checks and verifies Terms before submitting.
+    // - Does not block second login if that form has no Terms checkbox.
     private fun tryAutoLogin(secondLogin: Boolean) {
         val expectedStage =
             if (secondLogin) Stage.SECOND_LOGIN else Stage.LOGIN
@@ -789,135 +794,290 @@ class MainActivity : Activity() {
                 }
               }
 
-              var u = dec('$user');
-              var p = dec('$pass');
+              var username = dec('$user');
+              var password = dec('$pass');
 
               var inputs = Array.from(
                 document.querySelectorAll('input')
               );
 
-              var pf = inputs.find(function(x) {
+              var passwordField = inputs.find(function(x) {
                 return (x.type || '').toLowerCase() === 'password';
               });
 
-              var uf = inputs.find(function(x) {
-                if (x === pf) return false;
+              var userField = inputs.find(function(x) {
+                if (x === passwordField) return false;
                 if (x.disabled || x.type === 'hidden') return false;
 
-                var n = (
+                var info = (
                   (x.name || '') + ' ' +
                   (x.id || '') + ' ' +
-                  (x.placeholder || '') +
-                  ' ' + (x.autocomplete || '')
+                  (x.placeholder || '') + ' ' +
+                  (x.autocomplete || '')
                 ).toLowerCase();
 
                 return (
-                  ['user','email','login','account'].some(
-                    k => n.includes(k)
+                  ['user','email','login','account','mobile'].some(
+                    function(k) { return info.includes(k); }
                   ) ||
-                  ['text','email'].includes(
+                  ['text','email','tel'].includes(
                     (x.type || '').toLowerCase()
                   )
                 );
               });
 
-              if (!uf || !pf) return 'FORM_NOT_FOUND';
+              if (!userField || !passwordField) {
+                return 'FORM_NOT_FOUND';
+              }
 
-              function setValue(el, value) {
-                var proto = el.tagName === 'TEXTAREA'
-                  ? HTMLTextAreaElement.prototype
-                  : HTMLInputElement.prototype;
+              function setValue(element, value) {
+                var prototype =
+                  element.tagName === 'TEXTAREA'
+                    ? HTMLTextAreaElement.prototype
+                    : HTMLInputElement.prototype;
 
-                var setter = Object.getOwnPropertyDescriptor(
-                  proto, 'value'
+                var descriptor = Object.getOwnPropertyDescriptor(
+                  prototype,
+                  'value'
                 );
 
-                if (setter && setter.set) {
-                  setter.set.call(el, value);
+                if (descriptor && descriptor.set) {
+                  descriptor.set.call(element, value);
                 } else {
-                  el.value = value;
+                  element.value = value;
                 }
 
-                el.dispatchEvent(
-                  new Event('input', {bubbles:true})
+                element.dispatchEvent(
+                  new Event('input', { bubbles: true })
                 );
 
-                el.dispatchEvent(
-                  new Event('change', {bubbles:true})
+                element.dispatchEvent(
+                  new Event('change', { bubbles: true })
                 );
               }
 
-              setValue(uf, u);
-              setValue(pf, p);
+              setValue(userField, username);
+              setValue(passwordField, password);
 
-              var checks = Array.from(
-                document.querySelectorAll('input[type=checkbox]')
-              );
+              var form = passwordField.closest('form');
 
-              var terms = checks.filter(function(c) {
-                var label = '';
-
-                if (c.id) {
-                  var associated = document.querySelector(
-                    'label[for="' + CSS.escape(c.id) + '"]'
-                  );
-                  if (associated) label += ' ' + associated.innerText;
-                }
-
-                if (c.parentElement) {
-                  label += ' ' + c.parentElement.innerText;
-                }
-
-                label += ' ' + (c.name || '') + ' ' + (c.value || '');
-
-                return /terms|conditions|agree|accept|policy/i.test(label);
-              });
-
-              if (terms.length === 0 && checks.length === 1) {
-                terms = checks;
-              }
-
-              terms.forEach(function(c) {
-                if (!c.checked) {
-                  c.click();
-                  c.dispatchEvent(
-                    new Event('change', {bubbles:true})
-                  );
-                }
-              });
-
-              var form = pf.closest('form');
-
-              if (form) {
-                var submit = form.querySelector(
-                  'button[type=submit],input[type=submit]'
-                );
-
-                if (submit) {
-                  submit.click();
-                } else if (form.requestSubmit) {
-                  form.requestSubmit();
-                } else {
-                  form.submit();
-                }
-
-                return 'SUBMITTED';
-              }
-
-              var buttons = Array.from(
+              var nativeChecks = Array.from(
                 document.querySelectorAll(
-                  'button,input[type=button],input[type=submit]'
+                  'input[type="checkbox"]:not([disabled])'
                 )
               );
 
-              var login = buttons.find(function(b) {
-                return /log.?in|sign.?in|connect|continue/i.test(
-                  (b.innerText || '') + ' ' + (b.value || '')
+              var customChecks = Array.from(
+                document.querySelectorAll(
+                  '[role="checkbox"],[aria-checked]'
+                )
+              ).filter(function(element) {
+                return !element.disabled &&
+                  element.getAttribute('aria-disabled') !== 'true';
+              });
+
+              function textOf(element) {
+                if (!element) return '';
+
+                return (
+                  (element.innerText || '') + ' ' +
+                  (element.textContent || '') + ' ' +
+                  (element.getAttribute('aria-label') || '') + ' ' +
+                  (element.getAttribute('title') || '') + ' ' +
+                  (element.getAttribute('name') || '') + ' ' +
+                  (element.getAttribute('value') || '')
+                ).toLowerCase();
+              }
+
+              function isTermsText(value) {
+                return /terms|conditions|agree|accept|privacy|policy|উভয়|সম্মত|শর্ত/i.test(
+                  value || ''
+                );
+              }
+
+              var termsControls = [];
+
+              nativeChecks.forEach(function(check) {
+                var description = textOf(check);
+
+                if (check.id) {
+                  var label = document.querySelector(
+                    'label[for="' + CSS.escape(check.id) + '"]'
+                  );
+
+                  description += ' ' + textOf(label);
+                }
+
+                description += ' ' + textOf(check.parentElement);
+
+                if (isTermsText(description)) {
+                  termsControls.push({
+                    element: check,
+                    kind: 'native'
+                  });
+                }
+              });
+
+              customChecks.forEach(function(check) {
+                var description = textOf(check);
+
+                description += ' ' + textOf(check.parentElement);
+
+                if (isTermsText(description)) {
+                  var duplicate = termsControls.some(function(item) {
+                    return item.element === check;
+                  });
+
+                  if (!duplicate) {
+                    termsControls.push({
+                      element: check,
+                      kind: 'custom'
+                    });
+                  }
+                }
+              });
+
+              // If there is only one native checkbox on the first login
+              // form, treat it as the Terms checkbox.
+              if (
+                !secondLogin &&
+                termsControls.length === 0 &&
+                nativeChecks.length === 1
+              ) {
+                termsControls.push({
+                  element: nativeChecks[0],
+                  kind: 'native'
+                });
+              }
+
+              // If the page visibly asks the user to agree to Terms,
+              // but no checkbox was detected, do not submit blindly.
+              var bodyText = document.body
+                ? (document.body.innerText || '').toLowerCase()
+                : '';
+
+              var termsVisible = isTermsText(bodyText);
+
+              if (
+                !secondLogin &&
+                termsVisible &&
+                termsControls.length === 0
+              ) {
+                return 'TERMS_CONTROL_NOT_FOUND';
+              }
+
+              function isChecked(item) {
+                if (item.kind === 'native') {
+                  return item.element.checked === true;
+                }
+
+                var value =
+                  item.element.getAttribute('aria-checked');
+
+                return value === 'true';
+              }
+
+              function clickControl(item) {
+                var element = item.element;
+
+                if (isChecked(item)) return;
+
+                if (item.kind === 'native') {
+                  var label = null;
+
+                  if (element.id) {
+                    label = document.querySelector(
+                      'label[for="' + CSS.escape(element.id) + '"]'
+                    );
+                  }
+
+                  element.click();
+
+                  if (!element.checked && label) {
+                    label.click();
+                  }
+                } else {
+                  element.click();
+                }
+              }
+
+              for (var i = 0; i < termsControls.length; i++) {
+                var item = termsControls[i];
+
+                if (!isChecked(item)) {
+                  clickControl(item);
+                }
+              }
+
+              // Verify that every detected Terms control is checked.
+              var allTermsChecked = termsControls.every(function(item) {
+                return isChecked(item);
+              });
+
+              if (!allTermsChecked) {
+                return 'CHECKBOX_NOT_CONFIRMED';
+              }
+
+              if (termsControls.length > 0) {
+                // Allow the page's checkbox event handlers to update
+                // the form state before submission.
+                termsControls.forEach(function(item) {
+                  item.element.dispatchEvent(
+                    new Event('change', { bubbles: true })
+                  );
+                });
+              }
+
+              var submitButton = null;
+
+              if (form) {
+                submitButton = form.querySelector(
+                  'button[type="submit"]:not([disabled]),' +
+                  'input[type="submit"]:not([disabled])'
+                );
+
+                if (!submitButton) {
+                  var buttons = Array.from(
+                    form.querySelectorAll(
+                      'button:not([disabled]),' +
+                      'input[type="button"]:not([disabled])'
+                    )
+                  );
+
+                  submitButton = buttons.find(function(button) {
+                    return /log.?in|sign.?in|connect|continue|submit/i.test(
+                      textOf(button)
+                    );
+                  });
+                }
+              }
+
+              if (submitButton) {
+                submitButton.click();
+                return 'SUBMITTED';
+              }
+
+              if (form && typeof form.requestSubmit === 'function') {
+                form.requestSubmit();
+                return 'SUBMITTED';
+              }
+
+              var loginButtons = Array.from(
+                document.querySelectorAll(
+                  'button:not([disabled]),' +
+                  'input[type="button"]:not([disabled]),' +
+                  'input[type="submit"]:not([disabled])'
+                )
+              );
+
+              var loginButton = loginButtons.find(function(button) {
+                return /log.?in|sign.?in|connect|continue|submit/i.test(
+                  textOf(button)
                 );
               });
 
-              if (login) {
-                login.click();
+              if (loginButton) {
+                loginButton.click();
                 return 'SUBMITTED';
               }
 
@@ -928,43 +1088,69 @@ class MainActivity : Activity() {
         webView.evaluateJavascript(script) { result ->
             if (stage != expectedStage) return@evaluateJavascript
 
-            if (result?.contains("SUBMITTED") == true) {
-                loginSubmitted = true
+            when {
+                result?.contains("SUBMITTED") == true -> {
+                    loginSubmitted = true
 
-                stage = if (secondLogin) {
-                    Stage.CHECK_SECOND_LOGIN
-                } else {
-                    Stage.CHECK_LOGIN
+                    stage = if (secondLogin) {
+                        Stage.CHECK_SECOND_LOGIN
+                    } else {
+                        Stage.CHECK_LOGIN
+                    }
+
+                    statusText(
+                        if (secondLogin) {
+                            "● SECOND LOGIN SUBMITTED - VERIFYING..."
+                        } else {
+                            "● FIRST LOGIN SUBMITTED - VERIFYING..."
+                        },
+                        cyan
+                    )
+
+                    handler.postDelayed({
+                        checkPortalLogin(secondLogin)
+                    }, 3000)
                 }
 
-                statusText(
-                    if (secondLogin) {
-                        "● SECOND LOGIN SUBMITTED - VERIFYING..."
-                    } else {
-                        "● FIRST LOGIN SUBMITTED - VERIFYING..."
-                    },
-                    cyan
-                )
+                result?.contains("CHECKBOX_NOT_CONFIRMED") == true -> {
+                    statusText("● TERMS CHECKBOX NOT VERIFIED - RETRYING...", red)
 
-                handler.postDelayed({
-                    checkPortalLogin(secondLogin)
-                }, 3000)
+                    handler.postDelayed({
+                        if (stage == expectedStage) {
+                            tryAutoLogin(secondLogin)
+                        }
+                    }, 1500)
+                }
 
-            } else if (result?.contains("FORM_NOT_FOUND") == true) {
-                statusText("● LOGIN FORM NOT FOUND", red)
+                result?.contains("TERMS_CONTROL_NOT_FOUND") == true -> {
+                    statusText("● TERMS CHECKBOX NOT FOUND", red)
 
-                handler.postDelayed({
-                    if (stage == expectedStage) {
-                        tryAutoLogin(secondLogin)
-                    }
-                }, 2500)
+                    handler.postDelayed({
+                        if (stage == expectedStage) {
+                            tryAutoLogin(secondLogin)
+                        }
+                    }, 2500)
+                }
 
-            } else {
-                handler.postDelayed({
-                    if (stage == expectedStage) {
-                        tryAutoLogin(secondLogin)
-                    }
-                }, 2000)
+                result?.contains("FORM_NOT_FOUND") == true -> {
+                    statusText("● LOGIN FORM NOT FOUND", red)
+
+                    handler.postDelayed({
+                        if (stage == expectedStage) {
+                            tryAutoLogin(secondLogin)
+                        }
+                    }, 2500)
+                }
+
+                else -> {
+                    statusText("● LOGIN BUTTON NOT FOUND - RETRYING...", red)
+
+                    handler.postDelayed({
+                        if (stage == expectedStage) {
+                            tryAutoLogin(secondLogin)
+                        }
+                    }, 2000)
+                }
             }
         }
     }
