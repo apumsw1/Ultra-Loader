@@ -1,3 +1,4 @@
+
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -15,6 +16,7 @@ const encoder = new TextEncoder();
 function base64url(bytes) {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
+
   return btoa(binary)
     .replace(/=/g, "")
     .replace(/\+/g, "-")
@@ -24,6 +26,7 @@ function base64url(bytes) {
 function decodeBase64url(value) {
   const normal = value.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normal + "=".repeat((4 - normal.length % 4) % 4);
+
   return Uint8Array.from(atob(padded), c => c.charCodeAt(0));
 }
 
@@ -61,6 +64,7 @@ async function createToken(secret) {
   );
 
   const signature = await hmacSign(payload, secret);
+
   return payload + "." + base64url(signature);
 }
 
@@ -107,7 +111,9 @@ async function isAdmin(request, env) {
   const header = request.headers.get("Authorization") || "";
   const token = header.replace(/^Bearer\s+/i, "");
 
-  return token ? verifyToken(token, env.SESSION_SECRET) : false;
+  return token
+    ? verifyToken(token, env.SESSION_SECRET)
+    : false;
 }
 
 const ADMIN_PAGE = `<!doctype html>
@@ -151,6 +157,7 @@ white-space:pre-wrap;overflow-wrap:anywhere;
 background:#081321;padding:13px;border-radius:8px
 }
 hr{border:0;border-top:1px solid #30415b;margin:18px 0}
+.message{min-height:22px;overflow-wrap:anywhere}
 </style>
 </head>
 
@@ -158,13 +165,13 @@ hr{border:0;border-top:1px solid #30415b;margin:18px 0}
 <main>
 
 <h1>ULTRA LOADER</h1>
-<p>Online License & Update Control Center</p>
+<p>Online License &amp; Update Control Center</p>
 
 <section class="panel" id="login">
 <h2>Admin Login</h2>
-<input id="password" type="password" placeholder="Admin password">
-<button id="loginBtn">Sign in</button>
-<p id="loginMsg"></p>
+<input id="password" type="password" placeholder="Admin password" autocomplete="current-password">
+<button id="loginBtn" type="button">Sign in</button>
+<p id="loginMsg" class="message"></p>
 </section>
 
 <section class="hidden" id="dashboard">
@@ -175,7 +182,7 @@ hr{border:0;border-top:1px solid #30415b;margin:18px 0}
 <label>Key Validity Type</label>
 <select id="validityType">
   <option value="duration">Duration (Days / Hours / Minutes)</option>
-  <option value="expiry">Exact Expiry Date & Time</option>
+  <option value="expiry">Exact Expiry Date &amp; Time</option>
 </select>
 
 <div id="durationFields">
@@ -190,20 +197,20 @@ hr{border:0;border-top:1px solid #30415b;margin:18px 0}
 </div>
 
 <div id="expiryFields" class="hidden">
-  <label>Expiry Date & Time</label>
+  <label>Expiry Date &amp; Time</label>
   <input id="expiryDate" type="datetime-local">
 </div>
 
-<button id="generateBtn">Generate One Key</button>
-<button class="secondary" id="refreshBtn">Refresh Keys</button>
+<button id="generateBtn" type="button">Generate One Key</button>
+<button class="secondary" id="refreshBtn" type="button">Refresh Keys</button>
 
-<p id="keyStatus"></p>
+<p id="keyStatus" class="message"></p>
 
 <div id="newKeyBox" class="hidden">
 <h3>New Activation Key</h3>
-<p class="muted">Save this key safely.</p>
+<p class="muted">Save this key safely. It will not be shown again.</p>
 <pre id="newKey"></pre>
-<button id="copyKeyBtn">Copy Key</button>
+<button id="copyKeyBtn" type="button">Copy Key</button>
 </div>
 
 <hr>
@@ -233,22 +240,27 @@ placeholder="https://github.com/OWNER/REPO/releases/download/.../app.apk">
 Force Update (users must update)
 </label>
 
-<button id="saveUpdateBtn">Save Update Settings</button>
-<button class="secondary" id="loadUpdateBtn">Load Current Settings</button>
-<p id="updateStatus"></p>
+<button id="saveUpdateBtn" type="button">Save Update Settings</button>
+<button class="secondary" id="loadUpdateBtn" type="button">Load Current Settings</button>
+<p id="updateStatus" class="message"></p>
 
 <hr>
 <h3>Current Published Update</h3>
 <div id="currentUpdate" class="muted">Loading...</div>
 </section>
 
-<button class="secondary" id="logoutBtn">Logout</button>
+<button class="secondary" id="logoutBtn" type="button">Logout</button>
 </section>
 
 </main>
 
 <script>
+"use strict";
+
+const NL = String.fromCharCode(10);
+
 let token = sessionStorage.getItem("ul_token") || "";
+
 const el = id => document.getElementById(id);
 
 function escapeHTML(value) {
@@ -286,6 +298,24 @@ function remainingTime(value) {
     minutes + " minutes";
 }
 
+async function readResponse(response) {
+  const text = await response.text();
+
+  let data;
+
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw Error("Server returned an invalid response. HTTP " + response.status);
+  }
+
+  if (!response.ok) {
+    throw Error(data.error || "Request failed. HTTP " + response.status);
+  }
+
+  return data;
+}
+
 async function api(path, method = "GET", body) {
   const response = await fetch("/api" + path, {
     method,
@@ -293,16 +323,19 @@ async function api(path, method = "GET", body) {
       "Content-Type":"application/json",
       "Authorization":"Bearer " + token
     },
-    body: body ? JSON.stringify(body) : undefined
+    body: body !== undefined ? JSON.stringify(body) : undefined
   });
 
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw Error(data.error || "Request failed");
+  if (response.status === 401) {
+    sessionStorage.removeItem("ul_token");
+    token = "";
+    el("dashboard").classList.add("hidden");
+    el("login").classList.remove("hidden");
+    el("loginMsg").textContent = "Session expired. Please sign in again.";
+    throw Error("Admin session expired.");
   }
 
-  return data;
+  return readResponse(response);
 }
 
 function showDashboard() {
@@ -311,49 +344,71 @@ function showDashboard() {
 }
 
 async function login() {
+  const button = el("loginBtn");
+  const password = el("password").value;
+
+  el("loginMsg").textContent = "";
+
+  if (!password) {
+    el("loginMsg").textContent = "Please enter your admin password.";
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = "Signing in...";
+
   try {
     const response = await fetch("/api/admin/login", {
       method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({
-        password:el("password").value
-      })
+      body:JSON.stringify({ password })
     });
 
-    const data = await response.json();
+    const data = await readResponse(response);
 
-    if (!response.ok) {
-      throw Error(data.error || "Login failed");
+    if (!data.token) {
+      throw Error("Server did not return an admin token.");
     }
 
     token = data.token;
     sessionStorage.setItem("ul_token", token);
 
+    el("password").value = "";
+    el("loginMsg").textContent = "Login successful.";
+
     showDashboard();
 
-    await loadKeys();
-    await loadUpdate();
+    await Promise.allSettled([
+      loadKeys(),
+      loadUpdate()
+    ]);
 
   } catch(error) {
-    el("loginMsg").textContent = error.message;
+    el("loginMsg").textContent =
+      error.message || "Login failed. Please try again.";
+
+  } finally {
+    button.disabled = false;
+    button.textContent = "Sign in";
   }
 }
 
 async function loadKeys() {
+  el("keyStatus").textContent = "Loading keys...";
+
   try {
     const data = await api("/admin/keys");
+    const keys = Array.isArray(data.keys) ? data.keys : [];
 
-    el("keyStatus").textContent =
-      "Total keys: " + data.keys.length;
-
+    el("keyStatus").textContent = "Total keys: " + keys.length;
     el("keys").innerHTML = "";
 
-    if (!data.keys.length) {
+    if (!keys.length) {
       el("keys").textContent = "No keys created yet.";
       return;
     }
 
-    data.keys.forEach(k => {
+    keys.forEach(k => {
       const item = document.createElement("div");
       item.className = "key";
 
@@ -476,11 +531,10 @@ async function generate() {
     }
 
     payload = { expiresAt: expiry.toISOString() };
-
     description = "Expires: " + expiry.toLocaleString();
   }
 
-  if (!confirm("Generate one key?\nValidity: " + description)) {
+  if (!confirm("Generate one key?" + NL + "Validity: " + description)) {
     return;
   }
 
@@ -497,8 +551,8 @@ async function generate() {
 
     el("newKey").textContent =
       data.key +
-      "\nValidity: " + description +
-      "\nExpires: " + formatDate(data.expiresAt);
+      NL + "Validity: " + description +
+      NL + "Expires: " + formatDate(data.expiresAt);
 
     el("keyStatus").textContent = "Key created successfully.";
 
@@ -523,7 +577,7 @@ async function changeKeyStatus(key, revoked) {
     await api(
       "/admin/keys/status",
       "POST",
-      {key, revoked}
+      { key, revoked }
     );
 
     el("keyStatus").textContent =
@@ -537,6 +591,8 @@ async function changeKeyStatus(key, revoked) {
 }
 
 async function loadUpdate() {
+  el("updateStatus").textContent = "Loading settings...";
+
   try {
     const data = await api("/admin/update");
 
@@ -549,11 +605,11 @@ async function loadUpdate() {
     el("currentUpdate").textContent =
       "Version: " + (data.versionName || "Not published") +
       " (Code " + (data.versionCode || 0) + ")" +
-      "\nForce Update: " +
+      NL + "Force Update: " +
       (data.forceUpdate ? "ON" : "OFF") +
-      "\nDownload: " +
+      NL + "Download: " +
       (data.downloadUrl || "Not set") +
-      "\nMessage: " +
+      NL + "Message: " +
       (data.message || "None");
 
     el("updateStatus").textContent = "Settings loaded.";
@@ -610,7 +666,6 @@ async function saveUpdate() {
   }
 }
 
-// Validity mode selector
 el("validityType").addEventListener("change", () => {
   const durationMode =
     el("validityType").value === "duration";
@@ -627,6 +682,11 @@ el("validityType").addEventListener("change", () => {
 });
 
 el("loginBtn").addEventListener("click", login);
+
+el("password").addEventListener("keydown", event => {
+  if (event.key === "Enter") login();
+});
+
 el("generateBtn").addEventListener("click", generate);
 el("refreshBtn").addEventListener("click", loadKeys);
 el("saveUpdateBtn").addEventListener("click", saveUpdate);
@@ -635,7 +695,7 @@ el("loadUpdateBtn").addEventListener("click", loadUpdate);
 el("copyKeyBtn").addEventListener("click", async () => {
   try {
     await navigator.clipboard.writeText(
-      el("newKey").textContent.split("\n")[0]
+      el("newKey").textContent.split(NL)[0]
     );
 
     el("keyStatus").textContent = "Key copied.";
@@ -664,18 +724,54 @@ el("logoutBtn").addEventListener("click", () => {
 
 if (token) {
   showDashboard();
-  loadKeys();
-  loadUpdate();
+
+  Promise.allSettled([
+    loadKeys(),
+    loadUpdate()
+  ]);
 }
 </script>
 
 </body>
 </html>`;
 
+async function initializeDatabase(db) {
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS activation_keys (
+      key_hash TEXT PRIMARY KEY,
+      key_hint TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      revoked INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    )
+  `).run();
+
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS devices (
+      device_id TEXT PRIMARY KEY,
+      key_hash TEXT NOT NULL,
+      last_seen TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `).run();
+
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS app_updates (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      version_code INTEGER NOT NULL DEFAULT 1,
+      version_name TEXT NOT NULL DEFAULT '1.0',
+      download_url TEXT NOT NULL DEFAULT '',
+      message TEXT NOT NULL DEFAULT '',
+      force_update INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    )
+  `).run();
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
-      return new Response(null, {headers:CORS});
+      return new Response(null, { headers: CORS });
     }
 
     const url = new URL(request.url);
@@ -684,67 +780,65 @@ export default {
     if (path === "/" && request.method === "GET") {
       return new Response(ADMIN_PAGE, {
         headers: {
-          "Content-Type":"text/html;charset=UTF-8",
+          "Content-Type": "text/html;charset=UTF-8",
           ...CORS
         }
       });
     }
 
     if (!path.startsWith("/api/")) {
-      return json({error:"Not found"}, 404);
-    }
-
-    if (!env.ULTRA_LOADER) {
-      return json({
-        error:"D1 database binding ULTRA_LOADER is missing"
-      }, 503);
+      return json({ error: "Not found" }, 404);
     }
 
     try {
-      // Create update settings table automatically.
-      await env.ULTRA_LOADER.prepare(`
-        CREATE TABLE IF NOT EXISTS app_updates (
-          id INTEGER PRIMARY KEY CHECK (id = 1),
-          version_code INTEGER NOT NULL DEFAULT 1,
-          version_name TEXT NOT NULL DEFAULT '1.0',
-          download_url TEXT NOT NULL DEFAULT '',
-          message TEXT NOT NULL DEFAULT '',
-          force_update INTEGER NOT NULL DEFAULT 0,
-          updated_at TEXT NOT NULL
-        )
-      `).run();
-
-      // Health Check
+      // Health Check does not require D1.
       if (path === "/api/health" && request.method === "GET") {
         return json({
-          ok:true,
-          service:"ULTRA LOADER API"
+          ok: true,
+          service: "ULTRA LOADER API"
         });
       }
 
-      // Admin Login
+      // Admin Login does not require D1.
       if (path === "/api/admin/login" && request.method === "POST") {
         if (!env.ADMIN_PASSWORD || !env.SESSION_SECRET) {
           return json({
-            error:"Admin secrets are not configured"
+            error: "Admin secrets are not configured"
           }, 503);
         }
 
-        const body = await request.json();
+        let body;
+
+        try {
+          body = await request.json();
+        } catch {
+          return json({ error: "Invalid JSON request" }, 400);
+        }
 
         if (
           typeof body.password !== "string" ||
+          body.password.length === 0 ||
           body.password !== env.ADMIN_PASSWORD
         ) {
           return json({
-            error:"Incorrect password"
+            error: "Incorrect password"
           }, 401);
         }
 
         return json({
-          token:await createToken(env.SESSION_SECRET)
+          ok: true,
+          token: await createToken(env.SESSION_SECRET)
         });
       }
+
+      // All remaining API routes require D1.
+      if (!env.ULTRA_LOADER) {
+        return json({
+          error: "D1 database binding ULTRA_LOADER is missing"
+        }, 503);
+      }
+
+      await initializeDatabase(env.ULTRA_LOADER);
 
       // Public App Update Check
       if (path === "/api/update" && request.method === "GET") {
@@ -757,7 +851,7 @@ export default {
           currentVersion < 0
         ) {
           return json({
-            error:"Invalid versionCode"
+            error: "Invalid versionCode"
           }, 400);
         }
 
@@ -767,9 +861,9 @@ export default {
 
         if (!update) {
           return json({
-            ok:true,
-            updateAvailable:false,
-            message:"No update published"
+            ok: true,
+            updateAvailable: false,
+            message: "No update published"
           });
         }
 
@@ -778,30 +872,39 @@ export default {
           !!update.download_url;
 
         return json({
-          ok:true,
-          updateAvailable:available,
-          versionCode:update.version_code,
-          versionName:update.version_name,
-          downloadUrl:update.download_url,
-          message:update.message,
-          forceUpdate:available && !!update.force_update,
-          updatedAt:update.updated_at
+          ok: true,
+          updateAvailable: available,
+          versionCode: update.version_code,
+          versionName: update.version_name,
+          downloadUrl: update.download_url,
+          message: update.message,
+          forceUpdate: available && !!update.force_update,
+          updatedAt: update.updated_at
         });
       }
 
       // Public Activation Verification
       if (path === "/api/activate" && request.method === "POST") {
-        const body = await request.json();
+        let body;
+
+        try {
+          body = await request.json();
+        } catch {
+          return json({
+            ok: false,
+            error: "Invalid JSON request"
+          }, 400);
+        }
 
         const activationKey = String(body.key || "").trim();
         const deviceId = String(body.deviceId || "")
           .trim()
-          .slice(0,160);
+          .slice(0, 160);
 
         if (!activationKey || !deviceId) {
           return json({
-            ok:false,
-            error:"Activation key and deviceId are required"
+            ok: false,
+            error: "Activation key and deviceId are required"
           }, 400);
         }
 
@@ -822,8 +925,8 @@ export default {
 
           if (!record || record.revoked) {
             return json({
-              ok:false,
-              error:"Invalid or revoked activation key"
+              ok: false,
+              error: "Invalid or revoked activation key"
             }, 403);
           }
 
@@ -832,8 +935,8 @@ export default {
             Date.parse(record.expires_at) <= Date.now()
           ) {
             return json({
-              ok:false,
-              error:"Activation key expired"
+              ok: false,
+              error: "Activation key expired"
             }, 403);
           }
 
@@ -850,17 +953,17 @@ export default {
         ).run();
 
         return json({
-          ok:true,
-          active:true,
+          ok: true,
+          active: true,
           expiresAt,
-          licenseType:isMaster ? "MASTER" : "STANDARD"
+          licenseType: isMaster ? "MASTER" : "STANDARD"
         });
       }
 
-      // Admin authentication for remaining routes
+      // Authenticate all remaining admin routes.
       if (!(await isAdmin(request, env))) {
         return json({
-          error:"Unauthorized"
+          error: "Unauthorized"
         }, 401);
       }
 
@@ -883,18 +986,18 @@ export default {
         `).all();
 
         const keys = (result.results || []).map(k => ({
-          key_hint:k.key_hint,
-          expires_at:k.expires_at,
-          created_at:k.created_at,
-          activated_at:k.activated_at,
-          status:k.revoked
+          key_hint: k.key_hint,
+          expires_at: k.expires_at,
+          created_at: k.created_at,
+          activated_at: k.activated_at,
+          status: k.revoked
             ? "REVOKED"
             : Date.parse(k.expires_at) > Date.now()
               ? "ACTIVE"
               : "EXPIRED"
         }));
 
-        return json({keys});
+        return json({ keys });
       }
 
       // Generate One Activation Key
@@ -918,7 +1021,7 @@ export default {
             durationMinutes > 3650 * 1440
           ) {
             return json({
-              error:"Validity must be between 1 minute and 3650 days"
+              error: "Validity must be between 1 minute and 3650 days"
             }, 400);
           }
 
@@ -935,7 +1038,7 @@ export default {
             expiryTime > now + 3650 * 86400000
           ) {
             return json({
-              error:"Expiry must be a future date within 3650 days"
+              error: "Expiry must be a future date within 3650 days"
             }, 400);
           }
 
@@ -943,7 +1046,7 @@ export default {
 
         } else {
           return json({
-            error:"Provide durationMinutes or expiresAt"
+            error: "Provide durationMinutes or expiresAt"
           }, 400);
         }
 
@@ -960,7 +1063,7 @@ export default {
         ).run();
 
         return json({
-          created:1,
+          created: 1,
           key,
           expiresAt
         });
@@ -976,7 +1079,7 @@ export default {
 
         if (!key || typeof body.revoked !== "boolean") {
           return json({
-            error:"Key and revoked boolean are required"
+            error: "Key and revoked boolean are required"
           }, 400);
         }
 
@@ -991,13 +1094,13 @@ export default {
 
         if (!result.meta || result.meta.changes < 1) {
           return json({
-            error:"Activation key not found"
+            error: "Activation key not found"
           }, 404);
         }
 
         return json({
-          ok:true,
-          revoked:body.revoked
+          ok: true,
+          revoked: body.revoked
         });
       }
 
@@ -1011,12 +1114,12 @@ export default {
         ).first();
 
         return json({
-          versionCode:update?.version_code || 1,
-          versionName:update?.version_name || "1.0",
-          downloadUrl:update?.download_url || "",
-          message:update?.message || "",
-          forceUpdate:!!update?.force_update,
-          updatedAt:update?.updated_at || null
+          versionCode: update?.version_code || 1,
+          versionName: update?.version_name || "1.0",
+          downloadUrl: update?.download_url || "",
+          message: update?.message || "",
+          forceUpdate: !!update?.force_update,
+          updatedAt: update?.updated_at || null
         });
       }
 
@@ -1032,7 +1135,7 @@ export default {
         const downloadUrl = String(body.downloadUrl || "").trim();
         const message = String(body.message || "")
           .trim()
-          .slice(0,2000);
+          .slice(0, 2000);
 
         const forceUpdate = body.forceUpdate === true;
 
@@ -1041,13 +1144,13 @@ export default {
           versionCode < 1
         ) {
           return json({
-            error:"Version Code must be a positive integer"
+            error: "Version Code must be a positive integer"
           }, 400);
         }
 
         if (!versionName || versionName.length > 50) {
           return json({
-            error:"Enter a valid Version Name"
+            error: "Enter a valid Version Name"
           }, 400);
         }
 
@@ -1057,7 +1160,7 @@ export default {
           parsedUrl = new URL(downloadUrl);
         } catch {
           return json({
-            error:"Invalid APK download URL"
+            error: "Invalid APK download URL"
           }, 400);
         }
 
@@ -1068,7 +1171,7 @@ export default {
           !parsedUrl.pathname.toLowerCase().endsWith(".apk")
         ) {
           return json({
-            error:"Use a direct HTTPS GitHub Releases APK asset URL ending in .apk"
+            error: "Use a direct HTTPS GitHub Releases APK asset URL ending in .apk"
           }, 400);
         }
 
@@ -1095,8 +1198,8 @@ export default {
         ).run();
 
         return json({
-          ok:true,
-          message:"App update settings saved",
+          ok: true,
+          message: "App update settings saved",
           versionCode,
           versionName,
           forceUpdate
@@ -1104,13 +1207,13 @@ export default {
       }
 
       return json({
-        error:"Not found"
+        error: "Not found"
       }, 404);
 
     } catch(error) {
       return json({
-        error:"Server error",
-        detail:String(error.message || error)
+        error: "Server error",
+        detail: String(error.message || error)
       }, 500);
     }
   }
