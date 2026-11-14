@@ -12,10 +12,13 @@ import android.graphics.drawable.GradientDrawable
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.TrafficStats
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -37,6 +40,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
+import java.util.Locale
 import java.util.concurrent.Executors
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -59,6 +63,9 @@ class MainActivity : Activity() {
 
         private const val ACTION_OPEN_PORTAL =
             "com.apumsw1.ultraloader.OPEN_PORTAL"
+
+        private const val TELEGRAM_URL =
+            "https://t.me/ultraloader"
     }
 
     private enum class Stage {
@@ -89,6 +96,21 @@ class MainActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var webTitle: TextView
 
+    // New data usage and second-login timer views.
+    private lateinit var dataUsageStatus: TextView
+    private lateinit var secondLoginTimerStatus: TextView
+    private lateinit var secondLoginStageStatus: TextView
+
+    // Whole-device network traffic baseline.
+    private var dataBaselineRx = TrafficStats.UNSUPPORTED.toLong()
+    private var dataBaselineTx = TrafficStats.UNSUPPORTED.toLong()
+    private var dataUsageSupported = false
+
+    // Second-login stopwatch.
+    private var secondLoginTimerStartedAt = 0L
+    private var secondLoginElapsedSeconds = 0L
+    private var secondLoginTimerRunning = false
+
     private var stage = Stage.IDLE
     private var vpnOpened = false
     private var loginSubmitted = false
@@ -107,6 +129,34 @@ class MainActivity : Activity() {
     private var logoutSearchRunning = false
     private var loginActionSearchRunning = false
     private var secondFormCheckRunning = false
+
+    // Keep whole-phone data usage updating while the app is alive,
+    // including when the user switches to Thunder VPN.
+    private val dataUsageUpdater = object : Runnable {
+        override fun run() {
+            if (!appInitialized || isFinishing || isDestroyed) return
+
+            updateDeviceDataUsage()
+            handler.postDelayed(this, 1000)
+        }
+    }
+
+    // Stopwatch updates independently from the main status text.
+    private val secondLoginTimerUpdater = object : Runnable {
+        override fun run() {
+            if (!secondLoginTimerRunning) return
+            if (!::secondLoginTimerStatus.isInitialized) return
+
+            secondLoginElapsedSeconds =
+                (SystemClock.elapsedRealtime() -
+                    secondLoginTimerStartedAt) / 1000L
+
+            secondLoginTimerStatus.text =
+                "⏱ SECOND LOGIN SEARCH: ${secondLoginElapsedSeconds}s"
+
+            handler.postDelayed(this, 1000)
+        }
+    }
 
     private val backgroundPulse = object : Runnable {
         override fun run() {
@@ -142,7 +192,6 @@ class MainActivity : Activity() {
         window.statusBarColor = Color.rgb(3, 8, 20)
         window.navigationBarColor = Color.rgb(3, 8, 20)
 
-        // Activation is required before opening the application.
         ActivationManager.requireActivation(this) {
             initializeApplication()
         }
@@ -160,8 +209,18 @@ class MainActivity : Activity() {
 
         appInitialized = true
 
+        // Capture whole-device traffic counters at app session start.
+        dataBaselineRx = TrafficStats.getTotalRxBytes()
+        dataBaselineTx = TrafficStats.getTotalTxBytes()
+
+        dataUsageSupported =
+            dataBaselineRx != TrafficStats.UNSUPPORTED.toLong() &&
+                dataBaselineTx != TrafficStats.UNSUPPORTED.toLong()
+
         createScreen()
+
         handler.post(backgroundPulse)
+        handler.post(dataUsageUpdater)
 
         requestNotificationPermission()
         startMonitorService()
@@ -174,6 +233,7 @@ class MainActivity : Activity() {
 
         updateInternetStatus()
         updateActivationStatus()
+        updateDeviceDataUsage()
     }
 
     private fun blendColor(a: Int, b: Int, f: Float): Int {
@@ -411,6 +471,84 @@ class MainActivity : Activity() {
 
         content.addView(footer, matchWrap())
 
+        // Whole-phone data usage panel below the existing footer.
+        val dataPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(12, 12, 12, 12)
+            background = rounded(panel, cyan, 1)
+        }
+
+        val dataHeading = TextView(this).apply {
+            text = "📊 WHOLE PHONE DATA USAGE"
+            textSize = 14f
+            gravity = Gravity.CENTER
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(cyan)
+            setPadding(4, 4, 4, 6)
+        }
+
+        val dataSubheading = TextView(this).apply {
+            text = "ALL APPS • COUNTING SINCE ULTRA LOADER STARTED"
+            textSize = 9f
+            gravity = Gravity.CENTER
+            setTextColor(Color.LTGRAY)
+            setPadding(2, 2, 2, 8)
+        }
+
+        dataUsageStatus = TextView(this).apply {
+            text = "DOWNLOAD: 0 B\nUPLOAD: 0 B\nTOTAL: 0 B"
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setTextColor(green)
+            typeface = Typeface.DEFAULT_BOLD
+            setLineSpacing(5f, 1f)
+            setPadding(8, 8, 8, 10)
+        }
+
+        val contactLink = TextView(this).apply {
+            text = "✉  CONTACT & BUY ACTIVATION KEY"
+            textSize = 13f
+            gravity = Gravity.CENTER
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(cyan)
+            setPadding(8, 12, 8, 8)
+            isClickable = true
+            isFocusable = true
+
+            setOnClickListener {
+                openTelegramContact()
+            }
+        }
+
+        secondLoginTimerStatus = TextView(this).apply {
+            text = "⏱ SECOND LOGIN TIMER: NOT STARTED"
+            textSize = 12f
+            gravity = Gravity.CENTER
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(cyan)
+            setPadding(8, 12, 8, 5)
+        }
+
+        secondLoginStageStatus = TextView(this).apply {
+            text = "LOGIN STAGE: WAITING"
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setTextColor(Color.LTGRAY)
+            setPadding(8, 5, 8, 5)
+        }
+
+        dataPanel.addView(dataHeading, matchWrap())
+        dataPanel.addView(dataSubheading, matchWrap())
+        dataPanel.addView(dataUsageStatus, matchWrap())
+        dataPanel.addView(contactLink, matchWrap())
+        dataPanel.addView(secondLoginTimerStatus, matchWrap())
+        dataPanel.addView(secondLoginStageStatus, matchWrap())
+
+        val dataPanelParams = matchWrap()
+        dataPanelParams.setMargins(0, 8, 0, 12)
+        content.addView(dataPanel, dataPanelParams)
+
         root.addView(
             scrollPage,
             LinearLayout.LayoutParams(
@@ -426,6 +564,157 @@ class MainActivity : Activity() {
             userInput.setText(it.first)
             passwordInput.setText(it.second)
         }
+    }
+
+    private fun openTelegramContact() {
+        try {
+            startActivity(
+                Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse(TELEGRAM_URL)
+                )
+            )
+        } catch (_: Exception) {
+            toast("Unable to open Telegram link")
+        }
+    }
+
+    private fun formatDataSize(bytes: Long): String {
+        if (bytes <= 0L) return "0 B"
+
+        val kb = bytes / 1024.0
+        val mb = kb / 1024.0
+        val gb = mb / 1024.0
+
+        return when {
+            gb >= 1.0 -> String.format(Locale.US, "%.2f GB", gb)
+            mb >= 1.0 -> String.format(Locale.US, "%.2f MB", mb)
+            kb >= 1.0 -> String.format(Locale.US, "%.2f KB", kb)
+            else -> "$bytes B"
+        }
+    }
+
+    private fun updateDeviceDataUsage() {
+        if (!::dataUsageStatus.isInitialized) return
+
+        if (!dataUsageSupported) {
+            dataUsageStatus.text =
+                "WHOLE PHONE DATA COUNTER NOT AVAILABLE ON THIS DEVICE"
+            dataUsageStatus.setTextColor(red)
+            return
+        }
+
+        val currentRx = TrafficStats.getTotalRxBytes()
+        val currentTx = TrafficStats.getTotalTxBytes()
+
+        if (
+            currentRx == TrafficStats.UNSUPPORTED.toLong() ||
+            currentTx == TrafficStats.UNSUPPORTED.toLong()
+        ) {
+            dataUsageStatus.text =
+                "WHOLE PHONE DATA COUNTER NOT AVAILABLE"
+            dataUsageStatus.setTextColor(red)
+            return
+        }
+
+        val download = (currentRx - dataBaselineRx).coerceAtLeast(0L)
+        val upload = (currentTx - dataBaselineTx).coerceAtLeast(0L)
+        val total = download + upload
+
+        dataUsageStatus.text =
+            "DOWNLOAD: ${formatDataSize(download)}\n" +
+            "UPLOAD: ${formatDataSize(upload)}\n" +
+            "TOTAL: ${formatDataSize(total)}"
+
+        dataUsageStatus.setTextColor(green)
+    }
+
+    private fun startSecondLoginTimer() {
+        stopSecondLoginTimer()
+
+        secondLoginTimerStartedAt = SystemClock.elapsedRealtime()
+        secondLoginElapsedSeconds = 0L
+        secondLoginTimerRunning = true
+
+        if (::secondLoginTimerStatus.isInitialized) {
+            secondLoginTimerStatus.text =
+                "⏱ SECOND LOGIN SEARCH: 0s"
+        }
+
+        if (::secondLoginStageStatus.isInitialized) {
+            secondLoginStageStatus.text =
+                "LOGIN STAGE: SEARCHING FOR SECOND LOGIN BUTTON"
+        }
+
+        handler.removeCallbacks(secondLoginTimerUpdater)
+        handler.post(secondLoginTimerUpdater)
+    }
+
+    private fun stopSecondLoginTimer() {
+        if (secondLoginTimerRunning) {
+            secondLoginElapsedSeconds =
+                (SystemClock.elapsedRealtime() -
+                    secondLoginTimerStartedAt) / 1000L
+        }
+
+        secondLoginTimerRunning = false
+        handler.removeCallbacks(secondLoginTimerUpdater)
+    }
+
+    private fun showLoginButtonFoundStatus() {
+        stopSecondLoginTimer()
+
+        val elapsed = secondLoginElapsedSeconds
+
+        if (::secondLoginTimerStatus.isInitialized) {
+            secondLoginTimerStatus.text =
+                "⏱ LOGIN BUTTON FOUND IN: ${elapsed}s"
+        }
+
+        if (::secondLoginStageStatus.isInitialized) {
+            secondLoginStageStatus.text =
+                "LOGIN BUTTON FOUND — ${elapsed}s"
+            secondLoginStageStatus.setTextColor(green)
+        }
+
+        statusText(
+            "● LOGIN BUTTON FOUND — ${elapsed}s",
+            green
+        )
+
+        // The JavaScript click has already been issued.
+        handler.postDelayed({
+            if (stage != Stage.WAIT_SECOND_LOGIN) return@postDelayed
+
+            if (::secondLoginStageStatus.isInitialized) {
+                secondLoginStageStatus.text =
+                    "CLICK STARTED — ${elapsed}s"
+                secondLoginStageStatus.setTextColor(cyan)
+            }
+
+            statusText(
+                "● CLICK STARTED — ${elapsed}s",
+                cyan
+            )
+
+            handler.postDelayed({
+                if (stage != Stage.WAIT_SECOND_LOGIN) return@postDelayed
+
+                if (::secondLoginStageStatus.isInitialized) {
+                    secondLoginStageStatus.text =
+                        "WAITING FOR LOGIN FORM"
+                    secondLoginStageStatus.setTextColor(cyan)
+                }
+
+                statusText(
+                    "● WAITING FOR LOGIN FORM",
+                    cyan
+                )
+
+                checkSecondLoginForm()
+            }, 1000)
+
+        }, 400)
     }
 
     private fun checkActivationBeforeAction(): Boolean {
@@ -665,7 +954,20 @@ class MainActivity : Activity() {
         loginSubmitted = false
         vpnOpened = false
 
-        // Reset all search counters and running flags for a new run.
+        stopSecondLoginTimer()
+        secondLoginElapsedSeconds = 0L
+
+        if (::secondLoginTimerStatus.isInitialized) {
+            secondLoginTimerStatus.text =
+                "⏱ SECOND LOGIN TIMER: NOT STARTED"
+        }
+
+        if (::secondLoginStageStatus.isInitialized) {
+            secondLoginStageStatus.text =
+                "LOGIN STAGE: WAITING"
+            secondLoginStageStatus.setTextColor(Color.LTGRAY)
+        }
+
         logoutSearchAttempts = 0
         loginActionSearchAttempts = 0
         secondLoginButtonFound = false
@@ -1010,7 +1312,6 @@ class MainActivity : Activity() {
     }
 
     private fun checkVpnStatus() {
-        // Keep the existing real Android VPN status detection.
         if (isVpnConnected()) {
             statusText(
                 "● VPN CONNECTION DETECTED",
@@ -1020,8 +1321,6 @@ class MainActivity : Activity() {
             if (stage == Stage.WAIT_VPN) {
                 stage = Stage.LOGOUT
 
-                // Wait 5 seconds after VPN connection is detected.
-                // Logout searching begins only after this delay.
                 logoutSearchAttempts = 0
                 logoutSearchRunning = false
 
@@ -1061,8 +1360,6 @@ class MainActivity : Activity() {
             .show()
     }
 
-    // Search for the portal logout button up to 10 times.
-    // Each retry is separated by 3 seconds.
     private fun clickPortalLogout() {
         if (stage != Stage.LOGOUT) return
         if (logoutSearchRunning) return
@@ -1109,7 +1406,9 @@ class MainActivity : Activity() {
             if (result?.contains("LOGOUT_CLICKED") == true) {
                 statusText("● LOGOUT CLICKED", green)
 
-                // Begin searching for the second login action.
+                // Start stopwatch after the first portal logout succeeds.
+                startSecondLoginTimer()
+
                 handler.postDelayed({
                     clickPortalLoginAgent()
                 }, 2500)
@@ -1129,13 +1428,19 @@ class MainActivity : Activity() {
         }
     }
 
-    // Initial search: maximum 60 attempts, one attempt every 2 seconds.
-    // Once found, the next phase repeatedly clicks it until the form appears.
     private fun clickPortalLoginAgent() {
         if (stage != Stage.LOGOUT) return
         if (loginActionSearchRunning) return
 
         if (loginActionSearchAttempts >= 60) {
+            stopSecondLoginTimer()
+
+            if (::secondLoginStageStatus.isInitialized) {
+                secondLoginStageStatus.text =
+                    "SECOND LOGIN BUTTON NOT FOUND"
+                secondLoginStageStatus.setTextColor(red)
+            }
+
             statusText(
                 "● PORTAL LOGIN ACTION NOT FOUND (60 ATTEMPTS)",
                 red
@@ -1172,14 +1477,7 @@ class MainActivity : Activity() {
                 secondLoginButtonFound = true
                 stage = Stage.WAIT_SECOND_LOGIN
 
-                statusText(
-                    "● SECOND LOGIN BUTTON FOUND — CHECKING FORM...",
-                    green
-                )
-
-                handler.postDelayed({
-                    checkSecondLoginForm()
-                }, 2000)
+                showLoginButtonFoundStatus()
 
             } else {
                 if (loginActionSearchAttempts < 60) {
@@ -1187,6 +1485,14 @@ class MainActivity : Activity() {
                         clickPortalLoginAgent()
                     }, 2000)
                 } else {
+                    stopSecondLoginTimer()
+
+                    if (::secondLoginStageStatus.isInitialized) {
+                        secondLoginStageStatus.text =
+                            "SECOND LOGIN BUTTON NOT FOUND"
+                        secondLoginStageStatus.setTextColor(red)
+                    }
+
                     statusText(
                         "● PORTAL LOGIN ACTION NOT FOUND (60 ATTEMPTS)",
                         red
@@ -1196,11 +1502,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // After the second login button is first found:
-    // 1. Check whether the second login form has appeared.
-    // 2. If not, search for and click the login button again.
-    // 3. Repeat every 2 seconds without a limit.
-    // 4. Stop immediately when the username/password form appears.
     private fun checkSecondLoginForm() {
         if (stage != Stage.WAIT_SECOND_LOGIN) return
         if (!secondLoginButtonFound) return
@@ -1223,24 +1524,26 @@ class MainActivity : Activity() {
             }
 
             if (result?.contains("SECOND_FORM_READY") == true) {
-                // The second login form has appeared.
-                // Stop all portal automation at this point.
                 stage = Stage.FINISHED
                 loginSubmitted = true
                 secondFormCheckRunning = false
+
+                stopSecondLoginTimer()
+
+                if (::secondLoginStageStatus.isInitialized) {
+                    secondLoginStageStatus.text =
+                        "LOGIN FORM READY — TIMER STOPPED"
+                    secondLoginStageStatus.setTextColor(green)
+                }
 
                 statusText(
                     "● FINAL LOGIN PAGE READY — AUTOMATION STOPPED",
                     green
                 )
 
-                // Open the existing Live IP Dashboard.
-                // Its existing VPN and validated-internet checks remain active.
                 loadIpDashboard()
 
             } else {
-                // Form has not appeared yet. Click the second login action
-                // again if it is currently present.
                 val loginButtonScript = """
                     (function(){
                       var a=Array.from(document.querySelectorAll('a,button,input[type=button],input[type=submit]'));
@@ -1261,19 +1564,29 @@ class MainActivity : Activity() {
                     }
 
                     if (clickResult?.contains("LOGIN_AGENT_CLICKED") == true) {
+                        if (::secondLoginStageStatus.isInitialized) {
+                            secondLoginStageStatus.text =
+                                "WAITING FOR LOGIN FORM — LOGIN BUTTON CLICKED"
+                            secondLoginStageStatus.setTextColor(cyan)
+                        }
+
                         statusText(
                             "● SECOND LOGIN BUTTON CLICKED — WAITING FOR FORM",
                             cyan
                         )
                     } else {
+                        if (::secondLoginStageStatus.isInitialized) {
+                            secondLoginStageStatus.text =
+                                "WAITING FOR LOGIN FORM"
+                            secondLoginStageStatus.setTextColor(cyan)
+                        }
+
                         statusText(
                             "● WAITING FOR SECOND LOGIN FORM...",
                             cyan
                         )
                     }
 
-                    // Continue checking and clicking indefinitely until
-                    // the second login form is detected.
                     handler.postDelayed({
                         checkSecondLoginForm()
                     }, 2000)
@@ -1681,6 +1994,7 @@ class MainActivity : Activity() {
 
         updateActivationStatus()
         updateInternetStatus()
+        updateDeviceDataUsage()
 
         if (!ActivationManager.hasAccess(this)) {
             statusText(
@@ -1703,6 +2017,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        // Stop session updates when this Activity is destroyed.
+        secondLoginTimerRunning = false
         handler.removeCallbacksAndMessages(null)
         executor.shutdownNow()
 
