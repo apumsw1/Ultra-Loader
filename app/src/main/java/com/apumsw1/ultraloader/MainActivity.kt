@@ -137,7 +137,6 @@ class MainActivity : Activity() {
         window.statusBarColor = Color.rgb(3, 8, 20)
         window.navigationBarColor = Color.rgb(3, 8, 20)
 
-        // Activation is required before opening the application.
         ActivationManager.requireActivation(this) {
             initializeApplication()
         }
@@ -660,7 +659,6 @@ class MainActivity : Activity() {
         loginSubmitted = false
         vpnOpened = false
 
-        // Reset all retry counters for a fresh run.
         logoutSearchAttempts = 0
         loginAgentSearchAttempts = 0
         secondLoginFormAttempts = 0
@@ -1011,7 +1009,6 @@ class MainActivity : Activity() {
                 stage = Stage.LOGOUT
                 logoutSearchAttempts = 0
 
-                // Wait 3 seconds after VPN connection.
                 handler.postDelayed({
                     clickPortalLogout()
                 }, 3000)
@@ -1180,7 +1177,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // Detect the next login page. Do not submit credentials a second time.
     private fun checkSecondLoginForm() {
         if (stage != Stage.WAIT_SECOND_LOGIN) return
 
@@ -1522,8 +1518,8 @@ class MainActivity : Activity() {
 
         val spec = KeyGenParameterSpec.Builder(
             KEY_ALIAS,
-            KeyGenParameterSpec.PURPOSE_ENCRYPT or
-                KeyGenParameterSpec.PURPOSE_DECRYPT
+            KeyProperties.PURPOSE_ENCRYPT or
+                KeyProperties.PURPOSE_DECRYPT
         )
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(
