@@ -1,4 +1,3 @@
-
 package com.apumsw1.ultraloader
 
 import android.app.Notification
@@ -24,7 +23,9 @@ class NetworkNotificationListener : NotificationListenerService() {
 
         const val EXTRA_PORTAL_URL = "portal_url"
 
-        private const val CHANNEL_ID = "ultra_loader_detected_portal"
+        private const val CHANNEL_ID =
+            "ultra_loader_detected_portal"
+
         private const val ALERT_ID = 7102
         private const val DUPLICATE_WINDOW = 12000L
     }
@@ -107,7 +108,9 @@ class NetworkNotificationListener : NotificationListenerService() {
                 packageName.contains("systemui")
 
             val exactConnectedPhrase =
-                normalized.contains("connected tap to view website")
+                normalized.contains(
+                    "connected tap to view website"
+                )
 
             val otherPortalPhrase = listOf(
                 "tap to view website",
@@ -135,7 +138,7 @@ class NetworkNotificationListener : NotificationListenerService() {
             val now = System.currentTimeMillis()
             val signature = "$packageName|$originalText"
 
-            // Duplicate protection is memory-only.
+            // Duplicate protection stays in memory only.
             if (
                 signature == lastSignature &&
                 now - lastNotificationTime < DUPLICATE_WINDOW
@@ -165,6 +168,7 @@ class NetworkNotificationListener : NotificationListenerService() {
             ).apply {
                 description =
                     "Alerts when a current Wi-Fi portal notification is detected"
+
                 setShowBadge(true)
             }
 
@@ -251,7 +255,7 @@ class NetworkNotificationListener : NotificationListenerService() {
         try {
             manager.notify(ALERT_ID, notification)
         } catch (_: SecurityException) {
-            // Notification permission may be disabled by the user.
+            // Notification permission may be disabled.
         }
     }
 
@@ -264,7 +268,6 @@ class NetworkNotificationListener : NotificationListenerService() {
         val candidate = regex.find(value)
             ?.value
             ?.trimEnd('.', ',', ')', ']', ';', ':')
-
             ?: return null
 
         return try {
