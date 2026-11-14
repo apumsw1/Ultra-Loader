@@ -101,7 +101,7 @@ class MainActivity : Activity() {
     private var vpnOpened = false
     private var loginSubmitted = false
 
-    // URL stays in memory only. It is never persisted.
+    // Portal URL is memory-only. Never save it in SharedPreferences.
     private var portalUrl = ""
     private var portalNetwork: Network? = null
 
@@ -147,6 +147,7 @@ class MainActivity : Activity() {
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(16, 10, 16, 8)
+
             background = GradientDrawable(
                 GradientDrawable.Orientation.TL_BR,
                 intArrayOf(
@@ -233,7 +234,6 @@ class MainActivity : Activity() {
             if (readCredentials() == null) {
                 showCredentialDialog()
             } else {
-                // This is a fresh discovery attempt, not an old saved URL.
                 startPortalProcess()
             }
         }
@@ -417,6 +417,7 @@ class MainActivity : Activity() {
         return try {
             val uri = Uri.parse(value.trim())
             val scheme = uri.scheme?.lowercase()
+
             (scheme == "http" || scheme == "https") &&
                 !uri.host.isNullOrBlank()
         } catch (_: Exception) {
@@ -613,8 +614,6 @@ class MainActivity : Activity() {
             .show()
     }
 
-    // Manual Start performs a fresh redirect probe.
-    // It never reads or writes a saved portal URL.
     private fun startPortalProcess() {
         if (!checkActivationBeforeAction()) return
 
@@ -738,7 +737,7 @@ class MainActivity : Activity() {
                 }
 
                 portalNetwork = selectedNetwork
-                portalUrl = found
+                portalUrl = found!!
 
                 try {
                     portalNetwork?.let {
@@ -761,7 +760,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // Used for both the first login and the second login.
     private fun tryAutoLogin(secondLogin: Boolean) {
         val expectedStage =
             if (secondLogin) Stage.SECOND_LOGIN else Stage.LOGIN
@@ -852,7 +850,6 @@ class MainActivity : Activity() {
               setValue(uf, u);
               setValue(pf, p);
 
-              // Accept Terms & Conditions when the page provides it.
               var checks = Array.from(
                 document.querySelectorAll('input[type=checkbox]')
               );
@@ -1325,16 +1322,21 @@ class MainActivity : Activity() {
         }
     }
 
+    // FIX: Return a non-null Boolean.
     private fun hasValidatedInternet(): Boolean {
         val cm =
             getSystemService(Context.CONNECTIVITY_SERVICE)
                 as ConnectivityManager
 
-        return cm.getNetworkCapabilities(cm.activeNetwork)
-            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-            == true
+        val capabilities =
+            cm.getNetworkCapabilities(cm.activeNetwork)
+
+        return capabilities?.hasCapability(
+            NetworkCapabilities.NET_CAPABILITY_VALIDATED
+        ) ?: false
     }
 
+    // FIX: Nullable Boolean is safely converted to Boolean.
     private fun updateInternetStatus() {
         if (!::internetStatus.isInitialized) return
 
@@ -1342,10 +1344,12 @@ class MainActivity : Activity() {
             getSystemService(Context.CONNECTIVITY_SERVICE)
                 as ConnectivityManager
 
-        val validated =
+        val capabilities =
             cm.getNetworkCapabilities(cm.activeNetwork)
-                ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-                == true
+
+        val validated = capabilities?.hasCapability(
+            NetworkCapabilities.NET_CAPABILITY_VALIDATED
+        ) ?: false
 
         if (validated) {
             internetStatus.text = "INTERNET: VERIFIED CONNECTION"
