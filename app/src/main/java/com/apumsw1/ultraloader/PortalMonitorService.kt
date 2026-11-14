@@ -17,67 +17,75 @@ import android.os.IBinder
 class PortalMonitorService : Service() {
 
     companion object {
-        private const val CHANNEL_ID = "ultra_loader_portal_process"
+        private const val CHANNEL_ID =
+            "ultra_loader_portal_process"
+
         private const val NOTIFICATION_ID = 7101
-        private const val ACTION_OPEN_PORTAL =
-            "com.apumsw1.ultraloader.OPEN_PORTAL"
-        private const val EXTRA_PORTAL_URL = "portal_url"
-        private const val PREFS = "ultra_loader_secure"
+
+        private const val ACTION_START_PORTAL =
+            "com.apumsw1.ultraloader.START_PORTAL"
     }
 
     private lateinit var cm: ConnectivityManager
     private lateinit var nm: NotificationManager
+
     private var registered = false
 
     private enum class WifiStatus {
-        CHECKING, DISCONNECTED, WIFI_AVAILABLE,
-        CAPTIVE_PORTAL, INTERNET_AVAILABLE
+        CHECKING,
+        DISCONNECTED,
+        WIFI_AVAILABLE,
+        CAPTIVE_PORTAL,
+        INTERNET_AVAILABLE
     }
 
     private var currentStatus = WifiStatus.CHECKING
 
-    private val callback = object : ConnectivityManager.NetworkCallback() {
+    private val callback =
+        object : ConnectivityManager.NetworkCallback() {
 
-        override fun onAvailable(network: Network) {
-            refresh()
-        }
-
-        override fun onCapabilitiesChanged(
-            network: Network,
-            capabilities: NetworkCapabilities
-        ) {
-            if (!capabilities.hasTransport(
-                    NetworkCapabilities.TRANSPORT_WIFI
-                )
-            ) return
-
-            val state = when {
-                capabilities.hasCapability(
-                    NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL
-                ) -> WifiStatus.CAPTIVE_PORTAL
-
-                capabilities.hasCapability(
-                    NetworkCapabilities.NET_CAPABILITY_VALIDATED
-                ) -> WifiStatus.INTERNET_AVAILABLE
-
-                else -> WifiStatus.WIFI_AVAILABLE
+            override fun onAvailable(network: Network) {
+                refresh()
             }
 
-            update(state)
-        }
+            override fun onCapabilitiesChanged(
+                network: Network,
+                capabilities: NetworkCapabilities
+            ) {
+                if (
+                    !capabilities.hasTransport(
+                        NetworkCapabilities.TRANSPORT_WIFI
+                    )
+                ) return
 
-        override fun onLost(network: Network) {
-            refresh()
+                val state = when {
+                    capabilities.hasCapability(
+                        NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL
+                    ) -> WifiStatus.CAPTIVE_PORTAL
+
+                    capabilities.hasCapability(
+                        NetworkCapabilities.NET_CAPABILITY_VALIDATED
+                    ) -> WifiStatus.INTERNET_AVAILABLE
+
+                    else -> WifiStatus.WIFI_AVAILABLE
+                }
+
+                update(state)
+            }
+
+            override fun onLost(network: Network) {
+                refresh()
+            }
         }
-    }
 
     override fun onCreate() {
         super.onCreate()
 
         cm = getSystemService(Context.CONNECTIVITY_SERVICE)
-                as ConnectivityManager
+            as ConnectivityManager
+
         nm = getSystemService(Context.NOTIFICATION_SERVICE)
-                as NotificationManager
+            as NotificationManager
 
         createChannel()
 
@@ -95,6 +103,7 @@ class PortalMonitorService : Service() {
                     .build(),
                 callback
             )
+
             registered = true
         } catch (_: Exception) {
         }
@@ -111,52 +120,55 @@ class PortalMonitorService : Service() {
             ).apply {
                 description =
                     "Wi-Fi portal login, VPN and second login process"
+
                 setShowBadge(false)
             }
+
             nm.createNotificationChannel(channel)
         }
     }
 
-    private fun savedPortalUrl(): String? {
-        return getSharedPreferences(PREFS, MODE_PRIVATE)
-            .getString("last_portal_url", null)
-            ?.takeIf {
-                it.startsWith("https://") || it.startsWith("http://")
-            }
-    }
+    private fun buildNotification(
+        state: WifiStatus
+    ): Notification {
 
-    private fun buildNotification(state: WifiStatus): Notification {
         val detail = when (state) {
             WifiStatus.CHECKING ->
-                "Checking Wi-Fi connection. Tap to open Ultra Loader."
+                "Checking Wi-Fi connection. Tap to start Ultra Loader."
 
             WifiStatus.DISCONNECTED ->
                 "Wi-Fi disconnected. Waiting for a Wi-Fi network."
 
             WifiStatus.WIFI_AVAILABLE ->
-                "Wi-Fi detected. Tap to open the portal page and start Login → VPN → Logout → Login."
+                "Wi-Fi detected. Tap to start fresh portal detection."
 
             WifiStatus.CAPTIVE_PORTAL ->
-                "Portal login may be required. Tap to open Ultra Loader and start the complete login process."
+                "Portal login may be required. Check the current network notification for its URL."
 
             WifiStatus.INTERNET_AVAILABLE ->
-                "Wi-Fi is already connected. Tap to open the saved portal page and run the same complete process."
+                "Wi-Fi is connected. Tap to start Ultra Loader."
         }
 
-        val openIntent = Intent(this, MainActivity::class.java).apply {
-            action = ACTION_OPEN_PORTAL
-            savedPortalUrl()?.let {
-                putExtra(EXTRA_PORTAL_URL, it)
-            }
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+        // No portal URL is stored or attached to this notification.
+        val openIntent = Intent(
+            this,
+            MainActivity::class.java
+        ).apply {
+            action = ACTION_START_PORTAL
+
+            flags =
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
 
-        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+        val flags =
+            PendingIntent.FLAG_UPDATE_CURRENT or
                 if (Build.VERSION.SDK_INT >= 23) {
                     PendingIntent.FLAG_IMMUTABLE
-                } else 0
+                } else {
+                    0
+                }
 
         val pending = PendingIntent.getActivity(
             this,
@@ -165,12 +177,13 @@ class PortalMonitorService : Service() {
             flags
         )
 
-        val builder = if (Build.VERSION.SDK_INT >= 26) {
-            Notification.Builder(this, CHANNEL_ID)
-        } else {
-            @Suppress("DEPRECATION")
-            Notification.Builder(this)
-        }
+        val builder =
+            if (Build.VERSION.SDK_INT >= 26) {
+                Notification.Builder(this, CHANNEL_ID)
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(this)
+            }
 
         return builder
             .setSmallIcon(android.R.drawable.stat_notify_sync)
@@ -179,13 +192,13 @@ class PortalMonitorService : Service() {
             .setStyle(
                 Notification.BigTextStyle().bigText(
                     "$detail\n\n" +
-                    "1. Open the Peplink portal page.\n" +
-                    "2. Complete the first login and Terms checkbox.\n" +
-                    "3. Open Thunder VPN and connect.\n" +
-                    "4. Return to the portal and sign out.\n" +
-                    "5. Wait for the next login page.\n" +
-                    "6. Complete the second login.\n" +
-                    "7. Verify internet connectivity."
+                        "1. Detect the current portal URL.\n" +
+                        "2. Complete the first login and Terms checkbox.\n" +
+                        "3. Open Thunder VPN and connect manually.\n" +
+                        "4. Return to the portal and sign out.\n" +
+                        "5. Wait for the next login page.\n" +
+                        "6. Complete the second login.\n" +
+                        "7. Verify internet connectivity."
                 )
             )
             .setContentIntent(pending)
@@ -199,7 +212,9 @@ class PortalMonitorService : Service() {
         try {
             val wifi = cm.allNetworks.firstOrNull {
                 cm.getNetworkCapabilities(it)
-                    ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+                    ?.hasTransport(
+                        NetworkCapabilities.TRANSPORT_WIFI
+                    ) == true
             }
 
             if (wifi == null) {
@@ -224,6 +239,7 @@ class PortalMonitorService : Service() {
             }
 
             update(state)
+
         } catch (_: Exception) {
             update(WifiStatus.CHECKING)
         }
@@ -231,8 +247,16 @@ class PortalMonitorService : Service() {
 
     private fun update(state: WifiStatus) {
         if (currentStatus == state) return
+
         currentStatus = state
-        nm.notify(NOTIFICATION_ID, buildNotification(state))
+
+        try {
+            nm.notify(
+                NOTIFICATION_ID,
+                buildNotification(state)
+            )
+        } catch (_: Exception) {
+        }
     }
 
     override fun onStartCommand(
@@ -246,10 +270,14 @@ class PortalMonitorService : Service() {
 
     override fun onDestroy() {
         try {
-            if (registered) cm.unregisterNetworkCallback(callback)
+            if (registered) {
+                cm.unregisterNetworkCallback(callback)
+            }
         } catch (_: Exception) {
         }
+
         registered = false
+
         super.onDestroy()
     }
 
