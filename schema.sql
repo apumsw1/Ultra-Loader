@@ -1,4 +1,3 @@
-
 CREATE TABLE IF NOT EXISTS activation_keys (
   key_hash TEXT PRIMARY KEY,
   key_hint TEXT NOT NULL,
