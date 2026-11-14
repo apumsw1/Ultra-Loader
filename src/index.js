@@ -108,159 +108,115 @@ const ADMIN_PAGE = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ULTRA LOADER Admin</title>
-
 <style>
 *{box-sizing:border-box}
-body{
-  margin:0;
-  background:#080e19;
-  color:#edf4ff;
-  font-family:Arial,sans-serif
-}
-main{
-  max-width:900px;
-  margin:25px auto;
-  padding:14px
-}
+body{margin:0;background:#080e19;color:#edf4ff;font-family:Arial,sans-serif}
+main{max-width:950px;margin:25px auto;padding:14px}
 h1{color:#58d9ff}
-.panel{
-  background:#121e31;
-  border:1px solid #293d5b;
-  border-radius:15px;
-  padding:18px;
-  margin:15px 0
-}
-input{
-  width:100%;
-  padding:13px;
-  border-radius:8px;
-  background:#081321;
-  color:white;
-  border:1px solid #405574;
-  margin:9px 0
-}
-button{
-  padding:11px 15px;
-  background:#0788b5;
-  color:white;
-  border:0;
-  border-radius:8px;
-  font-weight:bold;
-  margin:5px 3px;
-  cursor:pointer
-}
+.panel{background:#121e31;border:1px solid #293d5b;border-radius:15px;padding:18px;margin:15px 0}
+input,textarea{width:100%;padding:13px;border-radius:8px;background:#081321;color:white;border:1px solid #405574;margin:9px 0}
+textarea{min-height:85px;resize:vertical}
+label{display:block;margin-top:12px;color:#bcd0e8}
+button{padding:11px 15px;background:#0788b5;color:white;border:0;border-radius:8px;font-weight:bold;margin:5px 3px;cursor:pointer}
 .secondary{background:#30415b}
 .danger{background:#bd3548}
 .success{background:#16885d}
 .hidden{display:none}
-.key{
-  background:#0b1728;
-  border:1px solid #30415b;
-  border-radius:10px;
-  padding:14px;
-  margin:12px 0;
-  overflow-wrap:anywhere
-}
-.keycode{
-  color:#58d9ff;
-  font-weight:bold;
-  font-size:15px;
-  margin-bottom:8px
-}
+.key{background:#0b1728;border:1px solid #30415b;border-radius:10px;padding:14px;margin:12px 0;overflow-wrap:anywhere}
+.keycode{color:#58d9ff;font-weight:bold;font-size:15px;margin-bottom:8px}
 small,.muted{color:#a9bad0}
-.status{
-  font-weight:bold;
-  margin:8px 0
-}
-pre{
-  white-space:pre-wrap;
-  overflow-wrap:anywhere;
-  background:#081321;
-  padding:13px;
-  border-radius:8px
-}
-hr{
-  border:0;
-  border-top:1px solid #30415b;
-  margin:12px 0
-}
+.status{font-weight:bold;margin:8px 0}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#081321;padding:13px;border-radius:8px}
+hr{border:0;border-top:1px solid #30415b;margin:18px 0}
 </style>
 </head>
-
 <body>
 <main>
 
 <h1>ULTRA LOADER</h1>
-<p>Online License Control Center</p>
+<p>Online License & Update Control Center</p>
 
 <section class="panel" id="login">
-  <h2>Admin Login</h2>
-  <input id="password" type="password" placeholder="Admin password">
-  <button id="loginBtn">Sign in</button>
-  <p id="loginMsg"></p>
+<h2>Admin Login</h2>
+<input id="password" type="password" placeholder="Admin password">
+<button id="loginBtn">Sign in</button>
+<p id="loginMsg"></p>
 </section>
 
-<section class="panel hidden" id="dashboard">
+<section class="hidden" id="dashboard">
 
-  <h2>Activation Key Management</h2>
+<section class="panel">
+<h2>Activation Key Management</h2>
+<label>Validity in days</label>
+<input id="days" type="number" min="1" max="3650" value="30">
+<button id="generateBtn">Generate One Key</button>
+<button class="secondary" id="refreshBtn">Refresh Keys</button>
+<p id="keyStatus"></p>
+<div id="newKeyBox" class="hidden">
+<h3>New Activation Key</h3>
+<p class="muted">Save this key safely.</p>
+<pre id="newKey"></pre>
+<button id="copyKeyBtn">Copy Key</button>
+</div>
+<hr>
+<h3>All Activation Keys</h3>
+<div id="keys">Loading...</div>
+</section>
 
-  <p class="muted">Create one activation key with your chosen validity.</p>
+<section class="panel">
+<h2>Online App Update Management</h2>
+<p class="muted">Publish an Android APK through GitHub Releases.</p>
 
-  <label for="days">Validity in days</label>
-  <input id="days" type="number" min="1" max="3650" value="30">
+<label>Version Code</label>
+<input id="versionCode" type="number" min="1" placeholder="Example: 2">
 
-  <button id="generateBtn">Generate One Key</button>
-  <button class="secondary" id="refreshBtn">Refresh</button>
-  <button class="secondary" id="logoutBtn">Logout</button>
+<label>Version Name</label>
+<input id="versionName" type="text" placeholder="Example: 1.1">
 
-  <p id="status"></p>
+<label>GitHub Release APK Download URL</label>
+<input id="downloadUrl" type="url" placeholder="https://github.com/OWNER/REPO/releases/download/.../app.apk">
 
-  <div id="newKeyBox" class="hidden">
-    <h3>New Activation Key</h3>
-    <p class="muted">Save this key now. Copy it before leaving this page.</p>
-    <pre id="newKey"></pre>
-    <button id="copyKeyBtn">Copy Key</button>
-  </div>
+<label>Update Message</label>
+<textarea id="updateMessage" placeholder="What's new in this version?"></textarea>
 
-  <hr>
+<label>
+<input id="forceUpdate" type="checkbox" style="width:auto">
+Force Update (users must update)
+</label>
 
-  <h3>All Activation Keys</h3>
-  <div id="keys">Loading...</div>
+<button id="saveUpdateBtn">Save Update Settings</button>
+<button class="secondary" id="loadUpdateBtn">Load Current Settings</button>
+<p id="updateStatus"></p>
 
+<hr>
+<h3>Current Published Update</h3>
+<div id="currentUpdate" class="muted">Loading...</div>
+</section>
+
+<button class="secondary" id="logoutBtn">Logout</button>
 </section>
 
 </main>
 
 <script>
 let token = sessionStorage.getItem("ul_token") || "";
-
 const el = id => document.getElementById(id);
 
 function escapeHTML(value) {
   return String(value ?? "").replace(/[&<>"']/g, char => ({
-    "&":"&amp;",
-    "<":"&lt;",
-    ">":"&gt;",
-    '"':"&quot;",
-    "'":"&#39;"
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
   }[char]));
 }
 
 function formatDate(value) {
   if (!value) return "Not activated";
-
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Unknown";
-
-  return date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? "Unknown" : date.toLocaleString();
 }
 
 function remainingTime(value) {
   const difference = new Date(value).getTime() - Date.now();
-
-  if (!Number.isFinite(difference) || difference <= 0) {
-    return "Expired";
-  }
+  if (!Number.isFinite(difference) || difference <= 0) return "Expired";
 
   const days = Math.floor(difference / 86400000);
   const hours = Math.floor((difference % 86400000) / 3600000);
@@ -273,18 +229,14 @@ async function api(path, method = "GET", body) {
   const response = await fetch("/api" + path, {
     method,
     headers: {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer " + token
+      "Content-Type":"application/json",
+      "Authorization":"Bearer " + token
     },
     body: body ? JSON.stringify(body) : undefined
   });
 
   const data = await response.json();
-
-  if (!response.ok) {
-    throw Error(data.error || "Request failed");
-  }
-
+  if (!response.ok) throw Error(data.error || "Request failed");
   return data;
 }
 
@@ -295,27 +247,21 @@ function showDashboard() {
 
 async function login() {
   try {
-    const password = el("password").value;
-
     const response = await fetch("/api/admin/login", {
       method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({password})
+      body:JSON.stringify({password:el("password").value})
     });
 
     const data = await response.json();
-
-    if (!response.ok) {
-      throw Error(data.error || "Login failed");
-    }
+    if (!response.ok) throw Error(data.error || "Login failed");
 
     token = data.token;
     sessionStorage.setItem("ul_token", token);
-
-    el("loginMsg").textContent = "";
     showDashboard();
-    await loadKeys();
 
+    await loadKeys();
+    await loadUpdate();
   } catch(error) {
     el("loginMsg").textContent = error.message;
   }
@@ -323,63 +269,47 @@ async function login() {
 
 async function loadKeys() {
   try {
-    el("status").textContent = "Loading keys...";
-
     const data = await api("/admin/keys");
-
-    el("status").textContent =
-      "Total activation keys: " + data.keys.length;
-
-    const container = el("keys");
-    container.innerHTML = "";
+    el("keyStatus").textContent = "Total keys: " + data.keys.length;
+    el("keys").innerHTML = "";
 
     if (!data.keys.length) {
-      container.textContent = "No activation keys created yet.";
+      el("keys").textContent = "No keys created yet.";
       return;
     }
 
     data.keys.forEach(k => {
-      const key = document.createElement("div");
-      key.className = "key";
+      const item = document.createElement("div");
+      item.className = "key";
 
       let action = "";
 
       if (k.status === "ACTIVE") {
-        action =
-          '<button class="danger" data-action="disable" data-key="' +
+        action = '<button class="danger" data-action="disable" data-key="' +
           escapeHTML(k.key_hint) + '">Disable Key</button>';
-      } else if (
-        k.status === "REVOKED" &&
-        new Date(k.expires_at).getTime() > Date.now()
-      ) {
-        action =
-          '<button class="success" data-action="enable" data-key="' +
+      } else if (k.status === "REVOKED" &&
+          new Date(k.expires_at).getTime() > Date.now()) {
+        action = '<button class="success" data-action="enable" data-key="' +
           escapeHTML(k.key_hint) + '">Reactivate Key</button>';
       }
 
-      const statusColor =
-        k.status === "ACTIVE" ? "#45d69a" :
+      const color = k.status === "ACTIVE" ? "#45d69a" :
         k.status === "REVOKED" ? "#ff7373" : "#ffbf69";
 
-      key.innerHTML =
+      item.innerHTML =
         '<div class="keycode">' + escapeHTML(k.key_hint) + '</div>' +
-        '<div class="status" style="color:' + statusColor + '">' +
-        'Status: ' + escapeHTML(k.status) + '</div>' +
-        '<div>Remaining: ' +
-        escapeHTML(remainingTime(k.expires_at)) + '</div>' +
-        '<div>Created: ' +
-        escapeHTML(formatDate(k.created_at)) + '</div>' +
-        '<div>Activated: ' +
-        escapeHTML(formatDate(k.activated_at)) + '</div>' +
-        '<div>Expires: ' +
-        escapeHTML(formatDate(k.expires_at)) + '</div>' +
+        '<div class="status" style="color:' + color + '">Status: ' +
+        escapeHTML(k.status) + '</div>' +
+        '<div>Remaining: ' + escapeHTML(remainingTime(k.expires_at)) + '</div>' +
+        '<div>Created: ' + escapeHTML(formatDate(k.created_at)) + '</div>' +
+        '<div>Activated: ' + escapeHTML(formatDate(k.activated_at)) + '</div>' +
+        '<div>Expires: ' + escapeHTML(formatDate(k.expires_at)) + '</div>' +
         action;
 
-      container.appendChild(key);
+      el("keys").appendChild(item);
     });
-
   } catch(error) {
-    el("status").textContent = error.message;
+    el("keyStatus").textContent = error.message;
   }
 }
 
@@ -387,80 +317,116 @@ async function generate() {
   const days = Number(el("days").value);
 
   if (!Number.isInteger(days) || days < 1 || days > 3650) {
-    el("status").textContent =
-      "Enter a validity between 1 and 3650 days.";
+    el("keyStatus").textContent = "Enter 1 to 3650 days.";
     return;
   }
 
-  if (!confirm("Generate ONE activation key for " + days + " days?")) {
-    return;
-  }
+  if (!confirm("Generate one key for " + days + " days?")) return;
 
   try {
     el("generateBtn").disabled = true;
 
-    const data = await api(
-      "/admin/keys/generate",
-      "POST",
-      {days}
-    );
+    const data = await api("/admin/keys/generate", "POST", {days});
 
     el("newKeyBox").classList.remove("hidden");
     el("newKey").textContent =
-      data.key + "\\n\\nValidity: " + data.days +
+      data.key + "\\nValidity: " + data.days +
       " days\\nExpires: " + formatDate(data.expiresAt);
 
     await loadKeys();
-
   } catch(error) {
-    el("status").textContent = error.message;
+    el("keyStatus").textContent = error.message;
   } finally {
     el("generateBtn").disabled = false;
   }
 }
 
 async function changeKeyStatus(key, revoked) {
-  const action = revoked ? "disable" : "reactivate";
+  if (!confirm(revoked ? "Disable this key?" : "Reactivate this key?")) return;
 
-  if (!confirm("Are you sure you want to " + action + " this key?")) {
+  try {
+    await api("/admin/keys/status", "POST", {key, revoked});
+    el("keyStatus").textContent = revoked ? "Key disabled." : "Key reactivated.";
+    await loadKeys();
+  } catch(error) {
+    el("keyStatus").textContent = error.message;
+  }
+}
+
+async function loadUpdate() {
+  try {
+    const data = await api("/admin/update");
+
+    el("versionCode").value = data.versionCode || "";
+    el("versionName").value = data.versionName || "";
+    el("downloadUrl").value = data.downloadUrl || "";
+    el("updateMessage").value = data.message || "";
+    el("forceUpdate").checked = !!data.forceUpdate;
+
+    el("currentUpdate").textContent =
+      "Version: " + (data.versionName || "Not published") +
+      " (Code " + (data.versionCode || 0) + ")" +
+      "\\nForce Update: " + (data.forceUpdate ? "ON" : "OFF") +
+      "\\nDownload: " + (data.downloadUrl || "Not set") +
+      "\\nMessage: " + (data.message || "None");
+
+    el("updateStatus").textContent = "Settings loaded.";
+  } catch(error) {
+    el("updateStatus").textContent = error.message;
+  }
+}
+
+async function saveUpdate() {
+  const versionCode = Number(el("versionCode").value);
+  const versionName = el("versionName").value.trim();
+  const downloadUrl = el("downloadUrl").value.trim();
+  const message = el("updateMessage").value.trim();
+  const forceUpdate = el("forceUpdate").checked;
+
+  if (!Number.isInteger(versionCode) || versionCode < 1) {
+    el("updateStatus").textContent = "Enter a valid Version Code.";
+    return;
+  }
+
+  if (!versionName || !downloadUrl) {
+    el("updateStatus").textContent = "Version Name and APK URL are required.";
     return;
   }
 
   try {
-    await api("/admin/keys/status", "POST", {
-      key,
-      revoked
+    el("saveUpdateBtn").disabled = true;
+
+    const data = await api("/admin/update", "POST", {
+      versionCode,
+      versionName,
+      downloadUrl,
+      message,
+      forceUpdate
     });
 
-    el("status").textContent =
-      revoked ? "Key disabled successfully." :
-      "Key reactivated successfully.";
+    el("updateStatus").textContent =
+      data.message || "Update settings saved successfully.";
 
-    await loadKeys();
-
+    await loadUpdate();
   } catch(error) {
-    el("status").textContent = error.message;
+    el("updateStatus").textContent = error.message;
+  } finally {
+    el("saveUpdateBtn").disabled = false;
   }
 }
 
 el("loginBtn").addEventListener("click", login);
 el("generateBtn").addEventListener("click", generate);
 el("refreshBtn").addEventListener("click", loadKeys);
-
-el("logoutBtn").addEventListener("click", () => {
-  sessionStorage.removeItem("ul_token");
-  token = "";
-  location.reload();
-});
+el("saveUpdateBtn").addEventListener("click", saveUpdate);
+el("loadUpdateBtn").addEventListener("click", loadUpdate);
 
 el("copyKeyBtn").addEventListener("click", async () => {
   try {
-    await navigator.clipboard.writeText(
-      el("newKey").textContent.split("\\n")[0]
-    );
-    el("status").textContent = "Key copied.";
-  } catch(error) {
-    el("status").textContent = "Copy failed. Please copy manually.";
+    await navigator.clipboard.writeText(el("newKey").textContent.split("\\n")[0]);
+    el("keyStatus").textContent = "Key copied.";
+  } catch {
+    el("keyStatus").textContent = "Copy manually.";
   }
 });
 
@@ -468,25 +434,31 @@ el("keys").addEventListener("click", event => {
   const button = event.target.closest("button[data-action]");
   if (!button) return;
 
-  const key = button.getAttribute("data-key");
-  const action = button.getAttribute("data-action");
+  changeKeyStatus(
+    button.getAttribute("data-key"),
+    button.getAttribute("data-action") === "disable"
+  );
+});
 
-  changeKeyStatus(key, action === "disable");
+el("logoutBtn").addEventListener("click", () => {
+  sessionStorage.removeItem("ul_token");
+  token = "";
+  location.reload();
 });
 
 if (token) {
   showDashboard();
   loadKeys();
+  loadUpdate();
 }
 </script>
-
 </body>
 </html>`;
 
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
-      return new Response(null, { headers: CORS });
+      return new Response(null, {headers:CORS});
     }
 
     const url = new URL(request.url);
@@ -495,37 +467,43 @@ export default {
     if (path === "/" && request.method === "GET") {
       return new Response(ADMIN_PAGE, {
         headers: {
-          "Content-Type": "text/html;charset=UTF-8",
+          "Content-Type":"text/html;charset=UTF-8",
           ...CORS
         }
       });
     }
 
     if (!path.startsWith("/api/")) {
-      return json({ error: "Not found" }, 404);
+      return json({error:"Not found"}, 404);
     }
 
     if (!env.ULTRA_LOADER) {
-      return json({
-        error: "D1 database binding ULTRA_LOADER is missing"
-      }, 503);
+      return json({error:"D1 database binding ULTRA_LOADER is missing"}, 503);
     }
 
     try {
+      // Create update settings table automatically.
+      await env.ULTRA_LOADER.prepare(`
+        CREATE TABLE IF NOT EXISTS app_updates (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          version_code INTEGER NOT NULL DEFAULT 1,
+          version_name TEXT NOT NULL DEFAULT '1.0',
+          download_url TEXT NOT NULL DEFAULT '',
+          message TEXT NOT NULL DEFAULT '',
+          force_update INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL
+        )
+      `).run();
+
       // Health Check
       if (path === "/api/health" && request.method === "GET") {
-        return json({
-          ok: true,
-          service: "ULTRA LOADER API"
-        });
+        return json({ok:true, service:"ULTRA LOADER API"});
       }
 
       // Admin Login
       if (path === "/api/admin/login" && request.method === "POST") {
         if (!env.ADMIN_PASSWORD || !env.SESSION_SECRET) {
-          return json({
-            error: "Admin secrets are not configured"
-          }, 503);
+          return json({error:"Admin secrets are not configured"}, 503);
         }
 
         const body = await request.json();
@@ -534,13 +512,45 @@ export default {
           typeof body.password !== "string" ||
           body.password !== env.ADMIN_PASSWORD
         ) {
-          return json({
-            error: "Incorrect password"
-          }, 401);
+          return json({error:"Incorrect password"}, 401);
         }
 
+        return json({token:await createToken(env.SESSION_SECRET)});
+      }
+
+      // Public App Update Check
+      if (path === "/api/update" && request.method === "GET") {
+        const currentVersion = Number(url.searchParams.get("versionCode") || 0);
+
+        if (!Number.isInteger(currentVersion) || currentVersion < 0) {
+          return json({error:"Invalid versionCode"}, 400);
+        }
+
+        const update = await env.ULTRA_LOADER.prepare(
+          "SELECT version_code,version_name,download_url,message,force_update,updated_at FROM app_updates WHERE id=1"
+        ).first();
+
+        if (!update) {
+          return json({
+            ok:true,
+            updateAvailable:false,
+            message:"No update published"
+          });
+        }
+
+        const available =
+          update.version_code > currentVersion &&
+          !!update.download_url;
+
         return json({
-          token: await createToken(env.SESSION_SECRET)
+          ok:true,
+          updateAvailable:available,
+          versionCode:update.version_code,
+          versionName:update.version_name,
+          downloadUrl:update.download_url,
+          message:update.message,
+          forceUpdate:available && !!update.force_update,
+          updatedAt:update.updated_at
         });
       }
 
@@ -549,19 +559,18 @@ export default {
         const body = await request.json();
 
         const activationKey = String(body.key || "").trim();
-        const deviceId = String(body.deviceId || "").trim().slice(0, 160);
+        const deviceId = String(body.deviceId || "").trim().slice(0,160);
 
         if (!activationKey || !deviceId) {
           return json({
-            ok: false,
-            error: "Activation key and deviceId are required"
+            ok:false,
+            error:"Activation key and deviceId are required"
           }, 400);
         }
 
         const now = new Date().toISOString();
-
-        const isMaster =
-          !!env.MASTER_KEY && activationKey === env.MASTER_KEY;
+        const isMaster = !!env.MASTER_KEY &&
+          activationKey === env.MASTER_KEY;
 
         let expiresAt = null;
         let keyHash = "MASTER";
@@ -570,21 +579,18 @@ export default {
           keyHash = await sha256(activationKey);
 
           const record = await env.ULTRA_LOADER.prepare(
-            "SELECT expires_at, revoked FROM activation_keys WHERE key_hash = ?"
+            "SELECT expires_at,revoked FROM activation_keys WHERE key_hash=?"
           ).bind(keyHash).first();
 
           if (!record || record.revoked) {
             return json({
-              ok: false,
-              error: "Invalid or revoked activation key"
+              ok:false,
+              error:"Invalid or revoked activation key"
             }, 403);
           }
 
           if (Date.parse(record.expires_at) <= Date.now()) {
-            return json({
-              ok: false,
-              error: "Activation key expired"
-            }, 403);
+            return json({ok:false,error:"Activation key expired"}, 403);
           }
 
           expiresAt = record.expires_at;
@@ -592,135 +598,185 @@ export default {
 
         await env.ULTRA_LOADER.prepare(
           "INSERT INTO devices (device_id,key_hash,last_seen,created_at) VALUES (?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET key_hash=excluded.key_hash,last_seen=excluded.last_seen"
-        ).bind(deviceId, keyHash, now, now).run();
+        ).bind(deviceId,keyHash,now,now).run();
 
         return json({
-          ok: true,
-          active: true,
+          ok:true,
+          active:true,
           expiresAt,
-          licenseType: isMaster ? "MASTER" : "STANDARD"
+          licenseType:isMaster ? "MASTER" : "STANDARD"
         });
       }
 
-      // All remaining API routes require Admin Login
+      // Admin authentication for remaining routes
       if (!(await isAdmin(request, env))) {
-        return json({ error: "Unauthorized" }, 401);
+        return json({error:"Unauthorized"}, 401);
       }
 
-      // List Keys
+      // List Activation Keys
       if (path === "/api/admin/keys" && request.method === "GET") {
-        const result = await env.ULTRA_LOADER.prepare(
-          `SELECT
-             activation_keys.key_hint,
-             activation_keys.expires_at,
-             activation_keys.revoked,
-             activation_keys.created_at,
-             (
-               SELECT MIN(devices.created_at)
-               FROM devices
-               WHERE devices.key_hash = activation_keys.key_hash
-             ) AS activated_at
-           FROM activation_keys
-           ORDER BY activation_keys.created_at DESC
-           LIMIT 500`
-        ).all();
+        const result = await env.ULTRA_LOADER.prepare(`
+          SELECT
+            activation_keys.key_hint,
+            activation_keys.expires_at,
+            activation_keys.revoked,
+            activation_keys.created_at,
+            (
+              SELECT MIN(devices.created_at)
+              FROM devices
+              WHERE devices.key_hash=activation_keys.key_hash
+            ) AS activated_at
+          FROM activation_keys
+          ORDER BY activation_keys.created_at DESC
+          LIMIT 500
+        `).all();
 
-        const keys = (result.results || []).map(k => {
-          const expired = Date.parse(k.expires_at) <= Date.now();
+        const keys = (result.results || []).map(k => ({
+          key_hint:k.key_hint,
+          expires_at:k.expires_at,
+          created_at:k.created_at,
+          activated_at:k.activated_at,
+          status:k.revoked ? "REVOKED" :
+            Date.parse(k.expires_at) > Date.now() ? "ACTIVE" : "EXPIRED"
+        }));
 
-          return {
-            key_hint: k.key_hint,
-            expires_at: k.expires_at,
-            created_at: k.created_at,
-            activated_at: k.activated_at,
-            status: k.revoked
-              ? "REVOKED"
-              : expired ? "EXPIRED" : "ACTIVE"
-          };
-        });
-
-        return json({ keys });
+        return json({keys});
       }
 
-      // Generate ONE Key with Custom Validity
-      if (
-        path === "/api/admin/keys/generate" &&
-        request.method === "POST"
-      ) {
+      // Generate One Activation Key
+      if (path === "/api/admin/keys/generate" && request.method === "POST") {
         const body = await request.json();
         const days = Number(body.days);
 
-        if (
-          !Number.isInteger(days) ||
-          days < 1 ||
-          days > 3650
-        ) {
-          return json({
-            error: "Validity must be between 1 and 3650 days"
-          }, 400);
+        if (!Number.isInteger(days) || days < 1 || days > 3650) {
+          return json({error:"Validity must be 1 to 3650 days"}, 400);
         }
 
         const now = Date.now();
         const createdAt = new Date(now).toISOString();
-
-        const expiresAt = new Date(
-          now + days * 24 * 60 * 60 * 1000
-        ).toISOString();
-
+        const expiresAt = new Date(now + days * 86400000).toISOString();
         const key = generateKey();
         const keyHash = await sha256(key);
 
         await env.ULTRA_LOADER.prepare(
           "INSERT INTO activation_keys (key_hash,key_hint,expires_at,revoked,created_at) VALUES (?,?,?,0,?)"
-        ).bind(keyHash, key, expiresAt, createdAt).run();
+        ).bind(keyHash,key,expiresAt,createdAt).run();
 
-        return json({
-          created: 1,
-          key,
-          days,
-          expiresAt
-        });
+        return json({created:1,key,days,expiresAt});
       }
 
-      // Disable or Reactivate a Key
-      if (
-        path === "/api/admin/keys/status" &&
-        request.method === "POST"
-      ) {
+      // Disable / Reactivate Activation Key
+      if (path === "/api/admin/keys/status" && request.method === "POST") {
         const body = await request.json();
-
         const key = String(body.key || "").trim();
 
         if (!key || typeof body.revoked !== "boolean") {
-          return json({
-            error: "A key and boolean revoked value are required"
-          }, 400);
+          return json({error:"Key and revoked boolean are required"}, 400);
         }
 
         const keyHash = await sha256(key);
 
         const result = await env.ULTRA_LOADER.prepare(
-          "UPDATE activation_keys SET revoked = ? WHERE key_hash = ?"
-        ).bind(body.revoked ? 1 : 0, keyHash).run();
+          "UPDATE activation_keys SET revoked=? WHERE key_hash=?"
+        ).bind(body.revoked ? 1 : 0,keyHash).run();
 
         if (!result.meta || result.meta.changes < 1) {
-          return json({
-            error: "Activation key not found"
-          }, 404);
+          return json({error:"Activation key not found"}, 404);
         }
 
+        return json({ok:true,revoked:body.revoked});
+      }
+
+      // Read Current Update Settings
+      if (path === "/api/admin/update" && request.method === "GET") {
+        const update = await env.ULTRA_LOADER.prepare(
+          "SELECT version_code,version_name,download_url,message,force_update,updated_at FROM app_updates WHERE id=1"
+        ).first();
+
         return json({
-          ok: true,
-          revoked: body.revoked
+          versionCode:update?.version_code || 1,
+          versionName:update?.version_name || "1.0",
+          downloadUrl:update?.download_url || "",
+          message:update?.message || "",
+          forceUpdate:!!update?.force_update,
+          updatedAt:update?.updated_at || null
         });
       }
 
-      return json({ error: "Not found" }, 404);
+      // Publish / Change Update Settings
+      if (path === "/api/admin/update" && request.method === "POST") {
+        const body = await request.json();
 
-    } catch (error) {
+        const versionCode = Number(body.versionCode);
+        const versionName = String(body.versionName || "").trim();
+        const downloadUrl = String(body.downloadUrl || "").trim();
+        const message = String(body.message || "").trim().slice(0,2000);
+        const forceUpdate = body.forceUpdate === true;
+
+        if (!Number.isInteger(versionCode) || versionCode < 1) {
+          return json({error:"Version Code must be a positive integer"}, 400);
+        }
+
+        if (!versionName || versionName.length > 50) {
+          return json({error:"Enter a valid Version Name"}, 400);
+        }
+
+        let parsedUrl;
+
+        try {
+          parsedUrl = new URL(downloadUrl);
+        } catch {
+          return json({error:"Invalid APK download URL"}, 400);
+        }
+
+        if (
+          parsedUrl.protocol !== "https:" ||
+          parsedUrl.hostname !== "github.com" ||
+          !parsedUrl.pathname.includes("/releases/download/") ||
+          !parsedUrl.pathname.toLowerCase().endsWith(".apk")
+        ) {
+          return json({
+            error:"Use a direct HTTPS GitHub Releases APK asset URL ending in .apk"
+          }, 400);
+        }
+
+        const updatedAt = new Date().toISOString();
+
+        await env.ULTRA_LOADER.prepare(`
+          INSERT INTO app_updates
+            (id,version_code,version_name,download_url,message,force_update,updated_at)
+          VALUES (1,?,?,?,?,?,?)
+          ON CONFLICT(id) DO UPDATE SET
+            version_code=excluded.version_code,
+            version_name=excluded.version_name,
+            download_url=excluded.download_url,
+            message=excluded.message,
+            force_update=excluded.force_update,
+            updated_at=excluded.updated_at
+        `).bind(
+          versionCode,
+          versionName,
+          downloadUrl,
+          message,
+          forceUpdate ? 1 : 0,
+          updatedAt
+        ).run();
+
+        return json({
+          ok:true,
+          message:"App update settings saved",
+          versionCode,
+          versionName,
+          forceUpdate
+        });
+      }
+
+      return json({error:"Not found"}, 404);
+
+    } catch(error) {
       return json({
-        error: "Server error",
-        detail: String(error.message || error)
+        error:"Server error",
+        detail:String(error.message || error)
       }, 500);
     }
   }
