@@ -3,7 +3,9 @@ package com.apumsw1.ultraloader
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -24,6 +26,9 @@ object ActivationManager {
     private const val PREFS = "ultra_loader_server_activation"
     private const val API_URL =
         "https://ultra-loader.ultraloader.workers.dev/api/activate"
+
+    private const val TELEGRAM_URL =
+        "https://t.me/ultraloader"
 
     private const val KEY_DEVICE = "device_id"
     private const val KEY_EXPIRY = "expiry_time"
@@ -48,8 +53,8 @@ object ActivationManager {
 
         if (p.getBoolean(KEY_MASTER, false)) return true
 
-        val expiry = p.getLong(KEY_EXPIRY, 0L)
-        return expiry > System.currentTimeMillis()
+        return p.getLong(KEY_EXPIRY, 0L) >
+            System.currentTimeMillis()
     }
 
     fun statusText(context: Context): String {
@@ -96,6 +101,7 @@ object ActivationManager {
                 val formatter = SimpleDateFormat(pattern, Locale.US)
                 formatter.timeZone = TimeZone.getTimeZone("UTC")
                 formatter.isLenient = false
+
                 val date = formatter.parse(value)
                 if (date != null) return date.time
             } catch (_: Exception) {
@@ -119,6 +125,7 @@ object ActivationManager {
             connection.connectTimeout = 15000
             connection.readTimeout = 15000
             connection.doOutput = true
+
             connection.setRequestProperty(
                 "Content-Type",
                 "application/json; charset=UTF-8"
@@ -135,13 +142,14 @@ object ActivationManager {
 
             val responseCode = connection.responseCode
 
-            val responseText = if (responseCode in 200..299) {
-                connection.inputStream.bufferedReader()
-                    .use { it.readText() }
-            } else {
-                connection.errorStream?.bufferedReader()
-                    ?.use { it.readText() } ?: "{}"
-            }
+            val responseText =
+                if (responseCode in 200..299) {
+                    connection.inputStream.bufferedReader()
+                        .use { it.readText() }
+                } else {
+                    connection.errorStream?.bufferedReader()
+                        ?.use { it.readText() } ?: "{}"
+                }
 
             val response = JSONObject(responseText)
 
@@ -151,7 +159,10 @@ object ActivationManager {
             ) {
                 return response.optString(
                     "error",
-                    "Activation failed. Please try again."
+                    response.optString(
+                        "message",
+                        "Activation failed. Please try again."
+                    )
                 )
             }
 
@@ -186,6 +197,23 @@ object ActivationManager {
         }
     }
 
+    private fun openTelegram(activity: Activity) {
+        try {
+            activity.startActivity(
+                Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse(TELEGRAM_URL)
+                )
+            )
+        } catch (_: Exception) {
+            Toast.makeText(
+                activity,
+                "Unable to open Telegram",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     private fun showActivationDialog(
         activity: Activity,
         onGranted: () -> Unit
@@ -199,6 +227,7 @@ object ActivationManager {
             text = "Enter your ULTRA LOADER Activation Key."
             textSize = 14f
             setTextColor(Color.DKGRAY)
+            setPadding(0, 0, 0, 12)
         }
 
         val input = EditText(activity).apply {
@@ -216,14 +245,28 @@ object ActivationManager {
             .setView(container)
             .setCancelable(false)
             .setPositiveButton("ACTIVATE", null)
+            .setNegativeButton(
+                "CONTACT TO BUY ACTIVATION KEY",
+                null
+            )
             .create()
 
         dialog.setOnShowListener {
-            val button = dialog.getButton(
+            val activateButton = dialog.getButton(
                 AlertDialog.BUTTON_POSITIVE
             )
 
-            button.setOnClickListener {
+            val contactButton = dialog.getButton(
+                AlertDialog.BUTTON_NEGATIVE
+            )
+
+            contactButton.setTextColor(Color.rgb(0, 120, 190))
+
+            contactButton.setOnClickListener {
+                openTelegram(activity)
+            }
+
+            activateButton.setOnClickListener {
                 val entered = input.text.toString()
                     .trim()
                     .uppercase(Locale.US)
@@ -233,8 +276,8 @@ object ActivationManager {
                     return@setOnClickListener
                 }
 
-                button.isEnabled = false
-                button.text = "VERIFYING..."
+                activateButton.isEnabled = false
+                activateButton.text = "VERIFYING..."
 
                 Thread {
                     val result = verifyOnline(activity, entered)
@@ -261,8 +304,8 @@ object ActivationManager {
                             }
 
                             else -> {
-                                button.isEnabled = true
-                                button.text = "ACTIVATE"
+                                activateButton.isEnabled = true
+                                activateButton.text = "ACTIVATE"
                                 input.error = result
                             }
                         }
