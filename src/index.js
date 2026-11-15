@@ -51,7 +51,7 @@ function makeKey() {
 }
 async function passwordHash(password, salt) {
   const material = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({name:"PBKDF2",salt:enc.encode(salt),iterations:210000,hash:"SHA-256"}, material, 256);
+  const bits = await crypto.subtle.deriveBits({name:"PBKDF2",salt:enc.encode(salt),iterations:100000,hash:"SHA-256"}, material, 256);
   return [...new Uint8Array(bits)].map(x=>x.toString(16).padStart(2,"0")).join("");
 }
 async function readBody(req) {
@@ -130,11 +130,11 @@ async function getPrice(db) {
   return Math.max(0, Number(r?.setting_value ?? 200));
 }
 async function adminOnly(req, env) {
-  const p = await auth(req, env);
+  const p = await auth(req,env);
   return p?.role === "admin" ? p : null;
 }
 async function subOnly(req, env, db) {
-  const p = await auth(req, env);
+  const p = await auth(req,env);
   if (p?.role !== "subadmin" || !p.subadminId) return null;
   const a = await db.prepare("SELECT id,username,balance,active FROM subadmins WHERE id=?").bind(p.subadminId).first();
   return a?.active ? {...p, account:a} : null;
