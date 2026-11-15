@@ -119,7 +119,7 @@ object ActivationManager {
 
         val keyInput = EditText(activity).apply {
             hint = "Activation key"
-            singleLine = true
+            setSingleLine(true)
             textSize = 16f
             setSelectAllOnFocus(false)
         }
@@ -133,6 +133,7 @@ object ActivationManager {
         )
 
         container.addView(explanation)
+
         container.addView(
             keyInput,
             LinearLayout.LayoutParams(
