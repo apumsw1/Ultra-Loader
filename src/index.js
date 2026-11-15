@@ -909,7 +909,7 @@ button{padding:10px 13px;margin:4px;background:#0788b5;color:white;border:0;bord
 <section id="login" class="panel">
 <h2>Admin Login</h2>
 <input id="apass" type="password" placeholder="Admin password">
-<button onclick="adminLogin()">Sign in</button>
+<button id="adminLoginBtn" type="button" onclick="adminLogin()">Sign in</button>
 <p id="loginmsg" class="msg"></p>
 <hr>
 <h3>Subadmin Login</h3>
@@ -1057,43 +1057,54 @@ function show(){
 }
 
 async function adminLogin(){
+  const button = $("adminLoginBtn");
+  const message = $("loginmsg");
+  const password = $("apass").value;
+
+  if(!password.trim()){
+    message.textContent = "Enter admin password";
+    $("apass").focus();
+    return;
+  }
+
+  if(button) button.disabled = true;
+  message.textContent = "Signing in...";
+
   try{
-    const r=await fetch("/api/admin/login",{
+    const r = await fetch("/api/admin/login",{
       method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({password:$("apass").value})
+      headers:{
+        "Content-Type":"application/json"
+      },
+      body:JSON.stringify({password})
     });
 
-    const d=await r.json();
+    const raw = await r.text();
+    let d;
 
-    if(!r.ok)throw Error(d.error);
+    try{
+      d = JSON.parse(raw);
+    }catch{
+      throw Error(
+        "Server returned an invalid response (HTTP " + r.status + ")"
+      );
+    }
+
+    if(!r.ok || d.ok !== true || !d.token){
+      throw Error(
+        d.error || d.detail || ("Login failed (HTTP " + r.status + ")")
+      );
+    }
 
     saveSession(d.token,"admin");
     await start();
+    message.textContent = "";
+
   }catch(e){
-    $("loginmsg").textContent=e.message;
-  }
-}
+    message.textContent = e?.message || "Admin login failed";
 
-async function subLogin(){
-  try{
-    const r=await fetch("/api/subadmin/login",{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({
-        username:$("suser").value,
-        password:$("spass").value
-      })
-    });
-
-    const d=await r.json();
-
-    if(!r.ok)throw Error(d.error);
-
-    saveSession(d.token,"subadmin");
-    await start();
-  }catch(e){
-    $("loginmsg").textContent=e.message;
+  }finally{
+    if(button) button.disabled = false;
   }
 }
 
