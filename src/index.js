@@ -1170,7 +1170,7 @@ async function makeAdminKey(){
       {...validity(""),maxDevices:Number($("limit").value)}
     );
 
-    $("newkey").textContent=d.key+"\nExpires: "+d.expiresAt;
+    $("newkey").textContent=d.key+"\\nExpires: "+d.expiresAt;
     $("keymsg").textContent="Created";
 
     await loadKeys();
@@ -1450,8 +1450,8 @@ async function makeSubKey(){
 
     $("snewkey").textContent=
       d.key+
-      "\nExpires: "+d.expiresAt+
-      "\nCharged: ৳"+d.charged;
+      "\\nExpires: "+d.expiresAt+
+      "\\nCharged: ৳"+d.charged;
 
     await Promise.all([
       loadWallet(),
