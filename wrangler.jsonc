@@ -1,9 +1,12 @@
+
 {
-  // ...
+  "name": "ultra-loader",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-15",
   "d1_databases": [
     {
       "binding": "ULTRA_LOADER",
       "database_id": "5e266d3f-850d-4f1f-9033-e9281dd5b399"
     }
-  ],
-  // ...
+  ]
+}
