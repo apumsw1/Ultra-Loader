@@ -93,7 +93,6 @@ async function init(db) {
     message TEXT NOT NULL DEFAULT '', force_update INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
   )`).run();
 
-  // Additive migration: existing keys and devices are preserved.
   await ensureColumn(db, "activation_keys", "max_devices", "INTEGER NOT NULL DEFAULT 1");
   await ensureColumn(db, "activation_keys", "owner_id", "TEXT NOT NULL DEFAULT 'MAIN'");
   await ensureColumn(db, "activation_keys", "purchase_id", "TEXT");
@@ -181,20 +180,28 @@ async function adminRoutes(req, env, db, path) {
   if (!admin) return json({error:"Unauthorized"},401);
   const method=req.method, b=method==="POST"?await readBody(req):{};
 
-  if (path==="/api/admin/keys" && method==="GET") return json({keys:await listKeys(db)});
+  if (path==="/api/admin/keys" && method==="GET")
+    return json({keys:await listKeys(db)});
+
   if (path==="/api/admin/keys/generate" && method==="POST") {
     const max=Number(b.maxDevices ?? 1);
-    if(!Number.isInteger(max)||max<1||max>99999) return json({error:"Device limit must be 1–99999"},400);
+    if(!Number.isInteger(max)||max<1||max>99999)
+      return json({error:"Device limit must be 1–99999"},400);
     const k=await generateKeyRecord(db,b,"MAIN",max);
     return json({created:1,key:k.key,expiresAt:k.expiresAt,maxDevices:max});
   }
+
   if(path==="/api/admin/keys/status"&&method==="POST"){
-    if(!b.key||typeof b.revoked!=="boolean")return json({error:"Key and revoked boolean are required"},400);
-    if(!await setRevoked(db,str(b.key,200),b.revoked))return json({error:"Activation key not found"},404);
+    if(!b.key||typeof b.revoked!=="boolean")
+      return json({error:"Key and revoked boolean are required"},400);
+    if(!await setRevoked(db,str(b.key,200),b.revoked))
+      return json({error:"Activation key not found"},404);
     return json({ok:true,revoked:b.revoked});
   }
+
   if(path==="/api/admin/keys/delete"&&method==="POST"){
-    const key=str(b.key,200); if(!key)return json({error:"Key is required"},400);
+    const key=str(b.key,200);
+    if(!key)return json({error:"Key is required"},400);
     const hash=await sha256(key);
     const found=await db.prepare("SELECT key_hash FROM activation_keys WHERE key_hash=?").bind(hash).first();
     if(!found)return json({error:"Activation key not found"},404);
@@ -204,6 +211,7 @@ async function adminRoutes(req, env, db, path) {
     ]);
     return json({ok:true,deleted:true});
   }
+
   if(path==="/api/admin/subadmins"&&method==="GET"){
     const r=await db.prepare(`SELECT s.id,s.username,s.balance,s.active,s.created_at,
       (SELECT COUNT(*) FROM activation_keys k WHERE k.owner_id=s.id) AS total_keys,
@@ -211,17 +219,37 @@ async function adminRoutes(req, env, db, path) {
       FROM subadmins s ORDER BY s.created_at DESC`).bind(nowISO()).all();
     return json({subadmins:r.results||[]});
   }
+
   if(path==="/api/admin/subadmins"&&method==="POST"){
     const username=str(b.username,40), password=String(b.password||"");
-    if(!/^[A-Za-z0-9_.-]{3,40}$/.test(username)||password.length<8||password.length>200)return json({error:"Username must be 3–40 characters; password at least 8 characters"},400);
-    const id=crypto.randomUUID(),salt=b64u(crypto.getRandomValues(new Uint8Array(16))),hash=await passwordHash(password,salt),t=nowISO();
-    try{await db.prepare("INSERT INTO subadmins(id,username,password_hash,salt,balance,active,created_at,updated_at) VALUES(?,?,?, ?,0,1,?,?)").bind(id,username,hash,salt,t,t).run();}
-    catch{return json({error:"Username already exists"},409);}
+    if(!/^[A-Za-z0-9_.-]{3,40}$/.test(username)||password.length<8||password.length>200)
+      return json({error:"Username must be 3–40 characters; password at least 8 characters"},400);
+
+    const id=crypto.randomUUID();
+    const salt=b64u(crypto.getRandomValues(new Uint8Array(16)));
+    const hash=await passwordHash(password,salt);
+    const t=nowISO();
+
+    try {
+      await db.prepare(
+        "INSERT INTO subadmins(id,username,password_hash,salt,balance,active,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)"
+      ).bind(id,username,hash,salt,0,t,t).run();
+    } catch(error) {
+      const detail=String(error?.message||error);
+      if(/unique|constraint/i.test(detail))
+        return json({error:"Username already exists"},409);
+      return json({
+        error:"Subadmin creation failed",
+        detail:detail
+      },500);
+    }
     return json({ok:true,id,username,balance:0});
   }
+
   if(path==="/api/admin/subadmins/balance"&&method==="POST"){
     const id=str(b.subadminId,80), amount=Number(b.amount), type=str(b.type,10), note=str(b.note,300);
-    if(!id||!Number.isSafeInteger(amount)||amount<1||amount>100000000||!["add","deduct","reset"].includes(type))return json({error:"Invalid balance operation"},400);
+    if(!id||!Number.isSafeInteger(amount)||amount<1||amount>100000000||!["add","deduct","reset"].includes(type))
+      return json({error:"Invalid balance operation"},400);
     const a=await db.prepare("SELECT id,balance FROM subadmins WHERE id=?").bind(id).first();
     if(!a)return json({error:"Subadmin not found"},404);
     const delta=type==="add"?amount:type==="deduct"?-amount:-Number(a.balance);
@@ -234,29 +262,37 @@ async function adminRoutes(req, env, db, path) {
     const after=await db.prepare("SELECT balance FROM subadmins WHERE id=?").bind(id).first();
     return json({ok:true,balance:after.balance});
   }
+
   if(path==="/api/admin/subadmins/status"&&method==="POST"){
-    const id=str(b.subadminId,80); if(!id||typeof b.active!=="boolean")return json({error:"Subadmin and active status required"},400);
+    const id=str(b.subadminId,80);
+    if(!id||typeof b.active!=="boolean")
+      return json({error:"Subadmin and active status required"},400);
     const r=await db.prepare("UPDATE subadmins SET active=?,updated_at=? WHERE id=?").bind(b.active?1:0,nowISO(),id).run();
     return (r.meta?.changes||0)?json({ok:true,active:b.active}):json({error:"Subadmin not found"},404);
   }
+
   if(path==="/api/admin/subadmins/password"&&method==="POST"){
     const id=str(b.subadminId,80),password=String(b.password||"");
-    if(!id||password.length<8||password.length>200)return json({error:"New password must be at least 8 characters"},400);
-    const salt=b64u(crypto.getRandomValues(new Uint8Array(16))),hash=await passwordHash(password,salt);
+    if(!id||password.length<8||password.length>200)
+      return json({error:"New password must be at least 8 characters"},400);
+    const salt=b64u(crypto.getRandomValues(new Uint8Array(16)));
+    const hash=await passwordHash(password,salt);
     const r=await db.prepare("UPDATE subadmins SET password_hash=?,salt=?,updated_at=? WHERE id=?").bind(hash,salt,nowISO(),id).run();
     return (r.meta?.changes||0)?json({ok:true}):json({error:"Subadmin not found"},404);
   }
+
   if(path==="/api/admin/subadmins/delete"&&method==="POST"){
-    const id=str(b.subadminId,80); if(!id)return json({error:"Subadmin ID required"},400);
+    const id=str(b.subadminId,80);
+    if(!id)return json({error:"Subadmin ID required"},400);
     const a=await db.prepare("SELECT id FROM subadmins WHERE id=?").bind(id).first();
     if(!a)return json({error:"Subadmin not found"},404);
-    // Revoke, do not erase keys or device history. Preserve financial audit rows.
     await db.prepare("UPDATE activation_keys SET revoked=1 WHERE owner_id=?").bind(id).run();
     await db.prepare("UPDATE wallet_transactions SET username_snapshot=? WHERE subadmin_id=? AND username_snapshot=''")
       .bind(str((await db.prepare("SELECT username FROM subadmins WHERE id=?").bind(id).first())?.username,40),id).run();
     await db.prepare("DELETE FROM subadmins WHERE id=?").bind(id).run();
     return json({ok:true,deleted:true,keysRevoked:true,historyPreserved:true});
   }
+
   if(path==="/api/admin/wallet/transactions"&&method==="GET"){
     const id=str(new URL(req.url).searchParams.get("subadminId"),80);
     const r=id
@@ -264,52 +300,72 @@ async function adminRoutes(req, env, db, path) {
       : await db.prepare("SELECT w.*,COALESCE(s.username,w.username_snapshot,w.subadmin_id) AS username FROM wallet_transactions w LEFT JOIN subadmins s ON s.id=w.subadmin_id ORDER BY w.created_at DESC LIMIT 1000").all();
     return json({transactions:r.results||[]});
   }
-  if(path==="/api/admin/settings/key-price"&&method==="GET")return json({keyPrice:await getPrice(db)});
+
+  if(path==="/api/admin/settings/key-price"&&method==="GET")
+    return json({keyPrice:await getPrice(db)});
+
   if(path==="/api/admin/settings/key-price"&&method==="POST"){
-    const p=Number(b.keyPrice); if(!Number.isSafeInteger(p)||p<0||p>10000000)return json({error:"Key price must be 0–10000000"},400);
+    const p=Number(b.keyPrice);
+    if(!Number.isSafeInteger(p)||p<0||p>10000000)
+      return json({error:"Key price must be 0–10000000"},400);
     await db.prepare("INSERT INTO ul_settings(setting_key,setting_value) VALUES('key_price',?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value").bind(String(p)).run();
     return json({ok:true,keyPrice:p});
   }
+
   if(path==="/api/admin/update"&&method==="GET"){
     const u=await db.prepare("SELECT * FROM app_updates WHERE id=1").first();
     return json({versionCode:u?.version_code||1,versionName:u?.version_name||"1.0",downloadUrl:u?.download_url||"",message:u?.message||"",forceUpdate:!!u?.force_update,updatedAt:u?.updated_at||null});
   }
+
   if(path==="/api/admin/update"&&method==="POST"){
     const vc=Number(b.versionCode),vn=str(b.versionName,50),download=str(b.downloadUrl,1000),message=str(b.message,2000),force=b.forceUpdate===true;
-    let u;try{u=new URL(download)}catch{return json({error:"Invalid APK URL"},400)}
-    if(!Number.isInteger(vc)||vc<1||!vn||u.protocol!=="https:"||u.hostname!=="github.com"||!u.pathname.includes("/releases/download/")||!u.pathname.toLowerCase().endsWith(".apk"))return json({error:"Use a valid version and direct HTTPS GitHub Releases APK URL"},400);
+    let u;
+    try{u=new URL(download)}catch{return json({error:"Invalid APK URL"},400)}
+    if(!Number.isInteger(vc)||vc<1||!vn||u.protocol!=="https:"||u.hostname!=="github.com"||!u.pathname.includes("/releases/download/")||!u.pathname.toLowerCase().endsWith(".apk"))
+      return json({error:"Use a valid version and direct HTTPS GitHub Releases APK URL"},400);
     const t=nowISO();
     await db.prepare(`INSERT INTO app_updates(id,version_code,version_name,download_url,message,force_update,updated_at) VALUES(1,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET version_code=excluded.version_code,version_name=excluded.version_name,download_url=excluded.download_url,message=excluded.message,force_update=excluded.force_update,updated_at=excluded.updated_at`)
       .bind(vc,vn,download,message,force?1:0,t).run();
     return json({ok:true,message:"App update settings saved",versionCode:vc,versionName:vn,forceUpdate:force});
   }
+
   return json({error:"Not found"},404);
 }
+
 async function subRoutes(req,env,db,path){
   if(path==="/api/subadmin/login"&&req.method==="POST"){
     const b=await readBody(req),username=str(b.username,40),password=String(b.password||"");
     const a=await db.prepare("SELECT * FROM subadmins WHERE username=?").bind(username).first();
-    if(!a||!a.active||!await passwordHash(password,a.salt).then(h=>h===a.password_hash))return json({error:"Invalid username or password"},401);
+    if(!a||!a.active||!await passwordHash(password,a.salt).then(h=>h===a.password_hash))
+      return json({error:"Invalid username or password"},401);
     return json({ok:true,token:await tokenFor({role:"subadmin",subadminId:a.id,username:a.username},env.SESSION_SECRET)});
   }
-  const s=await subOnly(req,env,db); if(!s)return json({error:"Unauthorized"},401);
-  if(path==="/api/subadmin/me"&&req.method==="GET")return json({username:s.account.username,balance:s.account.balance,keyPrice:await getPrice(db)});
-  if(path==="/api/subadmin/keys"&&req.method==="GET")return json({keys:await listKeys(db,s.subadminId)});
+
+  const s=await subOnly(req,env,db);
+  if(!s)return json({error:"Unauthorized"},401);
+
+  if(path==="/api/subadmin/me"&&req.method==="GET")
+    return json({username:s.account.username,balance:s.account.balance,keyPrice:await getPrice(db)});
+
+  if(path==="/api/subadmin/keys"&&req.method==="GET")
+    return json({keys:await listKeys(db,s.subadminId)});
+
   if(path==="/api/subadmin/wallet/transactions"&&req.method==="GET"){
     const r=await db.prepare("SELECT amount,type,note,created_at FROM wallet_transactions WHERE subadmin_id=? ORDER BY created_at DESC LIMIT 500").bind(s.subadminId).all();
     return json({transactions:r.results||[]});
   }
+
   if(path==="/api/subadmin/keys/generate"&&req.method==="POST"){
     const b=await readBody(req),requestId=str(b.requestId,100);
     if(!requestId)return json({error:"requestId is required for safe purchase"},400);
     const prior=await db.prepare("SELECT key_hash FROM key_requests WHERE request_id=? AND subadmin_id=?").bind(requestId,s.subadminId).first();
     if(prior)return json({error:"This request was already processed. Refresh your key list; the key is not shown again."},409);
     const price=await getPrice(db);
-    // Atomic conditional debit prevents spending below zero.
     const debit=await db.prepare("UPDATE subadmins SET balance=balance-?,updated_at=? WHERE id=? AND active=1 AND balance>=?")
       .bind(price,nowISO(),s.subadminId,price).run();
     if(!(debit.meta?.changes>0))return json({error:"Insufficient balance"},402);
+
     let generatedHash="";
     try{
       const k=await generateKeyRecord(db,b,s.subadminId,1,requestId);
@@ -326,20 +382,29 @@ async function subRoutes(req,env,db,path){
       throw e;
     }
   }
+
   if(path==="/api/subadmin/keys/status"&&req.method==="POST"){
-    const b=await readBody(req); if(!b.key||typeof b.revoked!=="boolean")return json({error:"Key and revoked boolean required"},400);
-    if(!await setRevoked(db,str(b.key,200),b.revoked,s.subadminId))return json({error:"Your key was not found"},404);
+    const b=await readBody(req);
+    if(!b.key||typeof b.revoked!=="boolean")return json({error:"Key and revoked boolean required"},400);
+    if(!await setRevoked(db,str(b.key,200),b.revoked,s.subadminId))
+      return json({error:"Your key was not found"},404);
     return json({ok:true,revoked:b.revoked});
   }
+
   if(path==="/api/subadmin/keys/delete"&&req.method==="POST"){
     const b=await readBody(req),hash=await sha256(str(b.key,200));
     const found=await db.prepare("SELECT key_hash FROM activation_keys WHERE key_hash=? AND owner_id=?").bind(hash,s.subadminId).first();
     if(!found)return json({error:"Your key was not found"},404);
-    await db.batch([db.prepare("DELETE FROM devices WHERE key_hash=?").bind(hash),db.prepare("DELETE FROM activation_keys WHERE key_hash=? AND owner_id=?").bind(hash,s.subadminId)]);
+    await db.batch([
+      db.prepare("DELETE FROM devices WHERE key_hash=?").bind(hash),
+      db.prepare("DELETE FROM activation_keys WHERE key_hash=? AND owner_id=?").bind(hash,s.subadminId)
+    ]);
     return json({ok:true,deleted:true});
   }
+
   return json({error:"Not found"},404);
 }
+
 const ADMIN_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ULTRA LOADER</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#080e19;color:#edf4ff;font:15px Arial}main{max-width:1050px;margin:20px auto;padding:14px}h1{color:#58d9ff}.panel{background:#121e31;border:1px solid #293d5b;border-radius:14px;padding:16px;margin:14px 0}input,select,textarea{width:100%;padding:12px;margin:7px 0;background:#081321;color:white;border:1px solid #405574;border-radius:8px}input[type=checkbox]{width:auto}label{display:block;margin-top:9px;color:#bcd0e8}button{padding:10px 13px;margin:4px;background:#0788b5;color:white;border:0;border-radius:7px;font-weight:bold}.danger{background:#bd3548}.secondary{background:#30415b}.green{background:#16885d}.hidden{display:none}.item{padding:12px;margin:9px 0;background:#0b1728;border:1px solid #30415b;border-radius:9px;overflow-wrap:anywhere}.muted{color:#a9bad0}.msg{white-space:pre-wrap;color:#58d9ff}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}
@@ -355,7 +420,17 @@ const ADMIN_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><
 </main><script>
 let token=sessionStorage.getItem("ul_token")||"",role=sessionStorage.getItem("ul_role")||"";
 const $=id=>document.getElementById(id), esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-async function request(path,method="GET",body){const r=await fetch("/api"+path,{method,headers:{"Content-Type":"application/json","Authorization":"Bearer "+token},body:body?JSON.stringify(body):undefined});let d;try{d=await r.json()}catch{throw Error("Invalid server response")}if(!r.ok)throw Error(d.error||"Request failed");return d}
+async function request(path,method="GET",body){
+  const r=await fetch("/api"+path,{
+    method,
+    headers:{"Content-Type":"application/json","Authorization":"Bearer "+token},
+    body:body?JSON.stringify(body):undefined
+  });
+  let d;
+  try{d=await r.json()}catch{throw Error("Invalid server response")}
+  if(!r.ok)throw Error(d.detail ? d.error + ": " + d.detail : (d.error || "Request failed"));
+  return d;
+}
 function show(){ $("login").classList.add("hidden");$(role==="admin"?"admin":"subdash").classList.remove("hidden");}
 async function adminLogin(){try{const r=await fetch("/api/admin/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:$("apass").value})});const d=await r.json();if(!r.ok)throw Error(d.error);saveSession(d.token,"admin");await start()}catch(e){$("loginmsg").textContent=e.message}}
 async function subLogin(){try{const r=await fetch("/api/subadmin/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:$("suser").value,password:$("spass").value})});const d=await r.json();if(!r.ok)throw Error(d.error);saveSession(d.token,"subadmin");await start()}catch(e){$("loginmsg").textContent=e.message}}
@@ -392,56 +467,82 @@ export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") return new Response(null,{headers:CORS});
     const url = new URL(request.url), path = url.pathname;
-    if (path === "/" && request.method === "GET") return new Response(ADMIN_PAGE,{headers:{...CORS,"Content-Type":"text/html;charset=UTF-8"}});
-    if (path === "/api/health" && request.method === "GET") return json({ok:true,service:"ULTRA LOADER API"});
+    if (path === "/" && request.method === "GET")
+      return new Response(ADMIN_PAGE,{headers:{...CORS,"Content-Type":"text/html;charset=UTF-8"}});
+    if (path === "/api/health" && request.method === "GET")
+      return json({ok:true,service:"ULTRA LOADER API"});
     if (!path.startsWith("/api/")) return json({error:"Not found"},404);
+
     try {
-      if (path === "/api/admin/login" && request.method === "POST") return await adminLogin(request,env);
-      if (!env.SESSION_SECRET) return json({error:"SESSION_SECRET is not configured"},503);
-      if (!env.ULTRA_LOADER) return json({error:"D1 database binding ULTRA_LOADER is missing"},503);
+      if (path === "/api/admin/login" && request.method === "POST")
+        return await adminLogin(request,env);
+      if (!env.SESSION_SECRET)
+        return json({error:"SESSION_SECRET is not configured"},503);
+      if (!env.ULTRA_LOADER)
+        return json({error:"D1 database binding ULTRA_LOADER is missing"},503);
+
       const db=env.ULTRA_LOADER;
       await init(db);
 
-      if(path==="/api/subadmin/login"&&request.method==="POST")return await subRoutes(request,env,db,path);
+      if(path==="/api/subadmin/login"&&request.method==="POST")
+        return await subRoutes(request,env,db,path);
 
       if(path==="/api/update"&&request.method==="GET"){
         const current=Number(url.searchParams.get("versionCode")||0);
-        if(!Number.isInteger(current)||current<0)return json({error:"Invalid versionCode"},400);
+        if(!Number.isInteger(current)||current<0)
+          return json({error:"Invalid versionCode"},400);
         const u=await db.prepare("SELECT * FROM app_updates WHERE id=1").first();
         if(!u)return json({ok:true,updateAvailable:false,message:"No update published"});
         const available=u.version_code>current&&!!u.download_url;
         return json({ok:true,updateAvailable:available,versionCode:u.version_code,versionName:u.version_name,downloadUrl:u.download_url,message:u.message,forceUpdate:available&&!!u.force_update,updatedAt:u.updated_at});
       }
+
       if(path==="/api/activate"&&request.method==="POST"){
         const b=await readBody(request),key=str(b.key,300),device=str(b.deviceId,160);
-        if(!key||!device)return json({ok:false,error:"Activation key and deviceId are required"},400);
-        const master=!!env.MASTER_KEY&&key===env.MASTER_KEY, hash=master?"MASTER":await sha256(key), now=nowISO();
+        if(!key||!device)
+          return json({ok:false,error:"Activation key and deviceId are required"},400);
+        const master=!!env.MASTER_KEY&&key===env.MASTER_KEY;
+        const hash=master?"MASTER":await sha256(key), now=nowISO();
         let expiresAt=null,limit=99999;
+
         if(!master){
           const k=await db.prepare("SELECT expires_at,revoked,max_devices FROM activation_keys WHERE key_hash=?").bind(hash).first();
           if(!k||k.revoked)return json({ok:false,error:"Invalid or revoked activation key"},403);
           if(Date.parse(k.expires_at)<=Date.now())return json({ok:false,error:"Activation key expired"},403);
-          expiresAt=k.expires_at;limit=Math.max(1,Number(k.max_devices)||1);
+          expiresAt=k.expires_at;
+          limit=Math.max(1,Number(k.max_devices)||1);
         }
+
         const existing=await db.prepare("SELECT key_hash FROM devices WHERE device_id=?").bind(device).first();
-        if(existing&&existing.key_hash!==hash)return json({ok:false,error:"This device is already linked to another key"},403);
+        if(existing&&existing.key_hash!==hash)
+          return json({ok:false,error:"This device is already linked to another key"},403);
+
         if(!existing&&!master){
           const count=await db.prepare("SELECT COUNT(*) AS n FROM devices WHERE key_hash=?").bind(hash).first();
-          if(Number(count?.n||0)>=limit)return json({ok:false,error:"Device limit reached"},403);
+          if(Number(count?.n||0)>=limit)
+            return json({ok:false,error:"Device limit reached"},403);
         }
-        // Conditional insert/update: a device ID can never be silently moved to another license.
+
         const result=await db.prepare(`INSERT INTO devices(device_id,key_hash,last_seen,created_at) VALUES(?,?,?,?)
           ON CONFLICT(device_id) DO UPDATE SET last_seen=excluded.last_seen
           WHERE devices.key_hash=excluded.key_hash`).bind(device,hash,now,now).run();
         const check=await db.prepare("SELECT key_hash FROM devices WHERE device_id=?").bind(device).first();
-        if(!check||check.key_hash!==hash)return json({ok:false,error:"Device registration conflict; retry"},409);
+        if(!check||check.key_hash!==hash)
+          return json({ok:false,error:"Device registration conflict; retry"},409);
         return json({ok:true,active:true,expiresAt,licenseType:master?"MASTER":"STANDARD",deviceLimit:limit});
       }
-      if(path.startsWith("/api/admin/"))return await adminRoutes(request,env,db,path);
-      if(path.startsWith("/api/subadmin/"))return await subRoutes(request,env,db,path);
+
+      if(path.startsWith("/api/admin/"))
+        return await adminRoutes(request,env,db,path);
+      if(path.startsWith("/api/subadmin/"))
+        return await subRoutes(request,env,db,path);
+
       return json({error:"Not found"},404);
     } catch(error) {
-      return json({error:"Server error",detail:String(error?.message||error)},500);
+      return json({
+        error:"Server error",
+        detail:String(error?.message||error)
+      },500);
     }
   }
 };
