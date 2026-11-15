@@ -30,6 +30,7 @@ class PortalMonitorService : Service() {
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
     private var callbackRegistered = false
     private var lastMonitorMessage: String? = null
+    private var captiveNotificationVisible = false
 
     private val captiveNetworks = mutableSetOf<Network>()
     private val wifiNetworks = mutableSetOf<Network>()
@@ -64,13 +65,13 @@ class PortalMonitorService : Service() {
                 "Ultra Loader Monitoring",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Quiet network monitoring"
+                description = "Quiet Wi-Fi and network monitoring"
                 enableVibration(false)
                 setSound(null, null)
+                setShowBadge(false)
             }
 
-            getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(channel)
+            notificationManager().createNotificationChannel(channel)
         }
     }
 
@@ -113,13 +114,13 @@ class PortalMonitorService : Service() {
                 Notification.Builder(this)
             }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            builder.setSilent(true)
-        }
-
         return builder
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setDefaults(0)
+            .setVibrate(longArrayOf(0L))
+            .setSound(null)
             .setContentTitle(title)
             .setContentText(message)
             .setContentIntent(pendingIntent)
@@ -196,7 +197,7 @@ class PortalMonitorService : Service() {
             updateMonitorNotification()
 
         } catch (_: Exception) {
-            // Network callback remains responsible for future changes.
+            // Future changes are handled by NetworkCallback.
         }
     }
 
@@ -228,9 +229,12 @@ class PortalMonitorService : Service() {
         if (captive) {
             validatedNetworks.remove(network)
 
-            if (captiveNetworks.add(network)) {
+            val newlyDetected = captiveNetworks.add(network)
+
+            if (newlyDetected) {
                 showCaptivePortalNotification()
             }
+
         } else {
             captiveNetworks.remove(network)
 
@@ -241,7 +245,7 @@ class PortalMonitorService : Service() {
             }
 
             if (captiveNetworks.isEmpty()) {
-                notificationManager().cancel(WIFI_NOTIFICATION_ID)
+                clearCaptiveNotification()
             }
         }
 
@@ -254,7 +258,7 @@ class PortalMonitorService : Service() {
         validatedNetworks.remove(network)
 
         if (captiveNetworks.isEmpty()) {
-            notificationManager().cancel(WIFI_NOTIFICATION_ID)
+            clearCaptiveNotification()
         }
 
         updateMonitorNotification()
@@ -275,7 +279,7 @@ class PortalMonitorService : Service() {
                 "Waiting for Wi-Fi connection"
         }
 
-        // Do not update or alert for an unchanged state.
+        // Notify only when the actual status changes.
         if (message == lastMonitorMessage) return
 
         lastMonitorMessage = message
@@ -291,6 +295,10 @@ class PortalMonitorService : Service() {
     }
 
     private fun showCaptivePortalNotification() {
+        if (captiveNotificationVisible) return
+
+        captiveNotificationVisible = true
+
         notificationManager().notify(
             WIFI_NOTIFICATION_ID,
             buildNotification(
@@ -299,6 +307,13 @@ class PortalMonitorService : Service() {
                 false
             )
         )
+    }
+
+    private fun clearCaptiveNotification() {
+        if (!captiveNotificationVisible) return
+
+        captiveNotificationVisible = false
+        notificationManager().cancel(WIFI_NOTIFICATION_ID)
     }
 
     private fun notificationManager(): NotificationManager {
@@ -324,10 +339,13 @@ class PortalMonitorService : Service() {
         }
 
         callbackRegistered = false
+
         captiveNetworks.clear()
         wifiNetworks.clear()
         validatedNetworks.clear()
+
         lastMonitorMessage = null
+        captiveNotificationVisible = false
 
         super.onDestroy()
     }
