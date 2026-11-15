@@ -1108,6 +1108,50 @@ async function adminLogin(){
   }
 }
 
+async function subLogin(){
+  alert("SUBADMIN LOGIN CLICKED");
+
+  const username = $("suser").value.trim();
+  const password = $("spass").value;
+  const button = document.querySelector(
+    'button[onclick="subLogin()"]'
+  );
+
+  if(!username){
+    alert("Enter subadmin username");
+    $("suser").focus();
+    return;
+  }
+
+  if(!password){
+    alert("Enter subadmin password");
+    $("spass").focus();
+    return;
+  }
+
+  if(button) button.disabled = true;
+
+  try{
+    const d = await request("/subadmin/login","POST",{
+      username: username,
+      password: password
+    });
+
+    if(!d.ok || !d.token){
+      throw Error(d.error || "Subadmin login failed");
+    }
+
+    saveSession(d.token,"subadmin");
+    await start();
+
+  }catch(e){
+    alert(e.message || "Subadmin login failed");
+
+  }finally{
+    if(button) button.disabled = false;
+  }
+}
+
 function saveSession(t,r){
   token=t;
   role=r;
