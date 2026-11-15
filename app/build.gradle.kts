@@ -1,4 +1,3 @@
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,8 +11,30 @@ android {
         applicationId = "com.apumsw1.ultraloader"
         minSdk = 23
         targetSdk = 35
-        versionCode = 2
-        versionName = "2.0"
+        versionCode = 3
+        versionName = "3.0"
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file(
+                System.getenv("ANDROID_KEYSTORE_PATH")
+                    ?: "release-keystore.jks"
+            )
+            storePassword =
+                System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: ""
+            keyAlias =
+                System.getenv("ANDROID_KEY_ALIAS") ?: ""
+            keyPassword =
+                System.getenv("ANDROID_KEY_PASSWORD") ?: ""
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = false
+        }
     }
 
     compileOptions {
