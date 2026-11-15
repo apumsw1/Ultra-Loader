@@ -11,6 +11,7 @@ import android.graphics.drawable.GradientDrawable
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.TrafficStats
 import android.net.Uri
 import android.os.Build
@@ -22,7 +23,6 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.view.Gravity
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.*
@@ -116,12 +116,55 @@ class MainActivity : Activity() {
 
     private var activationPopup: AlertDialog? = null
 
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallbackRegistered = false
+    private var lastLicenseNetworkState = false
+
+    /*
+     * Network callback:
+     * Internet ফিরে এলে saved license server-এ verify হবে।
+     * এখানে কোনো timer বা repeated polling নেই।
+     */
+    private val licenseNetworkCallback =
+        object : ConnectivityManager.NetworkCallback() {
+
+            override fun onAvailable(network: Network) {
+                handler.post {
+                    updateInternetStatus()
+                    verifyLicenseWhenOnline()
+                }
+            }
+
+            override fun onCapabilitiesChanged(
+                network: Network,
+                capabilities: NetworkCapabilities
+            ) {
+                val validated = capabilities.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_VALIDATED
+                )
+
+                handler.post {
+                    updateInternetStatus()
+
+                    if (validated) {
+                        verifyLicenseWhenOnline()
+                    }
+                }
+            }
+
+            override fun onLost(network: Network) {
+                handler.post {
+                    lastLicenseNetworkState = false
+                    updateInternetStatus()
+                }
+            }
+        }
+
     private val updater = object : Runnable {
         override fun run() {
             if (!appInitialized || isFinishing || isDestroyed) return
 
             updateDeviceDataUsage()
-            updateInternetStatus()
             updateActivationStatus()
             updateClock()
 
@@ -192,6 +235,8 @@ class MainActivity : Activity() {
 
         createScreen()
 
+        registerLicenseNetworkCallback()
+
         handler.post(updater)
         handler.post(globeUpdater)
 
@@ -207,6 +252,76 @@ class MainActivity : Activity() {
         updateActivationStatus()
         updateDeviceDataUsage()
         updateClock()
+
+        verifyLicenseWhenOnline()
+    }
+
+    private fun registerLicenseNetworkCallback() {
+        if (networkCallbackRegistered) return
+
+        try {
+            connectivityManager =
+                getSystemService(Context.CONNECTIVITY_SERVICE)
+                    as ConnectivityManager
+
+            val request = NetworkRequest.Builder()
+                .addCapability(
+                    NetworkCapabilities.NET_CAPABILITY_INTERNET
+                )
+                .build()
+
+            connectivityManager?.registerNetworkCallback(
+                request,
+                licenseNetworkCallback
+            )
+
+            networkCallbackRegistered = true
+
+        } catch (_: Exception) {
+            networkCallbackRegistered = false
+        }
+    }
+
+    private fun verifyLicenseWhenOnline() {
+        if (!appInitialized || isFinishing || isDestroyed) return
+
+        val online = hasValidatedInternet()
+
+        if (!online) {
+            lastLicenseNetworkState = false
+            return
+        }
+
+        if (lastLicenseNetworkState) return
+
+        lastLicenseNetworkState = true
+
+        ActivationManager.verifySavedLicense(this) { result ->
+            runOnUiThread {
+                updateActivationStatus()
+
+                when (result) {
+                    "INVALID", "REVOKED", "EXPIRED" -> {
+                        statusText(
+                            "● LICENSE $result",
+                            red
+                        )
+                    }
+
+                    "VALID" -> {
+                        statusText(
+                            "● LICENSE VERIFIED",
+                            green
+                        )
+                    }
+
+                    else -> {
+                        // Network/server failure:
+                        // local license is not removed.
+                    }
+                }
+            }
+        }
     }
 
     private fun createScreen() {
@@ -263,8 +378,6 @@ class MainActivity : Activity() {
             background = rounded(panel, cyan)
         }
 
-        // TOP TWO PANELS
-
         val topRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -272,6 +385,7 @@ class MainActivity : Activity() {
 
         val ipPanel = createPanel()
         ipPanel.addView(panelHeading("🌐 IP DETAILS"))
+
         ipDetails = panelText(
             "PUBLIC IP: CHECKING...\nCOUNTRY: --\nCITY: --\nISP: --\nVPN: CHECKING..."
         )
@@ -317,8 +431,6 @@ class MainActivity : Activity() {
             }
         )
 
-        // BOTTOM TWO PANELS
-
         val bottomRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -357,8 +469,6 @@ class MainActivity : Activity() {
                 setMargins(5, 3, 3, 3)
             }
         )
-
-        // LOGIN PANEL
 
         val loginPanel = createPanel()
         loginPanel.addView(panelHeading("🔑 PORTAL LOGIN"))
@@ -400,8 +510,6 @@ class MainActivity : Activity() {
             }
         )
 
-        // PORTAL WEBVIEW
-
         webTitle = TextView(this).apply {
             text = "▣ PORTAL LOGIN PAGE"
             textSize = 12f
@@ -433,7 +541,7 @@ class MainActivity : Activity() {
                 override fun onPageStarted(
                     view: WebView?,
                     url: String?,
-                    favicon: android.graphics.Bitmap?
+                    favicon: Bitmap?
                 ) {
                     if (!dashboardShown) {
                         statusText("● PORTAL PAGE LOADING...", cyan)
@@ -491,13 +599,13 @@ class MainActivity : Activity() {
         content.addView(secondLoginStageStatus, matchWrap())
 
         root.addView(
-    scroll,
-    LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        0,
-        1f
-    )
-)
+            scroll,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        )
 
         setContentView(root)
 
@@ -552,6 +660,7 @@ class MainActivity : Activity() {
 
     private fun updateClock() {
         if (!::clockText.isInitialized) return
+
         val now = java.text.SimpleDateFormat(
             "dd MMM yyyy  •  hh:mm:ss a",
             Locale.getDefault()
@@ -616,10 +725,6 @@ class MainActivity : Activity() {
     }
 
     private fun updateActivationStatus() {
-        if (!::activationStatus.isInitialized) {
-            // Activation information is shown in the dashboard panel.
-        }
-
         if (::licenseDetails.isInitialized) {
             licenseDetails.text =
                 "ULTRA ACTIVATION\n" +
@@ -847,6 +952,7 @@ class MainActivity : Activity() {
     private fun startMonitorService() {
         try {
             val i = Intent(this, PortalMonitorService::class.java)
+
             if (Build.VERSION.SDK_INT >= 26) {
                 startForegroundService(i)
             } else {
@@ -1224,8 +1330,10 @@ class MainActivity : Activity() {
         if (!::ipDetails.isInitialized) return
 
         val lines = ipDetails.text.toString().lines().toMutableList()
+
         if (lines.size >= 5) {
-            lines[4] = "VPN: ${if (connected) "CONNECTED" else "DISCONNECTED"}"
+            lines[4] =
+                "VPN: ${if (connected) "CONNECTED" else "DISCONNECTED"}"
             ipDetails.text = lines.joinToString("\n")
         }
     }
@@ -1333,7 +1441,10 @@ class MainActivity : Activity() {
         loginActionSearchRunning = true
         loginActionSearchAttempts++
 
-        statusText("● SEARCHING SECOND LOGIN BUTTON... $loginActionSearchAttempts/60", cyan)
+        statusText(
+            "● SEARCHING SECOND LOGIN BUTTON... $loginActionSearchAttempts/60",
+            cyan
+        )
 
         val script = """
             (function(){
@@ -1399,10 +1510,15 @@ class MainActivity : Activity() {
                 secondFormCheckRunning = false
                 stopSecondLoginTimer()
 
-                secondLoginStageStatus.text = "LOGIN FORM READY — AUTOMATION STOPPED"
+                secondLoginStageStatus.text =
+                    "LOGIN FORM READY — AUTOMATION STOPPED"
                 secondLoginStageStatus.setTextColor(green)
 
-                statusText("● FINAL LOGIN PAGE READY — AUTOMATION STOPPED", green)
+                statusText(
+                    "● FINAL LOGIN PAGE READY — AUTOMATION STOPPED",
+                    green
+                )
+
                 loadIpDashboard()
             } else {
                 secondFormCheckRunning = false
@@ -1426,13 +1542,7 @@ class MainActivity : Activity() {
     private fun updateInternetStatus() {
         if (!::internetStatus.isInitialized) return
 
-        val cm =
-            getSystemService(Context.CONNECTIVITY_SERVICE)
-                as ConnectivityManager
-
-        val validated =
-            cm.getNetworkCapabilities(cm.activeNetwork)
-                ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+        val validated = hasValidatedInternet()
 
         internetStatus.text =
             if (validated) "INTERNET: VERIFIED"
@@ -1568,6 +1678,7 @@ class MainActivity : Activity() {
         updateActivationStatus()
         updateInternetStatus()
         updateDeviceDataUsage()
+        verifyLicenseWhenOnline()
 
         if (!ActivationManager.hasAccess(this)) {
             statusText("● ACTIVATION EXPIRED", red)
@@ -1590,6 +1701,17 @@ class MainActivity : Activity() {
 
         activationPopup?.dismiss()
 
+        if (networkCallbackRegistered) {
+            try {
+                connectivityManager?.unregisterNetworkCallback(
+                    licenseNetworkCallback
+                )
+            } catch (_: Exception) {
+            }
+
+            networkCallbackRegistered = false
+        }
+
         try {
             (
                 getSystemService(Context.CONNECTIVITY_SERVICE)
@@ -1606,7 +1728,6 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
-    // Animated globe drawing.
     private inner class GlobeView(context: Context) : View(context) {
 
         private val globePaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -1651,7 +1772,6 @@ class MainActivity : Activity() {
             linePaint.strokeWidth = 1.2f
             linePaint.style = Paint.Style.STROKE
 
-            // Latitude curves.
             for (fraction in listOf(-0.65f, -0.30f, 0f, 0.30f, 0.65f)) {
                 val h = radius * kotlin.math.sqrt(
                     1f - fraction * fraction
@@ -1666,7 +1786,6 @@ class MainActivity : Activity() {
                 )
             }
 
-            // Rotating longitude curves.
             for (i in 0..3) {
                 val angle = Math.toRadians(
                     (rotation + i * 45.0).toDouble()
@@ -1685,7 +1804,6 @@ class MainActivity : Activity() {
                 )
             }
 
-            // Approximate VPN server marker.
             if (isVpnConnected()) {
                 dotPaint.color =
                     if (blink) Color.RED else Color.rgb(255, 100, 100)
@@ -1699,8 +1817,7 @@ class MainActivity : Activity() {
                 val mx = cx +
                     (radius * 0.65f * kotlin.math.cos(markerAngle)).toFloat()
 
-                val my = cy -
-                    radius * 0.25f
+                val my = cy - radius * 0.25f
 
                 canvas.drawCircle(mx, my, 5f, dotPaint)
                 dotPaint.clearShadowLayer()
