@@ -3,7 +3,6 @@ package com.apumsw1.ultraloader
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
-import android.content.DialogInterface
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
@@ -38,8 +37,6 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import android.animation.ObjectAnimator
-import android.animation.Animator
-import android.animation.AnimatorListenerAdapter
 
 object ActivationManager {
 
@@ -144,7 +141,7 @@ object ActivationManager {
     private fun makeButton(
         context: Context,
         label: String,
-        background: android.graphics.drawable.Drawable,
+        buttonBackground: android.graphics.drawable.Drawable,
         color: Int
     ): TextView {
         return TextView(context).apply {
@@ -153,7 +150,7 @@ object ActivationManager {
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(color)
             gravity = Gravity.CENTER
-            background = background
+            setBackground(buttonBackground)
             setPadding(
                 dp(context, 12),
                 dp(context, 15),
@@ -245,7 +242,6 @@ object ActivationManager {
             addView(root)
         }
 
-        // Animated logo
         val logo = TextView(activity).apply {
             text = "UL"
             textSize = 34f
@@ -333,7 +329,6 @@ object ActivationManager {
 
         addSpace(root, activity, 22)
 
-        // Activation panel
         val panel = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(
@@ -375,7 +370,7 @@ object ActivationManager {
             setHintTextColor(0xFF7287A4.toInt())
             setTextColor(WHITE)
             textSize = 15f
-            singleLine = true
+            setSingleLine(true)
             setPadding(
                 dp(activity, 14),
                 dp(activity, 13),
