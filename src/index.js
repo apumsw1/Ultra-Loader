@@ -654,7 +654,7 @@ async function adminRoutes(req, env, db, path) {
       message: u?.message || "",
       forceUpdate: !!u?.force_update,
       updatedAt: u?.updated_at || null
-    });
+        });
   }
 
   if (path === "/api/admin/update" && method === "POST") {
@@ -849,7 +849,7 @@ async function subRoutes(req, env, db, path) {
       return json({ error: "Your key was not found" }, 404);
     }
 
-    return json({ ok: true, revoked: b.revoked });
+        return json({ ok: true, revoked: b.revoked });
   }
 
   if (path === "/api/subadmin/keys/delete" && req.method === "POST") {
@@ -1172,16 +1172,16 @@ async function loadKeys(){
   try{
     const d=await request("/admin/keys");
 
-    $("keys").innerHTML=d.keys.map(k=>`
+    $("keys").innerHTML=d.keys.map(k=>\`
       <div class="item">
-        <b>${esc(k.key_hint)}</b><br>
-        Status: ${esc(k.status)} | Devices: ${k.device_count}/${k.max_devices}<br>
-        Expiry: ${esc(k.expires_at)}<br>
-        <button class="danger" onclick="keyStatus('${esc(k.key_hint)}',true)">Disable</button>
-        <button class="green" onclick="keyStatus('${esc(k.key_hint)}',false)">Enable</button>
-        <button class="danger" onclick="deleteKey('${esc(k.key_hint)}')">Permanently Delete</button>
+        <b>\${esc(k.key_hint)}</b><br>
+        Status: \${esc(k.status)} | Devices: \${k.device_count}/\${k.max_devices}<br>
+        Expiry: \${esc(k.expires_at)}<br>
+        <button class="danger" onclick="keyStatus('\${esc(k.key_hint)}',true)">Disable</button>
+        <button class="green" onclick="keyStatus('\${esc(k.key_hint)}',false)">Enable</button>
+        <button class="danger" onclick="deleteKey('\${esc(k.key_hint)}')">Permanently Delete</button>
       </div>
-    `).join("")||"No keys";
+    \`).join("")||"No keys";
   }catch(e){
     $("keymsg").textContent=e.message;
   }
@@ -1227,24 +1227,24 @@ async function loadSubs(){
   try{
     const d=await request("/admin/subadmins");
 
-    $("subs").innerHTML=d.subadmins.map(s=>`
+    $("subs").innerHTML=d.subadmins.map(s=>\`
       <div class="item">
-        <b>${esc(s.username)}</b> |
-        Balance ৳${s.balance} |
-        Keys ${s.total_keys} |
-        ${s.active?"Active":"Disabled"}<br>
-        <button onclick="walletOp('${s.id}','add')">Add balance</button>
-        <button onclick="walletOp('${s.id}','deduct')">Deduct</button>
-        <button onclick="walletOp('${s.id}','reset')">Reset balance</button>
-        <button onclick="resetPass('${s.id}')">Reset password</button>
-        <button onclick="subStatus('${s.id}',${!s.active})">${s.active?"Disable":"Enable"}</button>
-        <button class="danger" onclick="deleteSub('${s.id}')">Permanently Delete</button>
-        <button class="secondary" onclick="subTx('${s.id}')">Transactions</button>
+        <b>\${esc(s.username)}</b> |
+        Balance ৳\${s.balance} |
+        Keys \${s.total_keys} |
+        \${s.active?"Active":"Disabled"}<br>
+        <button onclick="walletOp('\${s.id}','add')">Add balance</button>
+        <button onclick="walletOp('\${s.id}','deduct')">Deduct</button>
+        <button onclick="walletOp('\${s.id}','reset')">Reset balance</button>
+        <button onclick="resetPass('\${s.id}')">Reset password</button>
+        <button onclick="subStatus('\${s.id}',\${!s.active})">\${s.active?"Disable":"Enable"}</button>
+        <button class="danger" onclick="deleteSub('\${s.id}')">Permanently Delete</button>
+        <button class="secondary" onclick="subTx('\${s.id}')">Transactions</button>
       </div>
-    `).join("")||"No subadmins";
+    \`).join("")||"No subadmins";
   }catch(e){
     $("submsg").textContent=e.message;
-  }
+    }
 }
 
 async function walletOp(id,type){
@@ -1335,15 +1335,15 @@ async function loadTransactions(){
   try{
     const d=await request("/admin/wallet/transactions");
 
-    $("tx").innerHTML=d.transactions.map(t=>`
+    $("tx").innerHTML=d.transactions.map(t=>\`
       <div class="item">
-        ${esc(t.username||t.subadmin_id)} |
-        ${esc(t.type)} |
-        ৳${t.amount} |
-        ${esc(t.created_at)}<br>
-        ${esc(t.note)}
+        \${esc(t.username||t.subadmin_id)} |
+        \${esc(t.type)} |
+        ৳\${t.amount} |
+        \${esc(t.created_at)}<br>
+        \${esc(t.note)}
       </div>
-    `).join("")||"No transactions";
+    \`).join("")||"No transactions";
   }catch(e){
     $("tx").textContent=e.message;
   }
@@ -1355,14 +1355,14 @@ async function subTx(id){
       "/admin/wallet/transactions?subadminId="+encodeURIComponent(id)
     );
 
-    $("tx").innerHTML=d.transactions.map(t=>`
+    $("tx").innerHTML=d.transactions.map(t=>\`
       <div class="item">
-        ${esc(t.type)} |
-        ৳${t.amount} |
-        ${esc(t.created_at)}<br>
-        ${esc(t.note)}
+        \${esc(t.type)} |
+        ৳\${t.amount} |
+        \${esc(t.created_at)}<br>
+        \${esc(t.note)}
       </div>
-    `).join("")||"No transactions";
+    \`).join("")||"No transactions";
   }catch(e){
     alert(e.message);
   }
@@ -1411,20 +1411,20 @@ async function loadSubKeys(){
   try{
     const d=await request("/subadmin/keys");
 
-    $("subkeys").innerHTML=d.keys.map(k=>`
+    $("subkeys").innerHTML=d.keys.map(k=>\`
       <div class="item">
-        <b>${esc(k.key_hint)}</b><br>
-        ${esc(k.status)} |
-        ${k.device_count}/${k.max_devices} devices |
-        ${esc(k.expires_at)}<br>
-        <button onclick="subKeyStatus('${esc(k.key_hint)}',true)">Disable</button>
-        <button onclick="subKeyStatus('${esc(k.key_hint)}',false)">Enable</button>
-        <button class="danger" onclick="subDeleteKey('${esc(k.key_hint)}')">Delete</button>
+        <b>\${esc(k.key_hint)}</b><br>
+        \${esc(k.status)} |
+        \${k.device_count}/\${k.max_devices} devices |
+        \${esc(k.expires_at)}<br>
+        <button onclick="subKeyStatus('\${esc(k.key_hint)}',true)">Disable</button>
+        <button onclick="subKeyStatus('\${esc(k.key_hint)}',false)">Enable</button>
+        <button class="danger" onclick="subDeleteKey('\${esc(k.key_hint)}')">Delete</button>
       </div>
-    `).join("")||"No keys";
+    \`).join("")||"No keys";
   }catch(e){
     $("smsg").textContent=e.message;
-  }
+    }
 }
 
 async function makeSubKey(){
@@ -1475,14 +1475,14 @@ async function loadMyTx(){
   try{
     const d=await request("/subadmin/wallet/transactions");
 
-    $("mytx").innerHTML=d.transactions.map(t=>`
+    $("mytx").innerHTML=d.transactions.map(t=>\`
       <div class="item">
-        ${esc(t.type)} |
-        ৳${t.amount} |
-        ${esc(t.created_at)}<br>
-        ${esc(t.note)}
+        \${esc(t.type)} |
+        ৳\${t.amount} |
+        \${esc(t.created_at)}<br>
+        \${esc(t.note)}
       </div>
-    `).join("")||"No transactions";
+    \`).join("")||"No transactions";
   }catch(e){
     $("mytx").textContent=e.message;
   }
@@ -1513,7 +1513,7 @@ export default {
           ...CORS,
           "Content-Type": "text/html;charset=UTF-8"
         }
-      });
+            });
     }
 
     if (path === "/api/health" && request.method === "GET") {
@@ -1660,7 +1660,7 @@ export default {
           }
 
           expiresAt = k.expires_at;
-          limit = Math.max(1, Number(k.max_devices) || 1);
+                    limit = Math.max(1, Number(k.max_devices) || 1);
         }
 
         const existing = await db.prepare(
