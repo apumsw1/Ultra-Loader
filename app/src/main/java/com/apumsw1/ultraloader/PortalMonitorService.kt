@@ -17,7 +17,7 @@ import android.os.IBinder
 class PortalMonitorService : Service() {
 
     companion object {
-        private const val CHANNEL_ID = "ultra_loader_wifi"
+        private const val CHANNEL_ID = "ultra_loader_wifi_v2"
         private const val NOTIFICATION_ID = 7101
         private const val WIFI_NOTIFICATION_ID = 7102
 
@@ -29,6 +29,7 @@ class PortalMonitorService : Service() {
 
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
     private var callbackRegistered = false
+    private var lastMonitorMessage: String? = null
 
     private val captiveNetworks = mutableSetOf<Network>()
     private val wifiNetworks = mutableSetOf<Network>()
@@ -61,11 +62,11 @@ class PortalMonitorService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Ultra Loader Monitoring",
-                NotificationManager.IMPORTANCE_HIGH
+                NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description =
-                    "Wi-Fi and captive portal monitoring alerts"
-                enableVibration(true)
+                description = "Quiet network monitoring"
+                enableVibration(false)
+                setSound(null, null)
             }
 
             getSystemService(NotificationManager::class.java)
@@ -112,14 +113,19 @@ class PortalMonitorService : Service() {
                 Notification.Builder(this)
             }
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder.setSilent(true)
+        }
+
         return builder
             .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setOnlyAlertOnce(true)
             .setContentTitle(title)
             .setContentText(message)
             .setContentIntent(pendingIntent)
             .setAutoCancel(!ongoing)
             .setOngoing(ongoing)
-            .setPriority(Notification.PRIORITY_HIGH)
+            .setPriority(Notification.PRIORITY_LOW)
             .build()
     }
 
@@ -165,9 +171,7 @@ class PortalMonitorService : Service() {
             wifiCallback = callback
             callbackRegistered = true
 
-        } catch (_: SecurityException) {
-            stopSelf()
-        } catch (_: RuntimeException) {
+        } catch (_: Exception) {
             stopSelf()
         }
     }
@@ -176,7 +180,6 @@ class PortalMonitorService : Service() {
     private fun refreshCurrentNetworks() {
         try {
             for (network in connectivityManager.allNetworks) {
-
                 val capabilities =
                     connectivityManager.getNetworkCapabilities(network)
 
@@ -193,7 +196,7 @@ class PortalMonitorService : Service() {
             updateMonitorNotification()
 
         } catch (_: Exception) {
-            // Network callback continues monitoring.
+            // Network callback remains responsible for future changes.
         }
     }
 
@@ -223,15 +226,12 @@ class PortalMonitorService : Service() {
         )
 
         if (captive) {
-
             validatedNetworks.remove(network)
 
             if (captiveNetworks.add(network)) {
                 showCaptivePortalNotification()
             }
-
         } else {
-
             captiveNetworks.remove(network)
 
             if (validated) {
@@ -241,9 +241,7 @@ class PortalMonitorService : Service() {
             }
 
             if (captiveNetworks.isEmpty()) {
-                notificationManager().cancel(
-                    WIFI_NOTIFICATION_ID
-                )
+                notificationManager().cancel(WIFI_NOTIFICATION_ID)
             }
         }
 
@@ -251,24 +249,19 @@ class PortalMonitorService : Service() {
     }
 
     private fun removeNetwork(network: Network) {
-
         wifiNetworks.remove(network)
         captiveNetworks.remove(network)
         validatedNetworks.remove(network)
 
         if (captiveNetworks.isEmpty()) {
-            notificationManager().cancel(
-                WIFI_NOTIFICATION_ID
-            )
+            notificationManager().cancel(WIFI_NOTIFICATION_ID)
         }
 
         updateMonitorNotification()
     }
 
     private fun updateMonitorNotification() {
-
         val message = when {
-
             captiveNetworks.isNotEmpty() ->
                 "Captive Portal detected — login required"
 
@@ -282,6 +275,11 @@ class PortalMonitorService : Service() {
                 "Waiting for Wi-Fi connection"
         }
 
+        // Do not update or alert for an unchanged state.
+        if (message == lastMonitorMessage) return
+
+        lastMonitorMessage = message
+
         notificationManager().notify(
             NOTIFICATION_ID,
             buildNotification(
@@ -293,7 +291,6 @@ class PortalMonitorService : Service() {
     }
 
     private fun showCaptivePortalNotification() {
-
         notificationManager().notify(
             WIFI_NOTIFICATION_ID,
             buildNotification(
@@ -319,21 +316,18 @@ class PortalMonitorService : Service() {
     }
 
     override fun onDestroy() {
-
         wifiCallback?.let { callback ->
             try {
-                connectivityManager.unregisterNetworkCallback(
-                    callback
-                )
+                connectivityManager.unregisterNetworkCallback(callback)
             } catch (_: Exception) {
             }
         }
 
         callbackRegistered = false
-
         captiveNetworks.clear()
         wifiNetworks.clear()
         validatedNetworks.clear()
+        lastMonitorMessage = null
 
         super.onDestroy()
     }
