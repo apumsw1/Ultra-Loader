@@ -117,7 +117,6 @@ class PortalMonitorService : Service() {
         return builder
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOnlyAlertOnce(true)
-            .setSilent(true)
             .setDefaults(0)
             .setVibrate(longArrayOf(0L))
             .setSound(null)
