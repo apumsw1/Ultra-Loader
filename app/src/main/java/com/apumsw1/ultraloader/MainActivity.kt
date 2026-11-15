@@ -24,6 +24,7 @@ import android.util.Base64
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.*
 import android.widget.*
 import org.json.JSONObject
@@ -44,7 +45,7 @@ class MainActivity : Activity() {
             "com.fast.free.unblock.thunder.vpn"
 
         private const val FALLBACK_PORTAL =
-            "https://guest7.ic.peplink.com/cp/login?"
+            "https://guest.ic.peplink.com/cp/?checksum=5d2990d23969fef1bf8c47d2e96355b734a5c5ab&cp_id=~CP_KEY_zmzKdYvIxSy-_Oghe37X5Q&time=1794614523&ip=192.168.40.55&client_mac=5A%3A70%3A3D%3AC9%3ADA%3A8C&host_ip=192.168.40.1&ssid=~CP_KEY_zmzKdYvIxSy-_Oghe37X5Q&sn=1931-AED4-E0FD&host_mac=10%3A56%3ACA%3ADE%3A9D%3A80&browser=generic&orig_url=http%3A%2F%2Fwww.google.in%2Fgenerate_204?"
 
         private const val PREFS = "ultra_loader_secure"
         private const val KEY_ALIAS = "UltraLoaderCredentialKey"
@@ -490,13 +491,13 @@ class MainActivity : Activity() {
         content.addView(secondLoginStageStatus, matchWrap())
 
         root.addView(
-            scroll,
-            LinearLayout.LayoutParams(
-                LinearLayout.MATCH_PARENT,
-                0,
-                1f
-            )
-        )
+    scroll,
+    LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        0,
+        1f
+    )
+)
 
         setContentView(root)
 
