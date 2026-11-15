@@ -144,6 +144,11 @@ class MainActivity : Activity() {
             text = "⚡ ULTRA LOADER ⚡"; textSize = 27f; gravity = Gravity.CENTER
             setTextColor(cyan); typeface = Typeface.DEFAULT_BOLD; letterSpacing = .10f
             setPadding(5, dp(18), 5, dp(3))
+            animate().alpha(.55f).setDuration(850).withEndAction {
+                animate().alpha(1f).setDuration(850).withEndAction {
+                    if (isAttachedToWindow) animate().alpha(.55f).setDuration(850).start()
+                }.start()
+            }.start()
         }
         val subtitle = TextView(this).apply {
             text = "PERSONAL WI-FI PORTAL SYSTEM  •  SECURE ACCESS"
@@ -176,6 +181,11 @@ class MainActivity : Activity() {
             }
         }
         handler.post(corePulse)
+        status.animate().alpha(.55f).setDuration(650).withEndAction {
+            status.animate().alpha(1f).setDuration(650).withEndAction {
+                if (status.isAttachedToWindow) status.animate().alpha(.55f).setDuration(650).start()
+            }.start()
+        }.start()
 
         val saveButton = makeButton("▣  SAVE LOGIN DETAILS") {
             val user = userInput.text.toString().trim(); val pass = passwordInput.text.toString()
@@ -201,6 +211,11 @@ class MainActivity : Activity() {
             background = rounded(Color.rgb(7, 23, 40), Color.rgb(0, 125, 155), 1)
         }
         timerPanel.addView(labelView("SYSTEM TELEMETRY", 10f, cyan, true))
+        timerPanel.animate().alpha(.72f).setDuration(1100).withEndAction {
+            timerPanel.animate().alpha(1f).setDuration(1100).withEndAction {
+                if (timerPanel.isAttachedToWindow) timerPanel.animate().alpha(.72f).setDuration(1100).start()
+            }.start()
+        }.start()
         val timerRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         val timerCol1 = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         val timerCol2 = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
@@ -309,32 +324,74 @@ class MainActivity : Activity() {
         textSize = 13f
         typeface = Typeface.DEFAULT_BOLD
         setTextColor(Color.WHITE)
-        background = rounded(Color.rgb(10, 50, 75), cyan, 1)
+        background = rounded(Color.rgb(10, 50, 75), cyan, 2)
         setPadding(8, 9, 8, 9)
+        alpha = .92f
+        elevation = dp(5).toFloat()
+
+        // Continuous neon breathing animation for every button.
+        val glowLoop = object : Runnable {
+            override fun run() {
+                if (!isAttachedToWindow) return
+                animate().alpha(.72f).scaleX(1.018f).scaleY(1.018f)
+                    .setDuration(700).withEndAction {
+                        if (!isAttachedToWindow) return@withEndAction
+                        animate().alpha(1f).scaleX(1f).scaleY(1f)
+                            .setDuration(700).withEndAction {
+                                if (isAttachedToWindow) postDelayed(this, 80)
+                            }.start()
+                    }.start()
+            }
+        }
+        post(glowLoop)
+
         val lp = matchWrap()
-        lp.setMargins(0, 5, 0, 5)
+        lp.setMargins(0, 7, 0, 7)
         layoutParams = lp
+
         setOnTouchListener { v, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    v.animate().scaleX(0.97f).scaleY(0.97f).setDuration(80).start()
-                    background = rounded(Color.rgb(0, 115, 140), green, 2)
+                    v.animate().cancel()
+                    v.animate().scaleX(.94f).scaleY(.94f).alpha(1f)
+                        .setDuration(90).start()
+                    background = rounded(Color.rgb(0, 105, 135), green, 3)
+                    elevation = dp(1).toFloat()
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(110).start()
-                    background = rounded(Color.rgb(10, 50, 75), cyan, 1)
+                MotionEvent.ACTION_UP -> {
+                    v.animate().scaleX(1.07f).scaleY(1.07f)
+                        .setDuration(90).withEndAction {
+                            v.animate().scaleX(1f).scaleY(1f)
+                                .setDuration(130).start()
+                        }.start()
+                    background = rounded(Color.rgb(10, 50, 75), cyan, 2)
+                    elevation = dp(5).toFloat()
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                    background = rounded(Color.rgb(10, 50, 75), cyan, 2)
+                    elevation = dp(5).toFloat()
                 }
             }
             false
         }
-        setOnClickListener { action() }
+        setOnClickListener {
+            // Quick neon flash confirms the tap before running the action.
+            animate().rotation(1.2f).setDuration(55).withEndAction {
+                animate().rotation(0f).setDuration(75).start()
+            }.start()
+            action()
+        }
     }
 
     private fun statusText(message: String, color: Int) {
-        if (::status.isInitialized) {
-            status.text = "●  WAITING FOR FREE NET"
-            status.setTextColor(green)
-        }
+        if (!::status.isInitialized) return
+        // Keep the portal login/logout steps hidden, but show every other real system status.
+        val normalized = message.uppercase(java.util.Locale.US)
+        if (normalized.contains("LOGIN") || normalized.contains("LOGOUT")) return
+        status.text = message
+        status.setTextColor(color)
+        status.background = rounded(Color.rgb(5, 31, 42), color, 2)
     }
 
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_LONG).show()
