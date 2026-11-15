@@ -20,17 +20,19 @@ class PortalMonitorService : Service() {
         private const val CHANNEL_ID = "ultra_loader_wifi"
         private const val NOTIFICATION_ID = 7101
         private const val WIFI_NOTIFICATION_ID = 7102
+
         private const val ACTION_OPEN_PORTAL =
             "com.apumsw1.ultraloader.OPEN_PORTAL"
     }
 
     private lateinit var connectivityManager: ConnectivityManager
+
+    private var wifiCallback: ConnectivityManager.NetworkCallback? = null
     private var callbackRegistered = false
 
     private val captiveNetworks = mutableSetOf<Network>()
-
-    private var wifiCallback:
-        ConnectivityManager.NetworkCallback? = null
+    private val wifiNetworks = mutableSetOf<Network>()
+    private val validatedNetworks = mutableSetOf<Network>()
 
     override fun onCreate() {
         super.onCreate()
@@ -44,22 +46,26 @@ class PortalMonitorService : Service() {
         startForeground(
             NOTIFICATION_ID,
             buildNotification(
-                "Ultra Loader is monitoring Wi-Fi",
-                "Captive portal monitoring is active"
+                "Ultra Loader Monitoring",
+                "Wi-Fi monitoring is active",
+                true
             )
         )
 
         registerWifiMonitor()
+        refreshCurrentNetworks()
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= 26) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Ultra Loader Wi-Fi",
+                "Ultra Loader Monitoring",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Captive portal login alerts"
+                description =
+                    "Wi-Fi and captive portal monitoring alerts"
+                enableVibration(true)
             }
 
             getSystemService(NotificationManager::class.java)
@@ -69,8 +75,10 @@ class PortalMonitorService : Service() {
 
     private fun buildNotification(
         title: String,
-        message: String
+        message: String,
+        ongoing: Boolean
     ): Notification {
+
         val openIntent = Intent(
             this,
             MainActivity::class.java
@@ -81,22 +89,23 @@ class PortalMonitorService : Service() {
                 Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
 
-        val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or
-            (if (Build.VERSION.SDK_INT >= 23) {
-                PendingIntent.FLAG_IMMUTABLE
-            } else {
-                0
-            })
+        val pendingFlags =
+            PendingIntent.FLAG_UPDATE_CURRENT or
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    PendingIntent.FLAG_IMMUTABLE
+                } else {
+                    0
+                }
 
         val pendingIntent = PendingIntent.getActivity(
             this,
-            7102,
+            WIFI_NOTIFICATION_ID,
             openIntent,
             pendingFlags
         )
 
         val builder =
-            if (Build.VERSION.SDK_INT >= 26) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 Notification.Builder(this, CHANNEL_ID)
             } else {
                 @Suppress("DEPRECATION")
@@ -108,8 +117,8 @@ class PortalMonitorService : Service() {
             .setContentTitle(title)
             .setContentText(message)
             .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
-            .setOngoing(title.contains("monitoring", true))
+            .setAutoCancel(!ongoing)
+            .setOngoing(ongoing)
             .setPriority(Notification.PRIORITY_HIGH)
             .build()
     }
@@ -118,94 +127,187 @@ class PortalMonitorService : Service() {
         if (callbackRegistered) return
 
         val request = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addTransportType(
+                NetworkCapabilities.TRANSPORT_WIFI
+            )
             .build()
 
-        val callback = object :
-            ConnectivityManager.NetworkCallback() {
+        val callback =
+            object : ConnectivityManager.NetworkCallback() {
 
-            override fun onAvailable(network: Network) {
-                val caps =
-                    connectivityManager.getNetworkCapabilities(network)
+                override fun onAvailable(network: Network) {
+                    wifiNetworks.add(network)
 
-                if (caps?.hasTransport(
-                        NetworkCapabilities.TRANSPORT_WIFI
-                    ) == true
-                ) {
-                    // Wait for capability information before alerting.
-                }
-            }
-
-            override fun onCapabilitiesChanged(
-                network: Network,
-                capabilities: NetworkCapabilities
-            ) {
-                if (!capabilities.hasTransport(
-                        NetworkCapabilities.TRANSPORT_WIFI
+                    evaluateNetwork(
+                        network,
+                        connectivityManager.getNetworkCapabilities(network)
                     )
-                ) return
+                }
 
-                val captive = capabilities.hasCapability(
-                    NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL
-                )
+                override fun onCapabilitiesChanged(
+                    network: Network,
+                    capabilities: NetworkCapabilities
+                ) {
+                    evaluateNetwork(network, capabilities)
+                }
 
-                val validated = capabilities.hasCapability(
-                    NetworkCapabilities.NET_CAPABILITY_VALIDATED
-                )
-
-                val notifications =
-                    getSystemService(Context.NOTIFICATION_SERVICE)
-                        as NotificationManager
-
-                if (captive) {
-                    if (captiveNetworks.add(network)) {
-                        showWifiNotification()
-                    }
-                } else if (validated) {
-                    captiveNetworks.remove(network)
-
-                    if (captiveNetworks.isEmpty()) {
-                        notifications.cancel(WIFI_NOTIFICATION_ID)
-                    }
+                override fun onLost(network: Network) {
+                    removeNetwork(network)
                 }
             }
-
-            override fun onLost(network: Network) {
-                captiveNetworks.remove(network)
-
-                if (captiveNetworks.isEmpty()) {
-                    val notifications =
-                        getSystemService(Context.NOTIFICATION_SERVICE)
-                            as NotificationManager
-
-                    notifications.cancel(WIFI_NOTIFICATION_ID)
-                }
-            }
-        }
 
         try {
             connectivityManager.registerNetworkCallback(
                 request,
                 callback
             )
-            callbackRegistered = true
+
             wifiCallback = callback
-        } catch (_: Exception) {
+            callbackRegistered = true
+
+        } catch (_: SecurityException) {
+            stopSelf()
+        } catch (_: RuntimeException) {
             stopSelf()
         }
     }
 
-    private fun showWifiNotification() {
-        val notification = buildNotification(
-            "Ultra Loader - Captive Portal Detected",
-            "Tap to open the Wi-Fi login page"
+    @Suppress("DEPRECATION")
+    private fun refreshCurrentNetworks() {
+        try {
+            for (network in connectivityManager.allNetworks) {
+
+                val capabilities =
+                    connectivityManager.getNetworkCapabilities(network)
+
+                if (
+                    capabilities?.hasTransport(
+                        NetworkCapabilities.TRANSPORT_WIFI
+                    ) == true
+                ) {
+                    wifiNetworks.add(network)
+                    evaluateNetwork(network, capabilities)
+                }
+            }
+
+            updateMonitorNotification()
+
+        } catch (_: Exception) {
+            // Network callback continues monitoring.
+        }
+    }
+
+    private fun evaluateNetwork(
+        network: Network,
+        capabilities: NetworkCapabilities?
+    ) {
+        if (capabilities == null) return
+
+        val isWifi = capabilities.hasTransport(
+            NetworkCapabilities.TRANSPORT_WIFI
         )
 
-        val manager =
-            getSystemService(Context.NOTIFICATION_SERVICE)
-                as NotificationManager
+        if (!isWifi) {
+            removeNetwork(network)
+            return
+        }
 
-        manager.notify(WIFI_NOTIFICATION_ID, notification)
+        wifiNetworks.add(network)
+
+        val captive = capabilities.hasCapability(
+            NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL
+        )
+
+        val validated = capabilities.hasCapability(
+            NetworkCapabilities.NET_CAPABILITY_VALIDATED
+        )
+
+        if (captive) {
+
+            validatedNetworks.remove(network)
+
+            if (captiveNetworks.add(network)) {
+                showCaptivePortalNotification()
+            }
+
+        } else {
+
+            captiveNetworks.remove(network)
+
+            if (validated) {
+                validatedNetworks.add(network)
+            } else {
+                validatedNetworks.remove(network)
+            }
+
+            if (captiveNetworks.isEmpty()) {
+                notificationManager().cancel(
+                    WIFI_NOTIFICATION_ID
+                )
+            }
+        }
+
+        updateMonitorNotification()
+    }
+
+    private fun removeNetwork(network: Network) {
+
+        wifiNetworks.remove(network)
+        captiveNetworks.remove(network)
+        validatedNetworks.remove(network)
+
+        if (captiveNetworks.isEmpty()) {
+            notificationManager().cancel(
+                WIFI_NOTIFICATION_ID
+            )
+        }
+
+        updateMonitorNotification()
+    }
+
+    private fun updateMonitorNotification() {
+
+        val message = when {
+
+            captiveNetworks.isNotEmpty() ->
+                "Captive Portal detected — login required"
+
+            validatedNetworks.isNotEmpty() ->
+                "Wi-Fi connected — internet available"
+
+            wifiNetworks.isNotEmpty() ->
+                "Wi-Fi connected — checking internet"
+
+            else ->
+                "Waiting for Wi-Fi connection"
+        }
+
+        notificationManager().notify(
+            NOTIFICATION_ID,
+            buildNotification(
+                "Ultra Loader Monitoring",
+                message,
+                true
+            )
+        )
+    }
+
+    private fun showCaptivePortalNotification() {
+
+        notificationManager().notify(
+            WIFI_NOTIFICATION_ID,
+            buildNotification(
+                "Ultra Loader — Login Required",
+                "Wi-Fi login page detected. Tap to open.",
+                false
+            )
+        )
+    }
+
+    private fun notificationManager(): NotificationManager {
+        return getSystemService(
+            Context.NOTIFICATION_SERVICE
+        ) as NotificationManager
     }
 
     override fun onStartCommand(
@@ -217,17 +319,26 @@ class PortalMonitorService : Service() {
     }
 
     override fun onDestroy() {
-        try {
-            wifiCallback?.let {
-                connectivityManager.unregisterNetworkCallback(it)
+
+        wifiCallback?.let { callback ->
+            try {
+                connectivityManager.unregisterNetworkCallback(
+                    callback
+                )
+            } catch (_: Exception) {
             }
-        } catch (_: Exception) {
         }
 
         callbackRegistered = false
+
         captiveNetworks.clear()
+        wifiNetworks.clear()
+        validatedNetworks.clear()
+
         super.onDestroy()
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    override fun onBind(intent: Intent?): IBinder? {
+        return null
+    }
 }
