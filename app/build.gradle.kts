@@ -11,8 +11,8 @@ android {
         applicationId = "com.apumsw1.ultraloader"
         minSdk = 23
         targetSdk = 35
-        versionCode = 3
-        versionName = "3.0"
+        versionCode = 4
+        versionName = "3.1"
     }
 
     signingConfigs {
