@@ -1181,20 +1181,25 @@ class MainActivity : Activity() {
     }
 
     private fun startMonitorService() {
-        try {
-            val serviceIntent = Intent(
-                this,
-                MonitorService::class.java
-            )
+    try {
+        val serviceIntent = Intent(
+            this,
+            PortalMonitorService::class.java
+        )
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
-        } catch (_: Exception) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
         }
+    } catch (e: Exception) {
+        android.util.Log.e(
+            "UltraLoader",
+            "Monitor service start failed",
+            e
+        )
     }
+}
 
     private fun showCredentialDialog() {
         val box = LinearLayout(this).apply {
