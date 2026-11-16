@@ -100,6 +100,7 @@ private var dataUsageSupported = false
 
 private var stage = Stage.IDLE  
 private var vpnOpened = false  
+private var vpnDialogShown = false
 private var loginSubmitted = false  
 private var portalUrl = FALLBACK_PORTAL  
 private var portalNetwork: Network? = null  
@@ -1128,6 +1129,7 @@ private fun startPortalProcess() {
     stage = Stage.LOGIN  
     loginSubmitted = false  
     vpnOpened = false  
+    vpnDialogShown = false
 
     stopSecondLoginTimer()  
     secondLoginElapsedSeconds = 0L  
@@ -1447,21 +1449,26 @@ private fun updateVpnLine(connected: Boolean) {
     }  
 }  
 
-private fun showVpnDialog() {  
-    AlertDialog.Builder(this)  
-        .setTitle("Thunder VPN")  
-        .setMessage(  
-            "Tap Connect in Thunder VPN. Android does not allow this app to press another VPN app's Connect button reliably. Return here after connecting."  
-        )  
-        .setPositiveButton("OPEN VPN") { _, _ ->  
-            vpnOpened = false  
-            openThunderVpn()  
-        }  
-        .setNeutralButton("I CONNECTED — CHECK") { _, _ ->  
-            checkVpnStatus()  
-        }  
-        .setNegativeButton("LATER", null)  
-        .show()  
+private fun showVpnDialog() {
+    if (vpnDialogShown || isFinishing || isDestroyed) return
+
+    vpnDialogShown = true
+
+    AlertDialog.Builder(this)
+        .setTitle("THUNDER VPN")
+        .setMessage(
+            "Please open Thunder VPN and connect manually. " +
+            "After connecting, return to ULTRA LOADER. " +
+            "Your VPN connection will be checked automatically."
+        )
+        .setPositiveButton("OPEN VPN") { _, _ ->
+            openThunderVpn()
+        }
+        .setNeutralButton("CHECK CONNECTION") { _, _ ->
+            checkVpnStatus()
+        }
+        .setNegativeButton("LATER", null)
+        .show()
 }  
 
 private fun clickPortalLogout() {  
