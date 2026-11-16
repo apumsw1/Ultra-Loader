@@ -675,8 +675,8 @@ private fun createScreen() {
         }  
     }  
 
-    secondLoginTimerStatus = panelText("SECOND LOGIN TIMER: NOT STARTED")  
-    secondLoginStageStatus = panelText("LOGIN STAGE: WAITING")  
+    secondLoginTimerStatus = panelText("LOGIN TIMER: NOT STARTED")  
+    secondLoginStageStatus = panelText("FREE DATA CANECTION: WAITING")  
 
     content.addView(title, matchWrap())  
     content.addView(subtitle, matchWrap())  
@@ -696,7 +696,7 @@ private fun createScreen() {
     )  
 
     val footer = TextView(this).apply {  
-        text = "✦ M'r ApurbA Creation ✦"  
+        text = "✦ M'r AB Creation ✦"  
         gravity = Gravity.CENTER  
         textSize = 11f  
         setTextColor(cyan)  
