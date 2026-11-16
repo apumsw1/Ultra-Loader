@@ -6,7 +6,7 @@ import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.\*
+import android.graphics.*
 import android.graphics.drawable.GradientDrawable
 import android.net.ConnectivityManager
 import android.net.Network
@@ -25,8 +25,8 @@ import android.util.Base64
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.webkit.\*
-import android.widget.\*
+import android.webkit.*
+import android.widget.*
 import android.widget.Toast
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -38,20 +38,20 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
- 
+
 class MainActivity : Activity() {
- 
-```
-companion object {  
-private const val UPDATE_API =
-    "https://ultra-loader.ultraloader.workers.dev/api/update"
-    private const val VPN_PACKAGE =  
-        "com.fast.free.unblock.thunder.vpn"  
 
-    private const val FALLBACK_PORTAL =  
-        "https://guest.ic.peplink.com/cp/?checksum=5d2990d23969fef1bf8c47d2e96355b734a5c5ab&cp_id=~CP_KEY_zmzKdYvIxSy-_Oghe37X5Q&time=1794614523&ip=192.168.40.55&client_mac=5A%3A70%3A3D%3AC9%3ADA%3A8C&host_ip=192.168.40.1&ssid=~CP_KEY_zmzKdYvIxSy-_Oghe37X5Q&sn=1931-AED4-E0FD&host_mac=10%3A56%3ACA%3ADE%3A9D%3A80&browser=generic&orig_url=http%3A%2F%2Fwww.google.in%2Fgenerate_204?"  
+    companion object {
+        private const val UPDATE_API =
+            "https://ultra-loader.ultraloader.workers.dev/api/update"
 
-    private const val PREFS = "ultra_loader_secure"  
+        private const val VPN_PACKAGE =
+            "com.fast.free.unblock.thunder.vpn"
+
+                private const val FALLBACK_PORTAL =
+            "https://guest.ic.peplink.com/cp/?checksum=5d2990d23969fef1bf8c47d2e96355b734a5c5ab&cp_id=~CP_KEY_zmzKdYvIxSy-_Oghe37X5Q&time=1794614523&ip=192.168.40.55&client_mac=5A%3A70%3A3D%3AC9%3ADA%3A8C&host_ip=192.168.40.1&ssid=~CP_KEY_zmzKdYvIxSy-_Oghe37X5Q&sn=1931-AED4-E0FD&host_mac=10%3A56%3ACA%3ADE%3A9D%3A80&browser=generic&orig_url=http%3A%2F%2Fwww.google.in%2Fgenerate_204?"
+
+        private const val PREFS = "ultra_loader_secure"  
     private const val KEY_ALIAS = "UltraLoaderCredentialKey"  
 
     private const val ACTION_OPEN_PORTAL =  
@@ -1934,7 +1934,4 @@ private inner class GlobeView(context: Context) : View(context) {
 
         globePaint.style = Paint.Style.FILL  
     }  
-}  
-```
- 
 }
