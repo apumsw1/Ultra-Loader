@@ -55,6 +55,9 @@ class MainActivity : Activity() {
 
         private const val TELEGRAM_URL =
             "https://t.me/ultraloader"
+
+        private const val UPDATE_API =
+            "https://ultra-loader.ultraloader.workers.dev/api/update"
     }
 
     private enum class Stage {
@@ -120,11 +123,6 @@ class MainActivity : Activity() {
     private var networkCallbackRegistered = false
     private var lastLicenseNetworkState = false
 
-    /*
-     * Network callback:
-     * Internet ফিরে এলে saved license server-এ verify হবে।
-     * এখানে কোনো timer বা repeated polling নেই।
-     */
     private val licenseNetworkCallback =
         object : ConnectivityManager.NetworkCallback() {
 
@@ -207,6 +205,140 @@ class MainActivity : Activity() {
         window.statusBarColor = dark
         window.navigationBarColor = dark
 
+        checkForForcedUpdate()
+    }
+
+    private fun checkForForcedUpdate() {
+        executor.execute {
+            var updateAvailable = false
+            var forceUpdate = false
+            var versionName = ""
+            var message = "A new version is required to continue."
+            var downloadUrl = ""
+
+            try {
+                val currentVersionCode =
+                    if (Build.VERSION.SDK_INT >= 28) {
+                        packageManager.getPackageInfo(
+                            packageName,
+                            0
+                        ).longVersionCode
+                    } else {
+                        @Suppress("DEPRECATION")
+                        packageManager.getPackageInfo(
+                            packageName,
+                            0
+                        ).versionCode.toLong()
+                    }
+
+                val connection = URL(
+                    "$UPDATE_API?versionCode=$currentVersionCode"
+                ).openConnection() as HttpURLConnection
+
+                connection.requestMethod = "GET"
+                connection.connectTimeout = 10000
+                connection.readTimeout = 10000
+                connection.setRequestProperty(
+                    "Accept",
+                    "application/json"
+                )
+
+                val response = connection.inputStream
+                    .bufferedReader()
+                    .use { it.readText() }
+
+                connection.disconnect()
+
+                val json = JSONObject(response)
+
+                updateAvailable =
+                    json.optBoolean("updateAvailable", false)
+
+                forceUpdate =
+                    json.optBoolean("forceUpdate", false)
+
+                versionName =
+                    json.optString("versionName", "")
+
+                message = json.optString(
+                    "message",
+                    "A new version is required to continue."
+                )
+
+                downloadUrl =
+                    json.optString("downloadUrl", "")
+
+            } catch (_: Exception) {
+                // Update server unavailable: continue normally.
+            }
+
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+
+                if (updateAvailable && forceUpdate) {
+                    showForcedUpdateDialog(
+                        versionName,
+                        message,
+                        downloadUrl
+                    )
+                } else {
+                    continueToActivation()
+                }
+            }
+        }
+    }
+
+    private fun showForcedUpdateDialog(
+        versionName: String,
+        message: String,
+        downloadUrl: String
+    ) {
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(
+                if (versionName.isBlank()) {
+                    "Update Required"
+                } else {
+                    "Update Required - $versionName"
+                }
+            )
+            .setMessage(message)
+            .setCancelable(false)
+            .setPositiveButton("UPDATE", null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(
+                AlertDialog.BUTTON_POSITIVE
+            ).setOnClickListener {
+                val uri = try {
+                    Uri.parse(downloadUrl)
+                } catch (_: Exception) {
+                    null
+                }
+
+                if (
+                    uri == null ||
+                    uri.scheme != "https" ||
+                    uri.host.isNullOrBlank()
+                ) {
+                    toast("Invalid update download link.")
+                    return@setOnClickListener
+                }
+
+                try {
+                    startActivity(
+                        Intent(Intent.ACTION_VIEW, uri)
+                    )
+                } catch (_: Exception) {
+                    toast("Cannot open update link.")
+                }
+            }
+        }
+
+        dialog.show()
+    }
+
+    private fun continueToActivation() {
         ActivationManager.requireActivation(this) {
             initializeApplication()
         }
@@ -231,7 +363,7 @@ class MainActivity : Activity() {
 
         dataUsageSupported =
             dataBaselineRx != TrafficStats.UNSUPPORTED.toLong() &&
-            dataBaselineTx != TrafficStats.UNSUPPORTED.toLong()
+                dataBaselineTx != TrafficStats.UNSUPPORTED.toLong()
 
         createScreen()
 
@@ -276,7 +408,6 @@ class MainActivity : Activity() {
             )
 
             networkCallbackRegistered = true
-
         } catch (_: Exception) {
             networkCallbackRegistered = false
         }
@@ -302,22 +433,15 @@ class MainActivity : Activity() {
 
                 when (result) {
                     "INVALID", "REVOKED", "EXPIRED" -> {
-                        statusText(
-                            "● LICENSE $result",
-                            red
-                        )
+                        statusText("● LICENSE $result", red)
                     }
 
                     "VALID" -> {
-                        statusText(
-                            "● LICENSE VERIFIED",
-                            green
-                        )
+                        statusText("● LICENSE VERIFIED", green)
                     }
 
                     else -> {
-                        // Network/server failure:
-                        // local license is not removed.
+                        // Keep local license during server/network failure.
                     }
                 }
             }
@@ -389,6 +513,7 @@ class MainActivity : Activity() {
         ipDetails = panelText(
             "PUBLIC IP: CHECKING...\nCOUNTRY: --\nCITY: --\nISP: --\nVPN: CHECKING..."
         )
+
         ipPanel.addView(ipDetails)
 
         val activationPanel = createPanel()
@@ -401,8 +526,13 @@ class MainActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(green)
             setPadding(8, 10, 8, 10)
-            background = rounded(Color.rgb(7, 48, 48), green)
-            setOnClickListener { showActivationPopup() }
+            background = rounded(
+                Color.rgb(7, 48, 48),
+                green
+            )
+            setOnClickListener {
+                showActivationPopup()
+            }
         }
 
         activationPanel.addView(activationButton)
@@ -410,11 +540,13 @@ class MainActivity : Activity() {
         licenseDetails = panelText(
             "ULTRA ACTIVATION\nCHECKING LICENSE..."
         )
+
         activationPanel.addView(licenseDetails)
 
         val buyButton = makeButton("BUY NEW ACTIVATION KEY") {
             openTelegramContact()
         }
+
         activationPanel.addView(buyButton)
 
         topRow.addView(
@@ -442,6 +574,7 @@ class MainActivity : Activity() {
         dataDetails = panelText(
             "DOWNLOAD: --\nUPLOAD: --\nTOTAL: --\nSPEED: --"
         )
+
         dataPanel.addView(dataDetails)
 
         val globePanel = createPanel()
@@ -497,7 +630,9 @@ class MainActivity : Activity() {
 
         loginPanel.addView(
             makeButton("▶ START ULTRA LOADER") {
-                if (!checkActivationBeforeAction()) return@makeButton
+                if (!checkActivationBeforeAction()) {
+                    return@makeButton
+                }
 
                 if (readCredentials() == null) {
                     showCredentialDialog()
@@ -506,7 +641,10 @@ class MainActivity : Activity() {
                 }
             }.apply {
                 textSize = 15f
-                background = rounded(Color.rgb(0, 90, 115), cyan)
+                background = rounded(
+                    Color.rgb(0, 90, 115),
+                    cyan
+                )
             }
         )
 
@@ -532,7 +670,10 @@ class MainActivity : Activity() {
                     .replace("; wv", "")
 
             CookieManager.getInstance().setAcceptCookie(true)
-            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+            CookieManager.getInstance().setAcceptThirdPartyCookies(
+                this,
+                true
+            )
 
             webChromeClient = WebChromeClient()
 
@@ -556,9 +697,16 @@ class MainActivity : Activity() {
                         Stage.LOGIN -> tryAutoLogin()
                         Stage.CHECK_LOGIN -> checkPortalLogin()
                         Stage.WAIT_SECOND_LOGIN -> checkSecondLoginForm()
+
                         else -> {
-                            if (stage == Stage.IDLE && !dashboardShown) {
-                                statusText("● PORTAL PAGE READY", green)
+                            if (
+                                stage == Stage.IDLE &&
+                                !dashboardShown
+                            ) {
+                                statusText(
+                                    "● PORTAL PAGE READY",
+                                    green
+                                )
                             }
                         }
                     }
@@ -566,8 +714,11 @@ class MainActivity : Activity() {
             }
         }
 
-        secondLoginTimerStatus = panelText("SECOND LOGIN TIMER: NOT STARTED")
-        secondLoginStageStatus = panelText("LOGIN STAGE: WAITING")
+        secondLoginTimerStatus =
+            panelText("SECOND LOGIN TIMER: NOT STARTED")
+
+        secondLoginStageStatus =
+            panelText("LOGIN STAGE: WAITING")
 
         content.addView(title, matchWrap())
         content.addView(subtitle, matchWrap())
@@ -586,17 +737,9 @@ class MainActivity : Activity() {
             )
         )
 
-        val footer = TextView(this).apply {
-            text = "✦ M'r ApurbA Creation ✦"
-            gravity = Gravity.CENTER
-            textSize = 11f
-            setTextColor(cyan)
-            setPadding(5, 12, 5, 12)
-        }
-
-        content.addView(footer, matchWrap())
-        content.addView(secondLoginTimerStatus, matchWrap())
-        content.addView(secondLoginStageStatus, matchWrap())
+        // Footer removed.
+        // LOGIN TIMER / LOGIN STAGE display removed.
+        // SECOND LOGIN TIMER logic remains active.
 
         root.addView(
             scroll,
@@ -655,6 +798,7 @@ class MainActivity : Activity() {
             setTextColor(cyan)
             setPadding(6, 8, 6, 8)
         }
+
         return clockText
     }
 
@@ -728,13 +872,13 @@ class MainActivity : Activity() {
         if (::licenseDetails.isInitialized) {
             licenseDetails.text =
                 "ULTRA ACTIVATION\n" +
-                ActivationManager.statusText(this) +
-                "\n" +
-                if (ActivationManager.hasAccess(this)) {
-                    "STATUS: ACTIVE"
-                } else {
-                    "STATUS: INACTIVE"
-                }
+                    ActivationManager.statusText(this) +
+                    "\n" +
+                    if (ActivationManager.hasAccess(this)) {
+                        "STATUS: ACTIVE"
+                    } else {
+                        "STATUS: INACTIVE"
+                    }
         }
     }
 
@@ -748,43 +892,98 @@ class MainActivity : Activity() {
             var data: JSONObject? = null
 
             try {
-                val c = URL("https://ipwho.is/")
+                val connection = URL("https://ipwho.is/")
                     .openConnection() as HttpURLConnection
 
-                c.connectTimeout = 9000
-                c.readTimeout = 9000
-                c.setRequestProperty("User-Agent", "UltraLoader/1.0")
+                connection.connectTimeout = 9000
+                connection.readTimeout = 9000
+                connection.setRequestProperty(
+                    "User-Agent",
+                    "UltraLoader/1.0"
+                )
 
-                val body = c.inputStream.bufferedReader()
+                val body = connection.inputStream
+                    .bufferedReader()
                     .use { it.readText() }
 
-                c.disconnect()
+                connection.disconnect()
                 data = JSONObject(body)
             } catch (_: Exception) {
             }
 
-            val success = data?.optBoolean("success", false) == true
+            val success =
+                data?.optBoolean("success", false) == true
 
-            val ip = if (success) data?.optString("ip") else "Unavailable"
-            val country = if (success) data?.optString("country") else "Unavailable"
-            val city = if (success) data?.optString("city") else "Unavailable"
+            val ip = if (success) {
+                data?.optString("ip")
+            } else {
+                "Unavailable"
+            }
+
+            val country = if (success) {
+                data?.optString("country")
+            } else {
+                "Unavailable"
+            }
+
+            val city = if (success) {
+                data?.optString("city")
+            } else {
+                "Unavailable"
+            }
+
             val isp = if (success) {
                 data?.optJSONObject("connection")?.optString("isp")
-            } else "Unavailable"
+            } else {
+                "Unavailable"
+            }
+
+            val latitude = if (success) {
+                data?.optDouble("latitude", Double.NaN)
+                    ?: Double.NaN
+            } else {
+                Double.NaN
+            }
+
+            val longitude = if (success) {
+                data?.optDouble("longitude", Double.NaN)
+                    ?: Double.NaN
+            } else {
+                Double.NaN
+            }
+
+            val validIpCoordinates =
+                latitude.isFinite() &&
+                    longitude.isFinite() &&
+                    latitude in -90.0..90.0 &&
+                    longitude in -180.0..180.0
 
             runOnUiThread {
-                if (!::ipDetails.isInitialized) return@runOnUiThread
+                if (!::ipDetails.isInitialized) {
+                    return@runOnUiThread
+                }
 
                 ipDetails.text =
                     "PUBLIC IP: $ip\n" +
-                    "COUNTRY: $country\n" +
-                    "CITY: $city\n" +
-                    "ISP: ${isp ?: "Unavailable"}\n" +
-                    "VPN: ${if (isVpnConnected()) "CONNECTED" else "DISCONNECTED"}"
+                        "COUNTRY: $country\n" +
+                        "CITY: $city\n" +
+                        "ISP: ${isp ?: "Unavailable"}\n" +
+                        "VPN: ${if (isVpnConnected()) "CONNECTED" else "DISCONNECTED"}"
 
                 ipDetails.setTextColor(
                     if (isVpnConnected()) green else cyan
                 )
+
+                if (::globeView.isInitialized) {
+                    if (validIpCoordinates) {
+                        globeView.setIpLocation(
+                            latitude,
+                            longitude
+                        )
+                    } else {
+                        globeView.clearIpLocation()
+                    }
+                }
             }
         }
     }
@@ -810,20 +1009,26 @@ class MainActivity : Activity() {
             return
         }
 
-        val download = (rx - dataBaselineRx).coerceAtLeast(0L)
-        val upload = (tx - dataBaselineTx).coerceAtLeast(0L)
+        val download =
+            (rx - dataBaselineRx).coerceAtLeast(0L)
 
-        val rxSpeed = (rx - lastRx).coerceAtLeast(0L)
-        val txSpeed = (tx - lastTx).coerceAtLeast(0L)
+        val upload =
+            (tx - dataBaselineTx).coerceAtLeast(0L)
+
+        val rxSpeed =
+            (rx - lastRx).coerceAtLeast(0L)
+
+        val txSpeed =
+            (tx - lastTx).coerceAtLeast(0L)
 
         lastRx = rx
         lastTx = tx
 
         dataDetails.text =
             "DOWNLOAD: ${formatSize(download)}\n" +
-            "UPLOAD: ${formatSize(upload)}\n" +
-            "TOTAL: ${formatSize(download + upload)}\n" +
-            "SPEED: ↓${formatSize(rxSpeed)}/s  ↑${formatSize(txSpeed)}/s"
+                "UPLOAD: ${formatSize(upload)}\n" +
+                "TOTAL: ${formatSize(download + upload)}\n" +
+                "SPEED: ↓${formatSize(rxSpeed)}/s  ↑${formatSize(txSpeed)}/s"
 
         dataDetails.setTextColor(green)
     }
@@ -892,18 +1097,26 @@ class MainActivity : Activity() {
             textSize = 11f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
-            background = rounded(Color.rgb(8, 48, 68), cyan)
+            background = rounded(
+                Color.rgb(8, 48, 68),
+                cyan
+            )
             setPadding(7, 7, 7, 7)
 
             layoutParams = matchWrap().apply {
                 setMargins(0, 4, 0, 4)
             }
 
-            setOnClickListener { action() }
+            setOnClickListener {
+                action()
+            }
         }
     }
 
-    private fun statusText(message: String, color: Int) {
+    private fun statusText(
+        message: String,
+        color: Int
+    ) {
         if (::status.isInitialized) {
             status.text = message
             status.setTextColor(color)
@@ -911,13 +1124,20 @@ class MainActivity : Activity() {
     }
 
     private fun toast(message: String) {
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        Toast.makeText(
+            this,
+            message,
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun openTelegramContact() {
         try {
             startActivity(
-                Intent(Intent.ACTION_VIEW, Uri.parse(TELEGRAM_URL))
+                Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse(TELEGRAM_URL)
+                )
             )
         } catch (_: Exception) {
             toast("Unable to open Telegram")
@@ -933,14 +1153,16 @@ class MainActivity : Activity() {
         ActivationManager.requireActivation(this) {
             updateActivationStatus()
         }
+
         return false
     }
 
     private fun requestNotificationPermission() {
         if (
             Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED
+            checkSelfPermission(
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
         ) {
             requestPermissions(
                 arrayOf(Manifest.permission.POST_NOTIFICATIONS),
@@ -951,12 +1173,15 @@ class MainActivity : Activity() {
 
     private fun startMonitorService() {
         try {
-            val i = Intent(this, PortalMonitorService::class.java)
+            val serviceIntent = Intent(
+                this,
+                PortalMonitorService::class.java
+            )
 
             if (Build.VERSION.SDK_INT >= 26) {
-                startForegroundService(i)
+                startForegroundService(serviceIntent)
             } else {
-                startService(i)
+                startService(serviceIntent)
             }
         } catch (_: Exception) {
             statusText("● WIFI MONITOR NOT STARTED", red)
@@ -985,16 +1210,21 @@ class MainActivity : Activity() {
 
         AlertDialog.Builder(this)
             .setTitle("Portal Login")
-            .setMessage("Enter your Portal User ID and Password.")
+            .setMessage(
+                "Enter your Portal User ID and Password."
+            )
             .setView(box)
             .setPositiveButton("SAVE") { _, _ ->
-                val u = user.text.toString().trim()
-                val p = pass.text.toString()
+                val username = user.text.toString().trim()
+                val password = pass.text.toString()
 
-                if (u.isNotBlank() && p.isNotBlank()) {
-                    if (saveCredentials(u, p)) {
-                        userInput.setText(u)
-                        passwordInput.setText(p)
+                if (
+                    username.isNotBlank() &&
+                    password.isNotBlank()
+                ) {
+                    if (saveCredentials(username, password)) {
+                        userInput.setText(username)
+                        passwordInput.setText(password)
                         startPortalProcess()
                     } else {
                         toast("Unable to save credentials")
@@ -1023,8 +1253,11 @@ class MainActivity : Activity() {
         stopSecondLoginTimer()
         secondLoginElapsedSeconds = 0L
 
-        secondLoginTimerStatus.text = "SECOND LOGIN TIMER: NOT STARTED"
-        secondLoginStageStatus.text = "LOGIN STAGE: WAITING"
+        secondLoginTimerStatus.text =
+            "SECOND LOGIN TIMER: NOT STARTED"
+
+        secondLoginStageStatus.text =
+            "LOGIN STAGE: WAITING"
 
         logoutSearchAttempts = 0
         loginActionSearchAttempts = 0
@@ -1048,9 +1281,11 @@ class MainActivity : Activity() {
                 getSystemService(Context.CONNECTIVITY_SERVICE)
                     as ConnectivityManager
 
-            val wifi = manager.allNetworks.firstOrNull { n ->
-                manager.getNetworkCapabilities(n)
-                    ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+            val wifi = manager.allNetworks.firstOrNull { network ->
+                manager.getNetworkCapabilities(network)
+                    ?.hasTransport(
+                        NetworkCapabilities.TRANSPORT_WIFI
+                    ) == true
             }
 
             val network = wifi ?: manager.activeNetwork
@@ -1069,8 +1304,11 @@ class MainActivity : Activity() {
 
                 try {
                     connection = (
-                        if (network != null) network.openConnection(URL(probe))
-                        else URL(probe).openConnection()
+                        if (network != null) {
+                            network.openConnection(URL(probe))
+                        } else {
+                            URL(probe).openConnection()
+                        }
                     ) as HttpURLConnection
 
                     connection.instanceFollowRedirects = false
@@ -1079,7 +1317,8 @@ class MainActivity : Activity() {
                     connection.requestMethod = "GET"
 
                     val code = connection.responseCode
-                    val location = connection.getHeaderField("Location")
+                    val location =
+                        connection.getHeaderField("Location")
 
                     if (
                         code in 300..399 &&
@@ -1105,20 +1344,28 @@ class MainActivity : Activity() {
 
                 if (selectedNetwork != null) {
                     val bound =
-                        (getSystemService(Context.CONNECTIVITY_SERVICE)
-                            as ConnectivityManager)
-                            .bindProcessToNetwork(selectedNetwork)
+                        (
+                            getSystemService(
+                                Context.CONNECTIVITY_SERVICE
+                            ) as ConnectivityManager
+                        ).bindProcessToNetwork(selectedNetwork)
 
                     if (!bound) {
-                        statusText("● WIFI ROUTING NOT AVAILABLE", red)
+                        statusText(
+                            "● WIFI ROUTING NOT AVAILABLE",
+                            red
+                        )
                     }
                 }
 
                 portalUrl = found ?: FALLBACK_PORTAL
 
                 statusText(
-                    if (found != null) "● CURRENT PORTAL FOUND"
-                    else "● USING PORTAL FALLBACK",
+                    if (found != null) {
+                        "● CURRENT PORTAL FOUND"
+                    } else {
+                        "● USING PORTAL FALLBACK"
+                    },
                     if (found != null) green else cyan
                 )
 
@@ -1207,15 +1454,32 @@ class MainActivity : Activity() {
                 loginSubmitted = true
                 stage = Stage.CHECK_LOGIN
 
-                statusText("● LOGIN SUBMITTED - VERIFYING...", cyan)
+                statusText(
+                    "● LOGIN SUBMITTED - VERIFYING...",
+                    cyan
+                )
 
-                handler.postDelayed({ checkPortalLogin() }, 3000)
-
-            } else if (result?.contains("FORM_NOT_FOUND") == true) {
-                statusText("● PORTAL LOGIN FORM NOT FOUND", red)
+                handler.postDelayed(
+                    { checkPortalLogin() },
+                    3000
+                )
+            } else if (
+                result?.contains("FORM_NOT_FOUND") == true
+            ) {
+                statusText(
+                    "● PORTAL LOGIN FORM NOT FOUND",
+                    red
+                )
             } else {
-                statusText("● CHECKING PORTAL FORM...", cyan)
-                handler.postDelayed({ tryAutoLogin() }, 2000)
+                statusText(
+                    "● CHECKING PORTAL FORM...",
+                    cyan
+                )
+
+                handler.postDelayed(
+                    { tryAutoLogin() },
+                    2000
+                )
             }
         }
     }
@@ -1238,20 +1502,40 @@ class MainActivity : Activity() {
         webView.evaluateJavascript(script) { result ->
             when {
                 result?.contains("LOGIN_OK") == true -> {
-                    statusText("● PORTAL LOGIN VERIFIED", green)
+                    statusText(
+                        "● PORTAL LOGIN VERIFIED",
+                        green
+                    )
 
-                    (getSystemService(Context.CONNECTIVITY_SERVICE)
-                        as ConnectivityManager).bindProcessToNetwork(null)
+                    (
+                        getSystemService(Context.CONNECTIVITY_SERVICE)
+                            as ConnectivityManager
+                    ).bindProcessToNetwork(null)
 
-                    handler.postDelayed({ openThunderVpn() }, 2500)
+                    handler.postDelayed(
+                        { openThunderVpn() },
+                        2500
+                    )
                 }
 
                 result?.contains("LOGIN_FORM_STILL_HERE") == true -> {
-                    statusText("● LOGIN NOT CONFIRMED", red)
-                    handler.postDelayed({ checkPortalLogin() }, 3000)
+                    statusText(
+                        "● LOGIN NOT CONFIRMED",
+                        red
+                    )
+
+                    handler.postDelayed(
+                        { checkPortalLogin() },
+                        3000
+                    )
                 }
 
-                else -> handler.postDelayed({ checkPortalLogin() }, 2500)
+                else -> {
+                    handler.postDelayed(
+                        { checkPortalLogin() },
+                        2500
+                    )
+                }
             }
         }
     }
@@ -1267,20 +1551,32 @@ class MainActivity : Activity() {
         vpnOpened = true
         stage = Stage.WAIT_VPN
 
-        val launch = packageManager.getLaunchIntentForPackage(VPN_PACKAGE)
+        val launch =
+            packageManager.getLaunchIntentForPackage(VPN_PACKAGE)
 
         if (launch == null) {
-            statusText("● THUNDER VPN NOT INSTALLED", red)
+            statusText(
+                "● THUNDER VPN NOT INSTALLED",
+                red
+            )
+
             showVpnDialog()
             return
         }
 
         try {
-            statusText("● OPENING THUNDER VPN — CONNECT MANUALLY", cyan)
+            statusText(
+                "● OPENING THUNDER VPN — CONNECT MANUALLY",
+                cyan
+            )
+
             launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             startActivity(launch)
 
-            handler.postDelayed({ checkVpnStatus() }, 2500)
+            handler.postDelayed(
+                { checkVpnStatus() },
+                2500
+            )
         } catch (_: Exception) {
             statusText("● VPN OPEN FAILED", red)
             showVpnDialog()
@@ -1292,8 +1588,8 @@ class MainActivity : Activity() {
             getSystemService(Context.CONNECTIVITY_SERVICE)
                 as ConnectivityManager
 
-        return manager.allNetworks.any { n ->
-            manager.getNetworkCapabilities(n)
+        return manager.allNetworks.any { network ->
+            manager.getNetworkCapabilities(network)
                 ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
         }
     }
@@ -1306,21 +1602,31 @@ class MainActivity : Activity() {
         }
 
         if (connected) {
-            statusText("● VPN CONNECTION DETECTED", green)
+            statusText(
+                "● VPN CONNECTION DETECTED",
+                green
+            )
 
             if (stage == Stage.WAIT_VPN) {
                 stage = Stage.LOGOUT
                 logoutSearchAttempts = 0
                 logoutSearchRunning = false
 
-                handler.postDelayed({ clickPortalLogout() }, 5000)
+                handler.postDelayed(
+                    { clickPortalLogout() },
+                    5000
+                )
             }
 
             updateInternetStatus()
             updateIpDetails()
         } else {
             if (stage == Stage.WAIT_VPN) {
-                statusText("● PLEASE CONNECT VPN", red)
+                statusText(
+                    "● PLEASE CONNECT VPN",
+                    red
+                )
+
                 showVpnDialog()
             }
         }
@@ -1329,11 +1635,13 @@ class MainActivity : Activity() {
     private fun updateVpnLine(connected: Boolean) {
         if (!::ipDetails.isInitialized) return
 
-        val lines = ipDetails.text.toString().lines().toMutableList()
+        val lines =
+            ipDetails.text.toString().lines().toMutableList()
 
         if (lines.size >= 5) {
             lines[4] =
                 "VPN: ${if (connected) "CONNECTED" else "DISCONNECTED"}"
+
             ipDetails.text = lines.joinToString("\n")
         }
     }
@@ -1359,18 +1667,26 @@ class MainActivity : Activity() {
         if (stage != Stage.LOGOUT || logoutSearchRunning) return
 
         if (logoutSearchAttempts >= 10) {
-            statusText("● PORTAL LOGOUT BUTTON NOT FOUND", red)
+            statusText(
+                "● PORTAL LOGOUT BUTTON NOT FOUND",
+                red
+            )
             return
         }
 
         logoutSearchRunning = true
         logoutSearchAttempts++
 
-        statusText("● SEARCHING PORTAL LOGOUT... $logoutSearchAttempts/10", cyan)
+        statusText(
+            "● SEARCHING PORTAL LOGOUT... $logoutSearchAttempts/10",
+            cyan
+        )
 
-        portalNetwork?.let {
-            (getSystemService(Context.CONNECTIVITY_SERVICE)
-                as ConnectivityManager).bindProcessToNetwork(it)
+        portalNetwork?.let { network ->
+            (
+                getSystemService(Context.CONNECTIVITY_SERVICE)
+                    as ConnectivityManager
+            ).bindProcessToNetwork(network)
         }
 
         val script = """
@@ -1388,16 +1704,28 @@ class MainActivity : Activity() {
         webView.evaluateJavascript(script) { result ->
             logoutSearchRunning = false
 
-            if (stage != Stage.LOGOUT) return@evaluateJavascript
+            if (stage != Stage.LOGOUT) {
+                return@evaluateJavascript
+            }
 
             if (result?.contains("LOGOUT_CLICKED") == true) {
                 statusText("● LOGOUT CLICKED", green)
                 startSecondLoginTimer()
-                handler.postDelayed({ clickPortalLoginAgent() }, 2500)
+
+                handler.postDelayed(
+                    { clickPortalLoginAgent() },
+                    2500
+                )
             } else if (logoutSearchAttempts < 10) {
-                handler.postDelayed({ clickPortalLogout() }, 3000)
+                handler.postDelayed(
+                    { clickPortalLogout() },
+                    3000
+                )
             } else {
-                statusText("● PORTAL LOGOUT BUTTON NOT FOUND", red)
+                statusText(
+                    "● PORTAL LOGOUT BUTTON NOT FOUND",
+                    red
+                )
             }
         }
     }
@@ -1405,12 +1733,17 @@ class MainActivity : Activity() {
     private fun startSecondLoginTimer() {
         stopSecondLoginTimer()
 
-        secondLoginTimerStartedAt = SystemClock.elapsedRealtime()
+        secondLoginTimerStartedAt =
+            SystemClock.elapsedRealtime()
+
         secondLoginElapsedSeconds = 0L
         secondLoginTimerRunning = true
 
-        secondLoginTimerStatus.text = "SECOND LOGIN SEARCH: 0s"
-        secondLoginStageStatus.text = "SEARCHING FOR SECOND LOGIN BUTTON"
+        secondLoginTimerStatus.text =
+            "SECOND LOGIN SEARCH: 0s"
+
+        secondLoginStageStatus.text =
+            "SEARCHING FOR SECOND LOGIN BUTTON"
 
         handler.removeCallbacks(timerUpdater)
         handler.post(timerUpdater)
@@ -1419,8 +1752,10 @@ class MainActivity : Activity() {
     private fun stopSecondLoginTimer() {
         if (secondLoginTimerRunning) {
             secondLoginElapsedSeconds =
-                (SystemClock.elapsedRealtime() -
-                    secondLoginTimerStartedAt) / 1000L
+                (
+                    SystemClock.elapsedRealtime() -
+                        secondLoginTimerStartedAt
+                    ) / 1000L
         }
 
         secondLoginTimerRunning = false
@@ -1428,13 +1763,23 @@ class MainActivity : Activity() {
     }
 
     private fun clickPortalLoginAgent() {
-        if (stage != Stage.LOGOUT || loginActionSearchRunning) return
+        if (
+            stage != Stage.LOGOUT ||
+            loginActionSearchRunning
+        ) return
 
         if (loginActionSearchAttempts >= 60) {
             stopSecondLoginTimer()
-            secondLoginStageStatus.text = "SECOND LOGIN BUTTON NOT FOUND"
+
+            secondLoginStageStatus.text =
+                "SECOND LOGIN BUTTON NOT FOUND"
+
             secondLoginStageStatus.setTextColor(red)
-            statusText("● PORTAL LOGIN ACTION NOT FOUND", red)
+
+            statusText(
+                "● PORTAL LOGIN ACTION NOT FOUND",
+                red
+            )
             return
         }
 
@@ -1461,32 +1806,58 @@ class MainActivity : Activity() {
         webView.evaluateJavascript(script) { result ->
             loginActionSearchRunning = false
 
-            if (stage != Stage.LOGOUT) return@evaluateJavascript
+            if (stage != Stage.LOGOUT) {
+                return@evaluateJavascript
+            }
 
-            if (result?.contains("LOGIN_AGENT_CLICKED") == true) {
+            if (
+                result?.contains("LOGIN_AGENT_CLICKED") == true
+            ) {
                 secondLoginButtonFound = true
                 stage = Stage.WAIT_SECOND_LOGIN
 
                 stopSecondLoginTimer()
-                secondLoginStageStatus.text = "LOGIN BUTTON CLICKED"
-                statusText("● SECOND LOGIN BUTTON FOUND", green)
 
-                handler.postDelayed({ checkSecondLoginForm() }, 1000)
+                secondLoginStageStatus.text =
+                    "LOGIN BUTTON CLICKED"
 
+                statusText(
+                    "● SECOND LOGIN BUTTON FOUND",
+                    green
+                )
+
+                handler.postDelayed(
+                    { checkSecondLoginForm() },
+                    1000
+                )
             } else if (loginActionSearchAttempts < 60) {
-                handler.postDelayed({ clickPortalLoginAgent() }, 2000)
+                handler.postDelayed(
+                    { clickPortalLoginAgent() },
+                    2000
+                )
             } else {
                 stopSecondLoginTimer()
-                secondLoginStageStatus.text = "SECOND LOGIN BUTTON NOT FOUND"
+
+                secondLoginStageStatus.text =
+                    "SECOND LOGIN BUTTON NOT FOUND"
+
                 secondLoginStageStatus.setTextColor(red)
-                statusText("● PORTAL LOGIN ACTION NOT FOUND", red)
+
+                statusText(
+                    "● PORTAL LOGIN ACTION NOT FOUND",
+                    red
+                )
             }
         }
     }
 
     private fun checkSecondLoginForm() {
         if (stage != Stage.WAIT_SECOND_LOGIN) return
-        if (!secondLoginButtonFound || secondFormCheckRunning) return
+
+        if (
+            !secondLoginButtonFound ||
+            secondFormCheckRunning
+        ) return
 
         secondFormCheckRunning = true
 
@@ -1504,14 +1875,18 @@ class MainActivity : Activity() {
                 return@evaluateJavascript
             }
 
-            if (result?.contains("SECOND_FORM_READY") == true) {
+            if (
+                result?.contains("SECOND_FORM_READY") == true
+            ) {
                 stage = Stage.FINISHED
                 loginSubmitted = true
                 secondFormCheckRunning = false
+
                 stopSecondLoginTimer()
 
                 secondLoginStageStatus.text =
                     "LOGIN FORM READY — AUTOMATION STOPPED"
+
                 secondLoginStageStatus.setTextColor(green)
 
                 statusText(
@@ -1523,20 +1898,28 @@ class MainActivity : Activity() {
             } else {
                 secondFormCheckRunning = false
 
-                statusText("● WAITING FOR SECOND LOGIN FORM...", cyan)
+                statusText(
+                    "● WAITING FOR SECOND LOGIN FORM...",
+                    cyan
+                )
 
-                handler.postDelayed({ checkSecondLoginForm() }, 2000)
+                handler.postDelayed(
+                    { checkSecondLoginForm() },
+                    2000
+                )
             }
         }
     }
 
     private fun hasValidatedInternet(): Boolean {
-        val cm =
+        val manager =
             getSystemService(Context.CONNECTIVITY_SERVICE)
                 as ConnectivityManager
 
-        return cm.getNetworkCapabilities(cm.activeNetwork)
-            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+        return manager.getNetworkCapabilities(manager.activeNetwork)
+            ?.hasCapability(
+                NetworkCapabilities.NET_CAPABILITY_VALIDATED
+            ) == true
     }
 
     private fun updateInternetStatus() {
@@ -1545,10 +1928,15 @@ class MainActivity : Activity() {
         val validated = hasValidatedInternet()
 
         internetStatus.text =
-            if (validated) "INTERNET: VERIFIED"
-            else "INTERNET: NOT VERIFIED"
+            if (validated) {
+                "INTERNET: VERIFIED"
+            } else {
+                "INTERNET: NOT VERIFIED"
+            }
 
-        internetStatus.setTextColor(if (validated) green else red)
+        internetStatus.setTextColor(
+            if (validated) green else red
+        )
 
         if (
             stage == Stage.FINISHED &&
@@ -1568,17 +1956,25 @@ class MainActivity : Activity() {
         ) return
 
         dashboardShown = true
-        statusText("● VPN + INTERNET VERIFIED", green)
+
+        statusText(
+            "● VPN + INTERNET VERIFIED",
+            green
+        )
+
         webTitle.text = "▣ LIVE CONNECTION INFORMATION"
 
         updateIpDetails()
     }
 
     private fun getSecretKey(): SecretKey {
-        val keyStore = java.security.KeyStore.getInstance("AndroidKeyStore")
+        val keyStore =
+            java.security.KeyStore.getInstance("AndroidKeyStore")
+
         keyStore.load(null)
 
         val oldKey = keyStore.getKey(KEY_ALIAS, null)
+
         if (oldKey is SecretKey) return oldKey
 
         val generator = KeyGenerator.getInstance(
@@ -1588,14 +1984,18 @@ class MainActivity : Activity() {
 
         val spec = KeyGenParameterSpec.Builder(
             KEY_ALIAS,
-            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            KeyProperties.PURPOSE_ENCRYPT or
+                KeyProperties.PURPOSE_DECRYPT
         )
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setEncryptionPaddings(
+                KeyProperties.ENCRYPTION_PADDING_NONE
+            )
             .setRandomizedEncryptionRequired(true)
             .build()
 
         generator.init(spec)
+
         return generator.generateKey()
     }
 
@@ -1604,21 +2004,36 @@ class MainActivity : Activity() {
         password: String
     ): Boolean = try {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, getSecretKey())
 
-        val encrypted = cipher.doFinal(
-            "$username\n$password".toByteArray(StandardCharsets.UTF_8)
+        cipher.init(
+            Cipher.ENCRYPT_MODE,
+            getSecretKey()
         )
 
-        getSharedPreferences(PREFS, MODE_PRIVATE)
+        val encrypted = cipher.doFinal(
+            "$username\n$password".toByteArray(
+                StandardCharsets.UTF_8
+            )
+        )
+
+        getSharedPreferences(
+            PREFS,
+            MODE_PRIVATE
+        )
             .edit()
             .putString(
                 "iv",
-                Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
+                Base64.encodeToString(
+                    cipher.iv,
+                    Base64.NO_WRAP
+                )
             )
             .putString(
                 "data",
-                Base64.encodeToString(encrypted, Base64.NO_WRAP)
+                Base64.encodeToString(
+                    encrypted,
+                    Base64.NO_WRAP
+                )
             )
             .apply()
 
@@ -1629,10 +2044,14 @@ class MainActivity : Activity() {
 
     private fun readCredentials(): Pair<String, String>? {
         return try {
-            val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+            val preferences =
+                getSharedPreferences(PREFS, MODE_PRIVATE)
 
-            val ivText = prefs.getString("iv", null) ?: return null
-            val dataText = prefs.getString("data", null) ?: return null
+            val ivText =
+                preferences.getString("iv", null) ?: return null
+
+            val dataText =
+                preferences.getString("data", null) ?: return null
 
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
 
@@ -1641,18 +2060,27 @@ class MainActivity : Activity() {
                 getSecretKey(),
                 GCMParameterSpec(
                     128,
-                    Base64.decode(ivText, Base64.NO_WRAP)
+                    Base64.decode(
+                        ivText,
+                        Base64.NO_WRAP
+                    )
                 )
             )
 
             val plain = cipher.doFinal(
-                Base64.decode(dataText, Base64.NO_WRAP)
+                Base64.decode(
+                    dataText,
+                    Base64.NO_WRAP
+                )
             ).toString(StandardCharsets.UTF_8)
 
             val parts = plain.split("\n", limit = 2)
 
-            if (parts.size != 2) null
-            else Pair(parts[0], parts[1])
+            if (parts.size != 2) {
+                null
+            } else {
+                Pair(parts[0], parts[1])
+            }
         } catch (_: Exception) {
             null
         }
@@ -1666,7 +2094,10 @@ class MainActivity : Activity() {
             intent?.action == ACTION_OPEN_PORTAL &&
             appInitialized
         ) {
-            handler.postDelayed({ startPortalProcess() }, 300)
+            handler.postDelayed(
+                { startPortalProcess() },
+                300
+            )
         }
     }
 
@@ -1681,21 +2112,29 @@ class MainActivity : Activity() {
         verifyLicenseWhenOnline()
 
         if (!ActivationManager.hasAccess(this)) {
-            statusText("● ACTIVATION EXPIRED", red)
+            statusText(
+                "● ACTIVATION EXPIRED",
+                red
+            )
 
             ActivationManager.requireActivation(this) {
                 updateActivationStatus()
             }
+
             return
         }
 
         if (stage == Stage.WAIT_VPN) {
-            handler.postDelayed({ checkVpnStatus() }, 700)
+            handler.postDelayed(
+                { checkVpnStatus() },
+                700
+            )
         }
     }
 
     override fun onDestroy() {
         secondLoginTimerRunning = false
+
         handler.removeCallbacksAndMessages(null)
         executor.shutdownNow()
 
@@ -1728,14 +2167,46 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
-    private inner class GlobeView(context: Context) : View(context) {
+    private inner class GlobeView(
+        context: Context
+    ) : View(context) {
 
-        private val globePaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val globePaint =
+            Paint(Paint.ANTI_ALIAS_FLAG)
+
+        private val linePaint =
+            Paint(Paint.ANTI_ALIAS_FLAG)
+
+        private val dotPaint =
+            Paint(Paint.ANTI_ALIAS_FLAG)
 
         private var rotation = 0f
         private var blink = false
+
+        private var ipLatitude: Double? = null
+        private var ipLongitude: Double? = null
+
+        fun setIpLocation(
+            latitude: Double,
+            longitude: Double
+        ) {
+            if (
+                latitude.isFinite() &&
+                longitude.isFinite() &&
+                latitude in -90.0..90.0 &&
+                longitude in -180.0..180.0
+            ) {
+                ipLatitude = latitude
+                ipLongitude = longitude
+                invalidate()
+            }
+        }
+
+        fun clearIpLocation() {
+            ipLatitude = null
+            ipLongitude = null
+            invalidate()
+        }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
@@ -1744,7 +2215,7 @@ class MainActivity : Activity() {
             val cy = height / 2f
             val radius = minOf(width, height) * 0.38f
 
-            rotation += 1.2f
+            rotation = (rotation + 0.45f) % 360f
             blink = !blink
 
             globePaint.shader = RadialGradient(
@@ -1760,19 +2231,42 @@ class MainActivity : Activity() {
                 Shader.TileMode.CLAMP
             )
 
-            canvas.drawCircle(cx, cy, radius, globePaint)
-            globePaint.shader = null
+            globePaint.style = Paint.Style.FILL
 
+            canvas.drawCircle(
+                cx,
+                cy,
+                radius,
+                globePaint
+            )
+
+            globePaint.shader = null
             globePaint.style = Paint.Style.STROKE
             globePaint.strokeWidth = 1.5f
             globePaint.color = cyan
-            canvas.drawCircle(cx, cy, radius, globePaint)
 
-            linePaint.color = Color.argb(150, 0, 220, 190)
-            linePaint.strokeWidth = 1.2f
+            canvas.drawCircle(
+                cx,
+                cy,
+                radius,
+                globePaint
+            )
+
+            linePaint.color =
+                Color.argb(150, 0, 220, 190)
+
+            linePaint.strokeWidth = 1.1f
             linePaint.style = Paint.Style.STROKE
 
-            for (fraction in listOf(-0.65f, -0.30f, 0f, 0.30f, 0.65f)) {
+            for (
+                fraction in listOf(
+                    -0.65f,
+                    -0.30f,
+                    0f,
+                    0.30f,
+                    0.65f
+                )
+            ) {
                 val h = radius * kotlin.math.sqrt(
                     1f - fraction * fraction
                 )
@@ -1804,23 +2298,70 @@ class MainActivity : Activity() {
                 )
             }
 
-            if (isVpnConnected()) {
-                dotPaint.color =
-                    if (blink) Color.RED else Color.rgb(255, 100, 100)
+            val latitude = ipLatitude
+            val longitude = ipLongitude
 
-                dotPaint.setShadowLayer(10f, 0f, 0f, Color.RED)
+            if (
+                latitude != null &&
+                longitude != null
+            ) {
+                val latRad = Math.toRadians(latitude)
 
-                val markerAngle = Math.toRadians(
-                    (rotation + 65.0).toDouble()
-                )
+                val lonRad =
+                    Math.toRadians(longitude) +
+                        Math.toRadians(rotation.toDouble())
 
-                val mx = cx +
-                    (radius * 0.65f * kotlin.math.cos(markerAngle)).toFloat()
+                val front = kotlin.math.cos(lonRad)
 
-                val my = cy - radius * 0.25f
+                if (front >= 0.0) {
+                    val markerX = cx + (
+                        radius *
+                            kotlin.math.cos(latRad) *
+                            kotlin.math.sin(lonRad)
+                        ).toFloat()
 
-                canvas.drawCircle(mx, my, 5f, dotPaint)
-                dotPaint.clearShadowLayer()
+                    val markerY = cy - (
+                        radius *
+                            kotlin.math.sin(latRad)
+                        ).toFloat()
+
+                    dotPaint.color =
+                        if (blink) {
+                            Color.YELLOW
+                        } else {
+                            Color.GREEN
+                        }
+
+                    dotPaint.setShadowLayer(
+                        12f,
+                        0f,
+                        0f,
+                        Color.GREEN
+                    )
+
+                    canvas.drawCircle(
+                        markerX,
+                        markerY,
+                        7f,
+                        dotPaint
+                    )
+
+                    dotPaint.clearShadowLayer()
+
+                    dotPaint.style = Paint.Style.STROKE
+                    dotPaint.strokeWidth = 1.5f
+                    dotPaint.color =
+                        Color.argb(190, 100, 255, 150)
+
+                    canvas.drawCircle(
+                        markerX,
+                        markerY,
+                        12f,
+                        dotPaint
+                    )
+
+                    dotPaint.style = Paint.Style.FILL
+                }
             }
 
             globePaint.style = Paint.Style.FILL
