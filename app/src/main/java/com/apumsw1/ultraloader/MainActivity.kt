@@ -1932,6 +1932,7 @@ private inner class GlobeView(context: Context) : View(context) {
             dotPaint.clearShadowLayer()  
         }  
 
-        globePaint.style = Paint.Style.FILL  
-    }  
+                globePaint.style = Paint.Style.FILL
+    }
+}
 }
