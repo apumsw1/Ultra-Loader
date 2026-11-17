@@ -86,11 +86,52 @@ async function verifyToken(token, secret) {
   }
 }
 
-function makeKey() {
+function makeKey(customSuffix = "") {
+  const suffix = str(customSuffix, 80).replace(/^UL-/i, "").toUpperCase();
+
+  if (suffix) {
+    if (!/^[A-Z0-9][A-Z0-9-]{2,79}$/.test(suffix)) {
+      throw new Error("Custom key suffix must be 3–80 letters, numbers or hyphens");
+    }
+    return "UL-" + suffix;
+  }
+
   return "UL-" + [...crypto.getRandomValues(new Uint8Array(18))]
     .map(x => x.toString(16).padStart(2, "0"))
     .join("")
     .toUpperCase();
+}
+
+function durationMinutesFromBody(body) {
+  if (body.durationMinutes !== undefined) {
+    const minutes = Number(body.durationMinutes);
+    if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > 3650 * 1440) {
+      throw new Error("Validity must be 1 minute to 3650 days");
+    }
+    return minutes;
+  }
+
+  if (body.expiresAt !== undefined) {
+    const expiry = Date.parse(body.expiresAt);
+    const remaining = expiry - Date.now();
+    if (!Number.isFinite(expiry) || remaining < 1 || remaining > 3650 * 86400000) {
+      throw new Error("Expiry must be a future date within 3650 days");
+    }
+    return Math.ceil(remaining / 60000);
+  }
+
+  throw new Error("Provide durationMinutes or expiresAt");
+}
+
+function priceForDuration(body) {
+  const days = Math.ceil(durationMinutesFromBody(body) / 1440);
+  if (days <= 1) return 50;
+  if (days === 2) return 100;
+  if (days === 3) return 150;
+  if (days <= 7) return 200;
+  if (days <= 15) return 300;
+  if (days <= 30) return 400;
+  return Math.ceil(days / 30) * 400;
 }
 
 async function passwordHash(password, salt) {
@@ -347,8 +388,13 @@ async function listKeys(db, ownerId = null) {
 
 async function generateKeyRecord(db, body, ownerId, maxDevices = 1, purchaseId = null) {
   const expiresAt = validDuration(body);
-  const key = makeKey();
+  const key = makeKey(body.customSuffix);
   const hash = await sha256(key);
+
+  const duplicate = await db.prepare(
+    "SELECT key_hash FROM activation_keys WHERE key_hash=?"
+  ).bind(hash).first();
+  if (duplicate) throw new Error("This custom activation key already exists");
   const created = nowISO();
 
   await db.prepare(`INSERT INTO activation_keys(
@@ -374,6 +420,22 @@ async function setRevoked(db, key, revoked, ownerId = null) {
   return (r.meta?.changes || 0) > 0;
 }
 
+async function resetKey(db, key, body, ownerId = null) {
+  const cleanKey = str(key, 200);
+  if (!cleanKey) throw new Error("Key is required");
+  const hash = await sha256(cleanKey);
+  const expiresAt = validDuration(body);
+  const sql = ownerId
+    ? "UPDATE activation_keys SET expires_at=?,revoked=0 WHERE key_hash=? AND owner_id=?"
+    : "UPDATE activation_keys SET expires_at=?,revoked=0 WHERE key_hash=?";
+  const result = ownerId
+    ? await db.prepare(sql).bind(expiresAt, hash, ownerId).run()
+    : await db.prepare(sql).bind(expiresAt, hash).run();
+  if (!(result.meta?.changes > 0)) return null;
+  await db.prepare("DELETE FROM devices WHERE key_hash=?").bind(hash).run();
+  return expiresAt;
+}
+
 async function adminRoutes(req, env, db, path) {
   const admin = await adminOnly(req, env);
 
@@ -393,7 +455,13 @@ async function adminRoutes(req, env, db, path) {
       return json({ error: "Device limit must be 1–99999" }, 400);
     }
 
-    const k = await generateKeyRecord(db, b, "MAIN", max);
+    let k;
+    try {
+      k = await generateKeyRecord(db, b, "MAIN", max);
+    } catch (e) {
+      const message = e?.message || "Key generation failed";
+      return json({ error: message }, /already exists/i.test(message) ? 409 : 400);
+    }
 
     return json({
       created: 1,
@@ -401,6 +469,16 @@ async function adminRoutes(req, env, db, path) {
       expiresAt: k.expiresAt,
       maxDevices: max
     });
+  }
+
+  if (path === "/api/admin/keys/reset" && method === "POST") {
+    try {
+      const expiresAt = await resetKey(db, b.key, b);
+      if (!expiresAt) return json({ error: "Activation key not found" }, 404);
+      return json({ ok: true, expiresAt, devicesReset: true });
+    } catch (e) {
+      return json({ error: e.message || "Invalid reset request" }, 400);
+    }
   }
 
   if (path === "/api/admin/keys/status" && method === "POST") {
@@ -777,7 +855,15 @@ async function subRoutes(req, env, db, path) {
       }, 409);
     }
 
-    const price = await getPrice(db);
+    let price;
+    try {
+      price = priceForDuration(b);
+      // Validate duration before charging the wallet.
+      validDuration(b);
+      if (b.customSuffix) makeKey(b.customSuffix);
+    } catch (e) {
+      return json({ error: e.message || "Invalid key details" }, 400);
+    }
 
     const debit = await db.prepare(
       "UPDATE subadmins SET balance=balance-?,updated_at=? WHERE id=? AND active=1 AND balance>=?"
@@ -835,6 +921,17 @@ async function subRoutes(req, env, db, path) {
       ).bind(price, nowISO(), s.subadminId).run();
 
       throw e;
+    }
+  }
+
+  if (path === "/api/subadmin/keys/reset" && req.method === "POST") {
+    const b = await readBody(req);
+    try {
+      const expiresAt = await resetKey(db, b.key, b, s.subadminId);
+      if (!expiresAt) return json({ error: "Your key was not found" }, 404);
+      return json({ ok: true, expiresAt, devicesReset: true });
+    } catch (e) {
+      return json({ error: e.message || "Invalid reset request" }, 400);
     }
   }
 
@@ -936,6 +1033,8 @@ button{padding:10px 13px;margin:4px;background:#0788b5;color:white;border:0;bord
 <div>
 <label>Device Limit (1–99999)</label>
 <input id="limit" type="number" min="1" max="99999" value="1">
+<label>Custom Key Suffix (optional; UL- is added automatically)</label>
+<input id="customSuffix" maxlength="80" placeholder="e.g. PREMIUM2026">
 <button onclick="makeAdminKey()">Generate Key</button>
 <pre id="newkey"></pre>
 <p id="keymsg" class="msg"></p>
@@ -957,8 +1056,9 @@ button{padding:10px 13px;margin:4px;background:#0788b5;color:white;border:0;bord
 </div>
 
 <div class="panel">
-<h2>Key Price &amp; Wallet History</h2>
-<label>Price per key (৳)</label>
+<h2>Key Pricing &amp; Wallet History</h2>
+<p class="muted">Automatic duration pricing: 1 day ৳50 · 2 days ৳100 · 3 days ৳150 · 4–7 days ৳200 · 8–15 days ৳300 · 16–30 days ৳400 · Above 30 days: ৳400 per 30-day block.</p>
+<label>Legacy fixed price setting (kept for compatibility; duration pricing is used for new Subadmin keys)</label>
 <input id="price" type="number" min="0">
 <button onclick="savePrice()">Save Key Price</button>
 <button class="secondary" onclick="loadTransactions()">All Transactions</button>
@@ -997,7 +1097,9 @@ button{padding:10px 13px;margin:4px;background:#0788b5;color:white;border:0;bord
 <input id="shours" type="number" min="0" max="23" value="0" placeholder="Hours">
 <input id="sminutes" type="number" min="0" max="59" value="0" placeholder="Minutes">
 <input id="sexpiry" type="datetime-local">
-<button onclick="makeSubKey()">Generate (charged from balance)</button>
+<label>Custom Key Suffix (optional; UL- is added automatically)</label>
+<input id="scustomSuffix" maxlength="80" placeholder="e.g. PREMIUM2026">
+<button onclick="makeSubKey()">Generate (charged by validity)</button>
 <pre id="snewkey"></pre>
 <p id="smsg" class="msg"></p>
 </div>
@@ -1206,12 +1308,44 @@ function validity(prefix){
   return {durationMinutes:n};
 }
 
+async function copyKey(key){
+  try{
+    await navigator.clipboard.writeText(String(key));
+    alert("Key copied");
+  }catch(e){
+    const area=document.createElement("textarea");
+    area.value=String(key);
+    document.body.appendChild(area);
+    area.select();
+    const ok=document.execCommand("copy");
+    area.remove();
+    alert(ok?"Key copied":"Copy failed; please copy manually");
+  }
+}
+
+async function resetKeyValidity(key, isSubadmin=false){
+  const raw=prompt("Set new validity in days (example: 30)","30");
+  if(raw===null)return;
+  const days=Number(raw);
+  if(!Number.isSafeInteger(days)||days<1||days>3650){
+    alert("Enter a whole number from 1 to 3650 days");
+    return;
+  }
+  if(!confirm("Reset this key's expiry and clear all linked device bindings?"))return;
+  try{
+    const route=isSubadmin?"/subadmin/keys/reset":"/admin/keys/reset";
+    await request(route,"POST",{key,durationMinutes:days*1440});
+    alert("Key reset. New validity: "+days+" days. Device bindings cleared.");
+    if(isSubadmin) await loadSubKeys(); else await loadKeys();
+  }catch(e){alert(e.message);}
+}
+
 async function makeAdminKey(){
   try{
     const d=await request(
       "/admin/keys/generate",
       "POST",
-      {...validity(""),maxDevices:Number($("limit").value)}
+      {...validity(""),maxDevices:Number($("limit").value),customSuffix:$("customSuffix").value.trim()}
     );
 
     $("newkey").textContent=d.key+"\\nExpires: "+d.expiresAt;
@@ -1232,6 +1366,8 @@ async function loadKeys(){
         <b>\${esc(k.key_hint)}</b><br>
         Status: \${esc(k.status)} | Devices: \${k.device_count}/\${k.max_devices}<br>
         Expiry: \${esc(k.expires_at)}<br>
+        <button class="secondary" onclick="copyKey('\${esc(k.key_hint)}')">COPY KEY</button>
+        <button class="green" onclick="resetKeyValidity('\${esc(k.key_hint)}',false)">RESET KEY</button>
         <button class="danger" onclick="keyStatus('\${esc(k.key_hint)}',true)">Disable</button>
         <button class="green" onclick="keyStatus('\${esc(k.key_hint)}',false)">Enable</button>
         <button class="danger" onclick="deleteKey('\${esc(k.key_hint)}')">Permanently Delete</button>
@@ -1459,7 +1595,7 @@ async function loadWallet(){
   $("wallet").textContent=
     "User: "+d.username+
     " | Balance: ৳"+d.balance+
-    " | Price per key: ৳"+d.keyPrice;
+    " | Pricing: ৳50–৳400+ by validity";
 }
 
 async function loadSubKeys(){
@@ -1472,6 +1608,8 @@ async function loadSubKeys(){
         \${esc(k.status)} |
         \${k.device_count}/\${k.max_devices} devices |
         \${esc(k.expires_at)}<br>
+        <button class="secondary" onclick="copyKey('\${esc(k.key_hint)}')">COPY KEY</button>
+        <button class="green" onclick="resetKeyValidity('\${esc(k.key_hint)}',true)">RESET KEY</button>
         <button onclick="subKeyStatus('\${esc(k.key_hint)}',true)">Disable</button>
         <button onclick="subKeyStatus('\${esc(k.key_hint)}',false)">Enable</button>
         <button class="danger" onclick="subDeleteKey('\${esc(k.key_hint)}')">Delete</button>
@@ -1489,7 +1627,7 @@ async function makeSubKey(){
     const d=await request(
       "/subadmin/keys/generate",
       "POST",
-      {...validity("s"),requestId:reqId}
+      {...validity("s"),requestId:reqId,customSuffix:$("scustomSuffix").value.trim()}
     );
 
     $("snewkey").textContent=
