@@ -1652,29 +1652,32 @@ async function loadMyTx(){
   }
 }
 
-document.addEventListener("DOMContentLoaded", function(){
+// ULTRA LOADER LOGIN BUTTON FIX
+(function(){
   const btn = document.getElementById("adminLoginBtn");
+  const msg = document.getElementById("loginmsg");
 
-  if (btn) {
-    btn.addEventListener("click", adminLogin);
+  if (!btn) {
+    if (msg) msg.textContent = "ERROR: Login button not found";
+    return;
   }
 
-  window.addEventListener("error", function(event){
-    const msg = document.getElementById("loginmsg");
+  btn.addEventListener("click", function(){
+    adminLogin();
+  });
 
+  window.addEventListener("error", function(event){
     if (msg) {
       msg.textContent = "JAVASCRIPT ERROR: " + event.message;
     }
   });
 
   window.addEventListener("unhandledrejection", function(event){
-    const msg = document.getElementById("loginmsg");
-
     if (msg) {
       msg.textContent = "ASYNC ERROR: " + String(event.reason);
     }
   });
-});
+})();
 if(token&&role){
   start().catch(e=>{
     alert(e.message);
