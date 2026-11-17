@@ -993,7 +993,7 @@ button{padding:10px 13px;margin:4px;background:#0788b5;color:white;border:0;bord
 <input id="apass" type="password" placeholder="Admin password">
 
 <button type="button" id="adminLoginBtn">
-Sign in
+  Sign in
 </button>
 
 <p id="loginmsg" class="msg" style="color:#58d9ff;min-height:25px">
