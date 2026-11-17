@@ -220,6 +220,11 @@ async function init(db) {
     created_at TEXT NOT NULL
   )`).run();
 
+  await ensureColumn(db, "devices", "device_name", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, "devices", "device_model", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, "devices", "os_version", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, "devices", "app_version", "TEXT NOT NULL DEFAULT ''");
+
   await db.prepare(`CREATE TABLE IF NOT EXISTS app_updates (
     id INTEGER PRIMARY KEY CHECK(id=1),
     version_code INTEGER NOT NULL DEFAULT 1,
@@ -360,9 +365,11 @@ async function adminLogin(req, env) {
 
 async function listKeys(db, ownerId = null) {
   const sql = `SELECT k.key_hint,k.expires_at,k.revoked,k.created_at,k.max_devices,k.owner_id,
+    s.username AS creator_username,
     (SELECT COUNT(*) FROM devices d WHERE d.key_hash=k.key_hash) AS device_count,
     (SELECT MIN(d.created_at) FROM devices d WHERE d.key_hash=k.key_hash) AS activated_at
-    FROM activation_keys k ${ownerId ? "WHERE k.owner_id=?" : ""}
+    FROM activation_keys k LEFT JOIN subadmins s ON s.id=k.owner_id
+    ${ownerId ? "WHERE k.owner_id=?" : ""}
     ORDER BY k.created_at DESC LIMIT 1000`;
 
   const r = ownerId
@@ -378,6 +385,8 @@ async function listKeys(db, ownerId = null) {
     max_devices: k.max_devices,
     device_count: k.device_count,
     owner_id: k.owner_id,
+    creator_type: k.owner_id === "MAIN" ? "MAIN ADMIN" : "SUBADMIN",
+    creator_username: k.creator_username || "",
     status: k.revoked
       ? "REVOKED"
       : Date.parse(k.expires_at) > Date.now()
@@ -446,6 +455,18 @@ async function adminRoutes(req, env, db, path) {
 
   if (path === "/api/admin/keys" && method === "GET") {
     return json({ keys: await listKeys(db) });
+  }
+
+  if (path === "/api/admin/devices" && method === "GET") {
+    const r = await db.prepare(`SELECT d.device_id,d.device_name,d.device_model,d.os_version,d.app_version,
+      d.created_at,d.last_seen,k.key_hint,k.owner_id,s.username AS creator_username
+      FROM devices d LEFT JOIN activation_keys k ON k.key_hash=d.key_hash
+      LEFT JOIN subadmins s ON s.id=k.owner_id
+      ORDER BY d.last_seen DESC LIMIT 1000`).all();
+    return json({ devices: (r.results || []).map(d => ({
+      ...d,
+      creator_type: d.owner_id === "MAIN" ? "MAIN ADMIN" : d.owner_id ? "SUBADMIN" : "MASTER KEY"
+    })) });
   }
 
   if (path === "/api/admin/keys/generate" && method === "POST") {
@@ -1045,6 +1066,13 @@ button{padding:10px 13px;margin:4px;background:#0788b5;color:white;border:0;bord
 </div>
 
 <div class="panel">
+<h2>Connected Device Information</h2>
+<p class="muted">Connected device IDs, activation key, first connection and last seen. Model/OS/app details appear when the app sends them.</p>
+<button class="secondary" onclick="loadDevices()">Refresh Devices</button>
+<div id="devices">Loading...</div>
+</div>
+
+<div class="panel">
 <h2>Subadmin Management</h2>
 <div class="grid">
 <input id="newuser" placeholder="New username">
@@ -1267,6 +1295,7 @@ async function start(){
   if(role==="admin"){
     await Promise.all([
       loadKeys(),
+      loadDevices(),
       loadSubs(),
       loadPrice(),
       loadUpdate()
@@ -1365,6 +1394,7 @@ async function loadKeys(){
       <div class="item">
         <b>\${esc(k.key_hint)}</b><br>
         Status: \${esc(k.status)} | Devices: \${k.device_count}/\${k.max_devices}<br>
+        Created by: <b>\${esc(k.creator_type)}\${k.creator_username ? " — "+esc(k.creator_username)+" (ID: "+esc(k.owner_id)+")" : k.owner_id === "MAIN" ? "" : " — ID: "+esc(k.owner_id)}</b><br>
         Expiry: \${esc(k.expires_at)}<br>
         <button class="secondary" onclick="copyKey('\${esc(k.key_hint)}')">COPY KEY</button>
         <button class="green" onclick="resetKeyValidity('\${esc(k.key_hint)}',false)">RESET KEY</button>
@@ -1376,6 +1406,24 @@ async function loadKeys(){
   }catch(e){
     $("keymsg").textContent=e.message;
   }
+}
+
+async function loadDevices(){
+  const target=$("devices");
+  if(!target) return;
+  try{
+    const d=await request("/admin/devices");
+    target.innerHTML=(d.devices||[]).map(x=>\`
+      <div class="item">
+        <b>Device ID:</b> \${esc(x.device_id)}<br>
+        <b>Device:</b> \${esc(x.device_name||"Not supplied")} \${esc(x.device_model||"")}<br>
+        <b>OS / App:</b> \${esc(x.os_version||"Not supplied")} / \${esc(x.app_version||"Not supplied")}<br>
+        <b>Activation Key:</b> \${esc(x.key_hint||"Unknown / Master key")}<br>
+        <b>Created by:</b> \${esc(x.creator_type)}\${x.creator_username ? " — "+esc(x.creator_username)+" (ID: "+esc(x.owner_id)+")" : x.owner_id && x.owner_id!=="MAIN" ? " — ID: "+esc(x.owner_id) : ""}<br>
+        <b>First connected:</b> \${esc(x.created_at||"")}<br>
+        <b>Last seen:</b> \${esc(x.last_seen||"")}
+      </div>\`).join("")||"No connected devices yet";
+  }catch(e){target.textContent=e.message||"Could not load devices";}
 }
 
 async function keyStatus(key,revoked){
@@ -1882,13 +1930,21 @@ export default {
           }
         }
 
+        const deviceName = str(b.deviceName || b.device_name, 120);
+        const deviceModel = str(b.deviceModel || b.device_model || b.model, 120);
+        const osVersion = str(b.osVersion || b.os_version || b.os, 120);
+        const appVersion = str(b.appVersion || b.app_version, 80);
         await db.prepare(`
-          INSERT INTO devices(device_id,key_hash,last_seen,created_at)
-          VALUES(?,?,?,?)
+          INSERT INTO devices(device_id,key_hash,last_seen,created_at,device_name,device_model,os_version,app_version)
+          VALUES(?,?,?,?,?,?,?,?)
           ON CONFLICT(device_id) DO UPDATE SET
-            last_seen=excluded.last_seen
+            last_seen=excluded.last_seen,
+            device_name=CASE WHEN excluded.device_name<>'' THEN excluded.device_name ELSE devices.device_name END,
+            device_model=CASE WHEN excluded.device_model<>'' THEN excluded.device_model ELSE devices.device_model END,
+            os_version=CASE WHEN excluded.os_version<>'' THEN excluded.os_version ELSE devices.os_version END,
+            app_version=CASE WHEN excluded.app_version<>'' THEN excluded.app_version ELSE devices.app_version END
           WHERE devices.key_hash=excluded.key_hash
-        `).bind(device, hash, now, now).run();
+        `).bind(device, hash, now, now, deviceName, deviceModel, osVersion, appVersion).run();
 
         const check = await db.prepare(
           "SELECT key_hash FROM devices WHERE device_id=?"
