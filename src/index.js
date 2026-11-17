@@ -1688,6 +1688,7 @@ if(token&&role){
     logout();
   });
 }
+window.adminLogin = adminLogin;
 </script>
 </body>
 </html>`;
