@@ -1,4 +1,3 @@
-
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -990,9 +989,16 @@ button{padding:10px 13px;margin:4px;background:#0788b5;color:white;border:0;bord
 
 <section id="login" class="panel">
 <h2>Admin Login</h2>
+
 <input id="apass" type="password" placeholder="Admin password">
-<button onclick="adminLogin()">Sign in</button>
-<p id="loginmsg" class="msg"></p>
+
+<button type="button" id="adminLoginBtn">
+Sign in
+</button>
+
+<p id="loginmsg" class="msg" style="color:#58d9ff;min-height:25px">
+Ready. Enter your admin password.
+</p>
 <hr>
 <h3>Subadmin Login</h3>
 <input id="suser" placeholder="Username">
@@ -1146,20 +1152,69 @@ function show(){
 }
 
 async function adminLogin(){
-  try{
-    const r=await fetch("/api/admin/login",{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({password:$("apass").value})
-    });
+  const msg = $("loginmsg");
+  const btn = $("adminLoginBtn");
 
-    const d=await r.json();
-    if(!r.ok)throw Error(d.error);
+  msg.textContent = "Logging in...";
+  btn.disabled = true;
+  btn.textContent = "Please wait...";
 
-    saveSession(d.token,"admin");
+  try {
+    const password = $("apass").value;
+
+    if (!password) {
+      throw new Error("Please enter admin password");
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
+    let r;
+
+    try {
+      r = await fetch("/api/admin/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ password }),
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const d = await r.json();
+
+    if (!r.ok) {
+      throw new Error(d.error || "Login failed");
+    }
+
+    if (!d.token) {
+      throw new Error("Server did not return login token");
+    }
+
+    saveSession(d.token, "admin");
+
+    msg.textContent = "Login successful. Opening dashboard...";
+
     await start();
-  }catch(e){
-    $("loginmsg").textContent=e.message;
+
+  } catch (e) {
+    msg.textContent =
+      e.name === "AbortError"
+        ? "Server timeout. Please try again."
+        : "LOGIN ERROR: " + (e.message || String(e));
+
+    sessionStorage.removeItem("ul_token");
+    sessionStorage.removeItem("ul_role");
+
+    token = "";
+    role = "";
+
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Sign in";
   }
 }
 
@@ -1365,7 +1420,7 @@ async function loadSubs(){
 }
 
 async function walletOp(id,type){
-  let amount=type==="reset"?1:Number(prompt("Amount in USD"));
+  let amount=type==="reset"?1:Number(prompt("Amount in RUPEES"));
   if(!Number.isInteger(amount)||amount<1)return;
 
   let note=prompt("Note (optional)")||"";
@@ -1597,6 +1652,29 @@ async function loadMyTx(){
   }
 }
 
+document.addEventListener("DOMContentLoaded", function(){
+  const btn = document.getElementById("adminLoginBtn");
+
+  if (btn) {
+    btn.addEventListener("click", adminLogin);
+  }
+
+  window.addEventListener("error", function(event){
+    const msg = document.getElementById("loginmsg");
+
+    if (msg) {
+      msg.textContent = "JAVASCRIPT ERROR: " + event.message;
+    }
+  });
+
+  window.addEventListener("unhandledrejection", function(event){
+    const msg = document.getElementById("loginmsg");
+
+    if (msg) {
+      msg.textContent = "ASYNC ERROR: " + String(event.reason);
+    }
+  });
+});
 if(token&&role){
   start().catch(e=>{
     alert(e.message);
