@@ -1365,7 +1365,7 @@ async function loadSubs(){
 }
 
 async function walletOp(id,type){
-  let amount=type==="reset"?1:Number(prompt("Amount in USD"));
+  let amount=type==="reset"?1:Number(prompt("Amount in Rupee"));
   if(!Number.isInteger(amount)||amount<1)return;
 
   let note=prompt("Note (optional)")||"";
