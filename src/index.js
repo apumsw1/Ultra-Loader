@@ -992,7 +992,11 @@ button{padding:10px 13px;margin:4px;background:#0788b5;color:white;border:0;bord
 
 <input id="apass" type="password" placeholder="Admin password">
 
-<button type="button" id="adminLoginBtn">
+<button
+  type="button"
+  id="adminLoginBtn"
+  onclick="document.getElementById('loginmsg').textContent='BUTTON CLICK WORKING'; if(typeof adminLogin==='function'){adminLogin()}else{document.getElementById('loginmsg').textContent='ERROR: adminLogin function not loaded'}"
+>
   Sign in
 </button>
 
@@ -1700,9 +1704,10 @@ export default {
     if (path === "/" && request.method === "GET") {
       return new Response(ADMIN_PAGE, {
         headers: {
-          ...CORS,
-          "Content-Type": "text/html;charset=UTF-8"
-        }
+  ...CORS,
+  "Content-Type": "text/html;charset=UTF-8",
+  "Cache-Control": "no-store, no-cache, must-revalidate"
+}
       });
     }
 
