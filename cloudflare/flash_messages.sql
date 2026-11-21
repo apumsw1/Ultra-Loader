@@ -3,11 +3,9 @@ CREATE TABLE IF NOT EXISTS flash_messages (
     title TEXT NOT NULL DEFAULT '',
     message TEXT NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 0,
-    file_key TEXT,
+    file_url TEXT NOT NULL DEFAULT '',
     file_name TEXT NOT NULL DEFAULT '',
-    file_content_type TEXT NOT NULL DEFAULT '',
-    file_size INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 INSERT OR IGNORE INTO flash_messages (
@@ -15,19 +13,15 @@ INSERT OR IGNORE INTO flash_messages (
     title,
     message,
     active,
-    file_key,
+    file_url,
     file_name,
-    file_content_type,
-    file_size,
     updated_at
 ) VALUES (
     1,
     '',
     '',
     0,
-    NULL,
     '',
     '',
-    0,
     CURRENT_TIMESTAMP
 );
