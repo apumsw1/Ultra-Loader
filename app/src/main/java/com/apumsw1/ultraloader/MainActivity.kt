@@ -66,7 +66,7 @@ class MainActivity : Activity() {
 
 private enum class Stage {  
     IDLE, LOGIN, CHECK_LOGIN, WAIT_VPN,  
-    LOGOUT, WAIT_SECOND_LOGIN, FINISHED  
+    LOGOUT, WAIT_SECOND_LOGIN, CHECK_INTERNET, FINISHED  
 }  
 
 private val cyan = Color.rgb(0, 225, 255)  
@@ -123,6 +123,7 @@ private var secondLoginTimerRunning = false
 
 private var logoutSearchAttempts = 0  
 private var loginActionSearchAttempts = 0  
+private var secondFormSearchAttempts = 0
 private var secondLoginButtonFound = false  
 
 private var logoutSearchRunning = false  
@@ -130,6 +131,23 @@ private var loginActionSearchRunning = false
 private var secondFormCheckRunning = false  
 private var netCheckRunning = false
 private var netWorkingVerified = false
+private var netCheckPageHasError = false
+private var netCheckRefreshAttempt = 0
+
+private val googleCheckUrl = "https://www.google.com/"
+
+private val netCheckRefreshRunnable = Runnable {
+    loadNextNetCheckPage()
+}
+
+private val netCheckPageTimeoutRunnable = Runnable {
+    if (stage == Stage.CHECK_INTERNET && !netWorkingVerified && !isFinishing && !isDestroyed) {
+        if (::webView.isInitialized) {
+            webView.stopLoading()
+        }
+        loadNextNetCheckPage()
+    }
+}
 
 private var activationPopup: AlertDialog? = null  
 private var flashDialog: AlertDialog? = null
@@ -843,15 +861,79 @@ private fun createScreen() {
 
         webViewClient = object : WebViewClient() {  
 
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): Boolean {
+                if (
+                    stage == Stage.CHECK_INTERNET &&
+                    !netWorkingVerified &&
+                    request?.isForMainFrame == true
+                ) {
+                    val targetUrl = request.url?.toString()
+                    if (!isValidGoogleCheckUrl(targetUrl)) {
+                        handler.removeCallbacks(netCheckPageTimeoutRunnable)
+                        scheduleNextNetCheckRefresh(1500L)
+                        return true
+                    }
+                }
+                return super.shouldOverrideUrlLoading(view, request)
+            }
+
             override fun onPageStarted(  
                 view: WebView?,  
                 url: String?,  
                 favicon: Bitmap?  
             ) {  
+                netCheckPageHasError = false
+                if (
+                    stage == Stage.CHECK_INTERNET &&
+                    !netWorkingVerified &&
+                    !isValidGoogleCheckUrl(url)
+                ) {
+                    view?.stopLoading()
+                    handler.removeCallbacks(netCheckPageTimeoutRunnable)
+                    scheduleNextNetCheckRefresh(1500L)
+                    return
+                }
                 if (!dashboardShown && stage != Stage.IDLE && !netWorkingVerified) {  
                     workflowStatus("PORTAL PAGE LOADING...")  
                 }  
             }  
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
+                super.onReceivedError(view, request, error)
+                if (request?.isForMainFrame == true) {
+                    netCheckPageHasError = true
+                    if (stage == Stage.CHECK_INTERNET && !netWorkingVerified) {
+                        handler.removeCallbacks(netCheckPageTimeoutRunnable)
+                        scheduleNextNetCheckRefresh(1500L)
+                    }
+                }
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?
+            ) {
+                super.onReceivedHttpError(view, request, errorResponse)
+                if (
+                    request?.isForMainFrame == true &&
+                    errorResponse != null &&
+                    errorResponse.statusCode >= 400
+                ) {
+                    netCheckPageHasError = true
+                    if (stage == Stage.CHECK_INTERNET && !netWorkingVerified) {
+                        handler.removeCallbacks(netCheckPageTimeoutRunnable)
+                        scheduleNextNetCheckRefresh(1500L)
+                    }
+                }
+            }
 
             override fun onPageFinished(  
                 view: WebView?,  
@@ -860,7 +942,8 @@ private fun createScreen() {
                 when (stage) {  
                     Stage.LOGIN -> tryAutoLogin()  
                     Stage.CHECK_LOGIN -> checkPortalLogin()  
-                    Stage.WAIT_SECOND_LOGIN -> checkSecondLoginForm()  
+                    Stage.WAIT_SECOND_LOGIN -> checkSecondLoginForm()
+                    Stage.CHECK_INTERNET -> verifyCheckInternetPageLoaded(url)
                     else -> {  
                         if (stage == Stage.IDLE && !dashboardShown) {  
                             statusText("● PORTAL PAGE READY", green)  
@@ -1493,6 +1576,7 @@ private fun startPortalProcess() {
 
     logoutSearchAttempts = 0  
     loginActionSearchAttempts = 0  
+    secondFormSearchAttempts = 0
     secondLoginButtonFound = false  
 
     logoutSearchRunning = false  
@@ -1500,6 +1584,13 @@ private fun startPortalProcess() {
     secondFormCheckRunning = false  
     netCheckRunning = false
     netWorkingVerified = false
+    netCheckPageHasError = false
+    netCheckRefreshAttempt = 0
+    handler.removeCallbacks(netCheckRefreshRunnable)
+    handler.removeCallbacks(netCheckPageTimeoutRunnable)
+    if (::webView.isInitialized) {
+        webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
+    }
 
     workflowStatus("FINDING CURRENT PORTAL...")
 
@@ -1974,6 +2065,7 @@ private fun clickPortalLoginAgent() {
 
         if (result?.contains("LOGIN_AGENT_CLICKED") == true) {  
             secondLoginButtonFound = true  
+            secondFormSearchAttempts = 0
             stage = Stage.WAIT_SECOND_LOGIN  
 
             stopSecondLoginTimer()  
@@ -1998,6 +2090,7 @@ private fun checkSecondLoginForm() {
     if (!secondLoginButtonFound || secondFormCheckRunning) return  
 
     secondFormCheckRunning = true  
+    secondFormSearchAttempts++
 
     val formScript = """  
         (function(){  
@@ -2013,25 +2106,9 @@ private fun checkSecondLoginForm() {
             return@evaluateJavascript  
         }  
 
-        if (result?.contains("SECOND_FORM_READY") == true) {  
-            stage = Stage.FINISHED  
-            loginSubmitted = true  
-            secondFormCheckRunning = false  
-            stopSecondLoginTimer()  
-
-            try {
-                (getSystemService(Context.CONNECTIVITY_SERVICE)
-                    as ConnectivityManager).bindProcessToNetwork(null)
-            } catch (_: Exception) {
-            }
-
-            secondLoginStageStatus.text =  
-                "SECOND LOGIN FORM FOUND — CHECKING NET..."  
-            secondLoginStageStatus.setTextColor(cyan)  
-
-            workflowStatus("SECOND LOGIN FORM FOUND — CHECKING INTERNET")  
-
-            startLiveNetWorkingCheck()  
+        if (result?.contains("SECOND_FORM_READY") == true || secondFormSearchAttempts >= 5) {  
+            secondFormCheckRunning = false
+            startInAppInternetRefreshCheck()
         } else {  
             secondFormCheckRunning = false  
 
@@ -2042,8 +2119,153 @@ private fun checkSecondLoginForm() {
     }  
 }  
 
+private fun startInAppInternetRefreshCheck() {
+    if (stage == Stage.CHECK_INTERNET || netWorkingVerified || isFinishing || isDestroyed) return
+
+    stage = Stage.CHECK_INTERNET
+    loginSubmitted = true
+    secondFormCheckRunning = false
+    stopSecondLoginTimer()
+
+    try {
+        (getSystemService(Context.CONNECTIVITY_SERVICE)
+            as ConnectivityManager).bindProcessToNetwork(null)
+    } catch (_: Exception) {
+    }
+
+    if (::secondLoginStageStatus.isInitialized) {
+        secondLoginStageStatus.text = "REFRESHING IN-APP — CHECKING NET..."
+        secondLoginStageStatus.setTextColor(cyan)
+    }
+
+    workflowStatus("REFRESHING TO CHECK INTERNET...")
+
+    netCheckRefreshAttempt = 0
+    netCheckPageHasError = false
+    if (::webView.isInitialized) {
+        webView.settings.cacheMode = WebSettings.LOAD_NO_CACHE
+        webView.clearCache(false)
+    }
+
+    loadNextNetCheckPage()
+    startLiveNetWorkingCheck()
+}
+
+private fun scheduleNextNetCheckRefresh(delayMs: Long = 1500L) {
+    if (stage != Stage.CHECK_INTERNET || netWorkingVerified || isFinishing || isDestroyed) return
+    handler.removeCallbacks(netCheckRefreshRunnable)
+    handler.postDelayed(netCheckRefreshRunnable, delayMs)
+}
+
+private fun loadNextNetCheckPage() {
+    if (stage != Stage.CHECK_INTERNET || netWorkingVerified || isFinishing || isDestroyed) return
+    if (!::webView.isInitialized) return
+
+    handler.removeCallbacks(netCheckRefreshRunnable)
+    handler.removeCallbacks(netCheckPageTimeoutRunnable)
+
+    netCheckRefreshAttempt++
+    netCheckPageHasError = false
+
+    val checkUrl = "${googleCheckUrl}?ul_chk=${System.currentTimeMillis()}"
+    workflowStatus("REFRESHING GOOGLE ($netCheckRefreshAttempt)...")
+
+    webView.stopLoading()
+    webView.loadUrl(checkUrl)
+    handler.postDelayed(netCheckPageTimeoutRunnable, 5500L)
+}
+
+private fun isValidGoogleCheckUrl(url: String?): Boolean {
+    if (url.isNullOrBlank()) return false
+    val lower = url.lowercase(Locale.ROOT)
+    if (
+        lower.startsWith("about:") ||
+        lower.startsWith("chrome-error:") ||
+        lower.startsWith("data:") ||
+        !lower.startsWith("https://")
+    ) {
+        return false
+    }
+
+    val loadedHost = try { Uri.parse(url).host?.lowercase(Locale.ROOT) } catch (_: Exception) { null }
+    val portalHost = try { Uri.parse(portalUrl).host?.lowercase(Locale.ROOT) } catch (_: Exception) { null }
+    if (loadedHost.isNullOrBlank()) return false
+    if (!portalHost.isNullOrBlank() && loadedHost == portalHost) return false
+
+    return loadedHost == "google.com" ||
+        loadedHost.endsWith(".google.com") ||
+        loadedHost.matches(Regex("^(www\\.)?google\\.[a-z]{2,3}(\\.[a-z]{2})?$"))
+}
+
+private fun verifyCheckInternetPageLoaded(url: String?) {
+    if (stage != Stage.CHECK_INTERNET || netWorkingVerified || isFinishing || isDestroyed) return
+
+    handler.removeCallbacks(netCheckPageTimeoutRunnable)
+
+    if (netCheckPageHasError || !isValidGoogleCheckUrl(url)) {
+        scheduleNextNetCheckRefresh(1500L)
+        return
+    }
+
+    val script = """
+        (function(){
+          var href = (window.location && window.location.href) ? window.location.href : '';
+          if (!href || href.indexOf('chrome-error://') === 0 || href === 'about:blank') return 'ERROR_PAGE';
+          if (!/google\./i.test(window.location.hostname || '')) return 'NOT_GOOGLE';
+          if (document.querySelector('input[type=password]')) return 'PORTAL_PAGE';
+          var text = (document.body ? document.body.innerText : '').trim();
+          var title = (document.title || '').trim();
+          if (text.length < 10 && title.length === 0) return 'EMPTY_PAGE';
+          return 'PAGE_OPENED';
+        })();
+    """.trimIndent()
+
+    webView.evaluateJavascript(script) { result ->
+        if (stage != Stage.CHECK_INTERNET || netWorkingVerified || isFinishing || isDestroyed) {
+            return@evaluateJavascript
+        }
+        if (result?.contains("PAGE_OPENED") == true) {
+            markInternetConnected()
+        } else {
+            scheduleNextNetCheckRefresh(1500L)
+        }
+    }
+}
+
+private fun markInternetConnected() {
+    if (netWorkingVerified || isFinishing || isDestroyed) return
+
+    handler.removeCallbacks(netCheckRefreshRunnable)
+    handler.removeCallbacks(netCheckPageTimeoutRunnable)
+
+    netWorkingVerified = true
+    netCheckRunning = false
+    stage = Stage.FINISHED
+
+    if (::webView.isInitialized) {
+        webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
+    }
+
+    statusText("● CONNECTED INTERNET", green)
+
+    if (::secondLoginStageStatus.isInitialized) {
+        secondLoginStageStatus.text = "SECOND LOGIN FORM FOUND • CONNECTED INTERNET"
+        secondLoginStageStatus.setTextColor(green)
+    }
+
+    loadIpDashboard()
+    updateIpDetails()
+    refreshIpLocationIfNeeded(force = true)
+}
+
 private fun startLiveNetWorkingCheck() {
-    if (netCheckRunning || netWorkingVerified || stage != Stage.FINISHED || isFinishing || isDestroyed) {
+    if (
+        netCheckRunning ||
+        netWorkingVerified ||
+        (stage != Stage.CHECK_INTERNET && stage != Stage.FINISHED) ||
+        isFinishing ||
+        isDestroyed
+    ) {
         return
     }
 
@@ -2054,19 +2276,15 @@ private fun startLiveNetWorkingCheck() {
 
         runOnUiThread {
             netCheckRunning = false
-            if (stage != Stage.FINISHED || isFinishing || isDestroyed) return@runOnUiThread
+            if (
+                (stage != Stage.CHECK_INTERNET && stage != Stage.FINISHED) ||
+                netWorkingVerified ||
+                isFinishing ||
+                isDestroyed
+            ) return@runOnUiThread
 
             if (working) {
-                netWorkingVerified = true
-                statusText("● CONNECT NET WORKING", green)
-
-                if (::secondLoginStageStatus.isInitialized) {
-                    secondLoginStageStatus.text = "SECOND LOGIN FORM FOUND • CONNECT NET WORKING"
-                    secondLoginStageStatus.setTextColor(green)
-                }
-
-                loadIpDashboard()
-                updateIpDetails()
+                markInternetConnected()
             } else {
                 workflowStatus("CHECKING INTERNET CONNECTION...")
                 handler.postDelayed({ startLiveNetWorkingCheck() }, 1500)
@@ -2090,7 +2308,7 @@ private fun isRealInternetResponding(): Boolean {
             conn.useCaches = false
             conn.requestMethod = "GET"
             val code = conn.responseCode
-            if (code == 204 || code == 200) {
+            if (code == 204) {
                 return true
             }
         } catch (_: Exception) {
@@ -2121,7 +2339,7 @@ private fun updateInternetStatus() {
 
     internetStatus.setTextColor(if (validated) green else red)  
 
-    if (stage == Stage.FINISHED && !netWorkingVerified) {
+    if ((stage == Stage.CHECK_INTERNET || stage == Stage.FINISHED) && !netWorkingVerified) {
         startLiveNetWorkingCheck()
     }
 
@@ -2144,7 +2362,7 @@ private fun loadIpDashboard() {
 
     dashboardShown = true  
     if (netWorkingVerified) {
-        statusText("● CONNECT NET WORKING", green)
+        statusText("● CONNECTED INTERNET", green)
     }
 
     updateIpDetails()  
