@@ -217,10 +217,17 @@ override fun onCreate(savedInstanceState: Bundle?) {
     window.statusBarColor = dark
     window.navigationBarColor = dark
 
-    checkForForcedUpdate()
+    if (hasValidatedInternet()) {
+        checkForForcedUpdate(backgroundOnly = false)
+    } else {
+        ActivationManager.requireActivation(this) {
+            initializeApplication()
+        }
+        checkForForcedUpdate(backgroundOnly = true)
+    }
 }
 
-private fun checkForForcedUpdate() {
+private fun checkForForcedUpdate(backgroundOnly: Boolean = false) {
     executor.execute {
         var connection: HttpURLConnection? = null
 
@@ -235,8 +242,8 @@ private fun checkForForcedUpdate() {
             val url = URL("$UPDATE_API?versionCode=$versionCode")
             connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
-            connection.connectTimeout = 10000
-            connection.readTimeout = 10000
+            connection.connectTimeout = if (backgroundOnly) 5000 else 10000
+            connection.readTimeout = if (backgroundOnly) 5000 else 10000
 
             val response = connection.inputStream.bufferedReader().use {
                 it.readText()
@@ -252,9 +259,11 @@ private fun checkForForcedUpdate() {
             val downloadUrl = json.optString("downloadUrl", "")
 
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+
                 if (updateAvailable && forceUpdate) {
                     showForceUpdateDialog(versionName, message, downloadUrl)
-                } else {
+                } else if (!backgroundOnly) {
                     ActivationManager.requireActivation(this) {
                         initializeApplication()
                     }
@@ -263,9 +272,13 @@ private fun checkForForcedUpdate() {
 
         } catch (e: Exception) {
             // সার্ভারে যোগাযোগ না হলে পুরোনো অ্যাপের স্বাভাবিক কাজ চালু থাকবে।
-            runOnUiThread {
-                ActivationManager.requireActivation(this) {
-                    initializeApplication()
+            if (!backgroundOnly) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        ActivationManager.requireActivation(this) {
+                            initializeApplication()
+                        }
+                    }
                 }
             }
         } finally {
@@ -360,7 +373,8 @@ private fun initializeApplication() {
     requestWifiNotificationAccess()
 
     if (intent?.action == ACTION_OPEN_PORTAL) {  
-        handler.postDelayed({ startPortalProcess() }, 500)  
+        intent?.action = null
+        handler.postDelayed({ startPortalProcess() }, 350)  
     }  
 
     updateIpDetails()  
@@ -1233,9 +1247,13 @@ private fun requestWifiNotificationAccess() {
         .show()
 }
 
-private fun startMonitorService() {  
+private fun startMonitorService(refresh: Boolean = false) {  
     try {  
-        val i = Intent(this, PortalMonitorService::class.java)  
+        val i = Intent(this, PortalMonitorService::class.java).apply {
+            if (refresh) {
+                action = PortalMonitorService.ACTION_REFRESH_NOTIFICATIONS
+            }
+        }
 
         if (Build.VERSION.SDK_INT >= 26) {  
             startForegroundService(i)  
@@ -1245,6 +1263,22 @@ private fun startMonitorService() {
     } catch (_: Exception) {  
         statusText("● WIFI MONITOR NOT STARTED", red)  
     }  
+}
+
+override fun onRequestPermissionsResult(
+    requestCode: Int,
+    permissions: Array<out String>,
+    grantResults: IntArray
+) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+    if (
+        requestCode == 501 &&
+        grantResults.isNotEmpty() &&
+        grantResults[0] == PackageManager.PERMISSION_GRANTED
+    ) {
+        startMonitorService(refresh = true)
+    }
 }  
 
 private fun showCredentialDialog() {  
@@ -1996,7 +2030,8 @@ override fun onNewIntent(intent: Intent?) {
         intent?.action == ACTION_OPEN_PORTAL &&  
         appInitialized  
     ) {  
-        handler.postDelayed({ startPortalProcess() }, 300)  
+        intent.action = null
+        handler.postDelayed({ startPortalProcess() }, 250)  
     }  
 }  
 

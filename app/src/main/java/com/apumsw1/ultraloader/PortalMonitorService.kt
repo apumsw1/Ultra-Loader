@@ -18,11 +18,15 @@ class PortalMonitorService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "ultra_loader_wifi_v2"
+        private const val WIFI_ALERT_CHANNEL_ID = "ultra_loader_wifi_alert_v1"
         private const val NOTIFICATION_ID = 7101
         private const val WIFI_NOTIFICATION_ID = 7102
 
         private const val ACTION_OPEN_PORTAL =
             "com.apumsw1.ultraloader.OPEN_PORTAL"
+
+        const val ACTION_REFRESH_NOTIFICATIONS =
+            "com.apumsw1.ultraloader.REFRESH_NOTIFICATIONS"
     }
 
     private lateinit var connectivityManager: ConnectivityManager
@@ -60,7 +64,7 @@ class PortalMonitorService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
+            val monitorChannel = NotificationChannel(
                 CHANNEL_ID,
                 "Ultra Loader Monitoring",
                 NotificationManager.IMPORTANCE_LOW
@@ -71,7 +75,18 @@ class PortalMonitorService : Service() {
                 setShowBadge(false)
             }
 
-            notificationManager().createNotificationChannel(channel)
+            val alertChannel = NotificationChannel(
+                WIFI_ALERT_CHANNEL_ID,
+                "Ultra Loader Wi-Fi Detection",
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                description = "Tap to open Ultra Loader and start automation when Wi-Fi connects"
+                enableVibration(false)
+                setSound(null, null)
+            }
+
+            notificationManager().createNotificationChannel(monitorChannel)
+            notificationManager().createNotificationChannel(alertChannel)
         }
     }
 
@@ -99,16 +114,19 @@ class PortalMonitorService : Service() {
                     0
                 }
 
+        val requestCode = if (ongoing) NOTIFICATION_ID else WIFI_NOTIFICATION_ID
+        val channelId = if (ongoing) CHANNEL_ID else WIFI_ALERT_CHANNEL_ID
+
         val pendingIntent = PendingIntent.getActivity(
             this,
-            WIFI_NOTIFICATION_ID,
+            requestCode,
             openIntent,
             pendingFlags
         )
 
         val builder =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                Notification.Builder(this, CHANNEL_ID)
+                Notification.Builder(this, channelId)
             } else {
                 @Suppress("DEPRECATION")
                 Notification.Builder(this)
@@ -116,7 +134,7 @@ class PortalMonitorService : Service() {
 
         return builder
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setOnlyAlertOnce(true)
+            .setOnlyAlertOnce(ongoing)
             .setDefaults(0)
             .setSound(null)
             .setContentTitle(title)
@@ -124,7 +142,10 @@ class PortalMonitorService : Service() {
             .setContentIntent(pendingIntent)
             .setAutoCancel(!ongoing)
             .setOngoing(ongoing)
-            .setPriority(Notification.PRIORITY_LOW)
+            .setPriority(
+                if (ongoing) Notification.PRIORITY_LOW
+                else Notification.PRIORITY_DEFAULT
+            )
             .build()
     }
 
@@ -214,7 +235,6 @@ class PortalMonitorService : Service() {
         }
 
         wifiNetworks.add(network)
-        showWifiNotification()
 
         val captive = capabilities.hasCapability(
             NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL
@@ -225,8 +245,9 @@ class PortalMonitorService : Service() {
         )
 
         if (captive) {
-            captiveNetworks.add(network)
+            val newlyCaptive = captiveNetworks.add(network)
             validatedNetworks.remove(network)
+            showWifiNotification(captiveDetected = true, forceRefresh = newlyCaptive)
         } else {
             captiveNetworks.remove(network)
 
@@ -235,6 +256,8 @@ class PortalMonitorService : Service() {
             } else {
                 validatedNetworks.remove(network)
             }
+
+            showWifiNotification(captiveDetected = false, forceRefresh = false)
         }
 
         updateMonitorNotification()
@@ -281,16 +304,31 @@ class PortalMonitorService : Service() {
         )
     }
 
-    private fun showWifiNotification() {
-        if (wifiNotificationVisible) return
+    private fun showWifiNotification(
+        captiveDetected: Boolean = false,
+        forceRefresh: Boolean = false
+    ) {
+        if (wifiNotificationVisible && !forceRefresh) return
 
         wifiNotificationVisible = true
+
+        val title = if (captiveDetected) {
+            "Ultra Loader — Wi-Fi Login Detected"
+        } else {
+            "Ultra Loader — Wi-Fi Detected"
+        }
+
+        val message = if (captiveDetected) {
+            "Wi-Fi login detected. Tap to open Ultra Loader & run."
+        } else {
+            "Wi-Fi connected. Tap to open Ultra Loader & run."
+        }
 
         notificationManager().notify(
             WIFI_NOTIFICATION_ID,
             buildNotification(
-                "Ultra Loader — Wi-Fi Detected",
-                "Wi-Fi detected. Tap to open Ultra Loader.",
+                title,
+                message,
                 false
             )
         )
@@ -314,6 +352,11 @@ class PortalMonitorService : Service() {
         flags: Int,
         startId: Int
     ): Int {
+        if (intent?.action == ACTION_REFRESH_NOTIFICATIONS) {
+            wifiNotificationVisible = false
+            lastMonitorMessage = null
+            refreshCurrentNetworks()
+        }
         return START_STICKY
     }
 
