@@ -3,8 +3,10 @@ package com.apumsw1.ultraloader
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.*
 import android.graphics.drawable.GradientDrawable
@@ -59,6 +61,9 @@ class MainActivity : Activity() {
 
     private const val ACTION_OPEN_PORTAL =  
         "com.apumsw1.ultraloader.OPEN_PORTAL"  
+
+    private const val ACTION_WIFI_PORTAL_DETECTED =
+        "com.apumsw1.ultraloader.WIFI_PORTAL_DETECTED"
 
     private const val TELEGRAM_URL =  
         "https://t.me/ultraloader"  
@@ -155,9 +160,22 @@ private var flashPopupChecked = false
 
 private var connectivityManager: ConnectivityManager? = null  
 private var networkCallbackRegistered = false  
+private var wifiPortalReceiverRegistered = false
+private var lastAutoTriggerAt = 0L
+private var autoLoginLinkClicks = 0
 private var lastLicenseNetworkState = false  
 private var lastIpFetchAt = 0L
 private var lastKnownVpnForIp = false
+
+private val wifiPortalReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context?, intent: Intent?) {
+        if (intent?.action != ACTION_WIFI_PORTAL_DETECTED) return
+        val detectedUrl = intent.getStringExtra("detected_url")
+        val detectionType = intent.getStringExtra("detection_type")
+        val detectedAt = intent.getLongExtra("detected_at", System.currentTimeMillis())
+        handleDetectedPortalLaunch(detectedUrl, detectionType, detectedAt)
+    }
+}
 
 /*  
  * Network callback:  
@@ -396,6 +414,7 @@ private fun initializeApplication() {
     createScreen()  
 
     registerLicenseNetworkCallback()  
+    registerWifiPortalReceiver()
 
     handler.post(updater)  
     handler.post(globeUpdater)  
@@ -405,9 +424,14 @@ private fun initializeApplication() {
     requestWifiNotificationAccess()
 
     if (intent?.action == ACTION_OPEN_PORTAL) {  
+        val detectedUrl = intent?.getStringExtra("detected_url")
+        val detectionType = intent?.getStringExtra("detection_type")
+        val detectedAt = intent?.getLongExtra("detected_at", System.currentTimeMillis()) ?: System.currentTimeMillis()
         intent?.action = null
-        handler.postDelayed({ startPortalProcess() }, 350)  
-    }  
+        handler.postDelayed({
+            handleDetectedPortalLaunch(detectedUrl, detectionType, detectedAt, forceIfIdleOrFinished = true)
+        }, 350)  
+    }
 
     updateIpDetails()  
     updateInternetStatus()  
@@ -1577,6 +1601,7 @@ private fun startPortalProcess() {
     logoutSearchAttempts = 0  
     loginActionSearchAttempts = 0  
     secondFormSearchAttempts = 0
+    autoLoginLinkClicks = 0
     secondLoginButtonFound = false  
 
     logoutSearchRunning = false  
@@ -1592,6 +1617,14 @@ private fun startPortalProcess() {
         webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
     }
 
+    try {
+        getSharedPreferences("wifi_notification_links", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("pending_auto_start", false)
+            .apply()
+    } catch (_: Exception) {
+    }
+
     workflowStatus("FINDING CURRENT PORTAL...")
 
     discoverPortalUrl()  
@@ -1599,6 +1632,9 @@ private fun startPortalProcess() {
 
 private fun discoverPortalUrl() {
     executor.execute {
+
+        // Scan all active Wi-Fi notifications right when START ULTRA LOADER runs
+        WifiNotificationListener.scanActiveNotificationsNow()
 
         var found: String? = null
         var notificationLink = false
@@ -1642,7 +1678,27 @@ private fun discoverPortalUrl() {
         val network = wifi ?: manager.activeNetwork
         portalNetwork = wifi ?: network
 
-        // Keep the old portal discovery as fallback.
+        if (found == null && network != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val linkProps = manager.getLinkProperties(network)
+                val capData = linkProps?.javaClass?.getMethod("getCaptivePortalData")?.invoke(linkProps)
+                val userUrl = capData?.javaClass?.getMethod("getUserPortalUrl")?.invoke(capData)?.toString()
+                val venueUrl = capData?.javaClass?.getMethod("getVenueInfoUrl")?.invoke(capData)?.toString()
+                val pendingType = prefs.getString("pending_detection_type", null)
+                val capUrl = if (pendingType == "VIEW_WEBSITE") {
+                    venueUrl ?: userUrl
+                } else {
+                    userUrl ?: venueUrl
+                }
+                if (!capUrl.isNullOrBlank() && (capUrl.startsWith("http://") || capUrl.startsWith("https://"))) {
+                    found = capUrl
+                    notificationLink = true
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        // Keep HTTP redirect and HTML/JS captive portal discovery as fallback.
         val probes = listOf(
             "http://connectivitycheck.gstatic.com/generate_204",
             "http://www.google.com/generate_204",
@@ -1678,6 +1734,19 @@ private fun discoverPortalUrl() {
                         )
                     ) {
                         found = location
+                    } else if (code == 200) {
+                        val body = try {
+                            connection.inputStream.bufferedReader().use { it.readText().take(8192) }
+                        } catch (_: Exception) {
+                            ""
+                        }
+                        val htmlRedirect = Regex(
+                            """(?:url\s*=\s*['"]?|location(?:\.href)?\s*=\s*['"]|location\.replace\(\s*['"])(https?://[^'"\s>]+)['"]?""",
+                            RegexOption.IGNORE_CASE
+                        ).find(body)?.groupValues?.getOrNull(1)
+                        if (!htmlRedirect.isNullOrBlank()) {
+                            found = htmlRedirect
+                        }
                     }
 
                 } catch (_: Exception) {
@@ -1762,7 +1831,21 @@ private fun tryAutoLogin() {
             }) || ['text','email'].includes((x.type||'').toLowerCase());  
           });  
 
-          if(!uf||!pf)return 'FORM_NOT_FOUND';  
+          if(!uf||!pf){
+            var bodyTxt=(document.body?document.body.innerText:'').toLowerCase();
+            if(/log.?out|sign.?out|welcome|successfully connected|connected successfully/.test(bodyTxt)){
+              return 'ALREADY_LOGGED_IN';
+            }
+            var navBtns=Array.from(document.querySelectorAll('a,button,input[type=button],input[type=submit]'));
+            var nav=navBtns.find(function(b){
+              return /log.?in|sign.?in|connect|continue|view/i.test((b.innerText||b.value||''));
+            });
+            if(nav && ${if (autoLoginLinkClicks < 2) "true" else "false"}){
+              nav.click();
+              return 'NAVIGATED';
+            }
+            return 'FORM_NOT_FOUND';
+          }
 
           uf.focus(); uf.value=u;  
           pf.focus(); pf.value=p;  
@@ -1806,6 +1889,17 @@ private fun tryAutoLogin() {
             workflowStatus("LOGIN SUBMITTED - VERIFYING...")  
 
             handler.postDelayed({ checkPortalLogin() }, 3000)  
+
+        } else if (result?.contains("ALREADY_LOGGED_IN") == true) {
+            loginSubmitted = true
+            stage = Stage.CHECK_LOGIN
+
+            workflowStatus("PORTAL ALREADY LOGGED IN")
+            handler.postDelayed({ checkPortalLogin() }, 1000)
+
+        } else if (result?.contains("NAVIGATED") == true) {
+            autoLoginLinkClicks++
+            workflowStatus("OPENING PORTAL LOGIN...")
 
         } else if (result?.contains("FORM_NOT_FOUND") == true) {  
             workflowStatus("PORTAL LOGIN FORM NOT FOUND")  
@@ -2452,6 +2546,57 @@ private fun readCredentials(): Pair<String, String>? {
     }  
 }  
 
+private fun registerWifiPortalReceiver() {
+    if (wifiPortalReceiverRegistered) return
+    try {
+        val filter = IntentFilter(ACTION_WIFI_PORTAL_DETECTED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(wifiPortalReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(wifiPortalReceiver, filter)
+        }
+        wifiPortalReceiverRegistered = true
+    } catch (_: Exception) {
+        wifiPortalReceiverRegistered = false
+    }
+}
+
+private fun handleDetectedPortalLaunch(
+    detectedUrl: String?,
+    detectionType: String?,
+    detectedAt: Long,
+    forceIfIdleOrFinished: Boolean = false
+) {
+    if (!appInitialized || isFinishing || isDestroyed) return
+    if (!ActivationManager.hasAccess(this)) return
+    if (readCredentials() == null) return
+
+    // Never interrupt an active mid-flow automation cycle
+    if (stage != Stage.IDLE && stage != Stage.FINISHED) return
+
+    if (!forceIfIdleOrFinished && detectedAt > 0L && detectedAt <= lastAutoTriggerAt) {
+        return
+    }
+
+    lastAutoTriggerAt = if (detectedAt > 0L) detectedAt else System.currentTimeMillis()
+
+    try {
+        val prefs = getSharedPreferences("wifi_notification_links", Context.MODE_PRIVATE)
+        val editor = prefs.edit().putBoolean("pending_auto_start", false)
+        if (!detectedUrl.isNullOrBlank()) {
+            editor.putString("latest_url", detectedUrl)
+                .putLong("latest_url_time", System.currentTimeMillis())
+        }
+        if (!detectionType.isNullOrBlank()) {
+            editor.putString("pending_detection_type", detectionType)
+        }
+        editor.apply()
+    } catch (_: Exception) {
+    }
+
+    startPortalProcess()
+}
+
 override fun onNewIntent(intent: Intent?) {  
     super.onNewIntent(intent)  
     setIntent(intent)  
@@ -2460,8 +2605,13 @@ override fun onNewIntent(intent: Intent?) {
         intent?.action == ACTION_OPEN_PORTAL &&  
         appInitialized  
     ) {  
+        val detectedUrl = intent.getStringExtra("detected_url")
+        val detectionType = intent.getStringExtra("detection_type")
+        val detectedAt = intent.getLongExtra("detected_at", System.currentTimeMillis())
         intent.action = null
-        handler.postDelayed({ startPortalProcess() }, 250)  
+        handler.postDelayed({
+            handleDetectedPortalLaunch(detectedUrl, detectionType, detectedAt, forceIfIdleOrFinished = true)
+        }, 250)  
     }  
 }  
 
@@ -2496,6 +2646,14 @@ override fun onDestroy() {
 
     activationPopup?.dismiss()  
     flashDialog?.dismiss()
+
+    if (wifiPortalReceiverRegistered) {
+        try {
+            unregisterReceiver(wifiPortalReceiver)
+        } catch (_: Exception) {
+        }
+        wifiPortalReceiverRegistered = false
+    }
 
     if (networkCallbackRegistered) {  
         try {  
