@@ -1,6 +1,7 @@
 package com.apumsw1.ultraloader
 
 import android.app.Notification
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -26,7 +27,22 @@ class WifiNotificationListener : NotificationListenerService() {
         @Volatile
         private var activeInstance: WifiNotificationListener? = null
 
+        @Volatile
+        private var latestPortalContentIntent: PendingIntent? = null
+
         fun isConnected(): Boolean = activeInstance != null
+
+        fun hasSystemPortalIntent(): Boolean = latestPortalContentIntent != null
+
+        fun openSystemPortalIntent(): Boolean {
+            val pi = latestPortalContentIntent ?: return false
+            return try {
+                pi.send()
+                true
+            } catch (_: Exception) {
+                false
+            }
+        }
 
         fun scanActiveNotificationsNow(notifyService: Boolean = false): Boolean {
             val instance = activeInstance ?: return false
@@ -97,7 +113,10 @@ class WifiNotificationListener : NotificationListenerService() {
         notifyMonitorService: Boolean
     ): Pair<String?, String>? {
         if (sbn.packageName == packageName) return null
-        if (!isWifiConnected()) return null
+        if (!isWifiConnected()) {
+            latestPortalContentIntent = null
+            return null
+        }
 
         val notification = sbn.notification ?: return null
         val extras = notification.extras ?: Bundle.EMPTY
@@ -220,6 +239,10 @@ class WifiNotificationListener : NotificationListenerService() {
             .putLong("latest_notification_time", eventTime)
             .apply()
 
+        notification.contentIntent?.let { ci ->
+            latestPortalContentIntent = ci
+        }
+
         if (notifyMonitorService) {
             notifyMonitorService(resolvedUrl, detectionType)
         }
@@ -235,6 +258,19 @@ class WifiNotificationListener : NotificationListenerService() {
         }
         lastServiceUpdateSignature = signature
         lastServiceUpdateAt = now
+
+        try {
+            val broadcastIntent = Intent("com.apumsw1.ultraloader.WIFI_PORTAL_DETECTED").apply {
+                setPackage(packageName)
+                if (!resolvedUrl.isNullOrBlank()) {
+                    putExtra("detected_url", resolvedUrl)
+                }
+                putExtra("detection_type", detectionType)
+                putExtra("detected_at", now)
+            }
+            sendBroadcast(broadcastIntent)
+        } catch (_: Exception) {
+        }
 
         try {
             val serviceIntent = Intent(this, PortalMonitorService::class.java).apply {

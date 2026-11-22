@@ -113,6 +113,7 @@ class PortalMonitorService : Service() {
             if (!lastDetectionType.isNullOrBlank()) {
                 putExtra("detection_type", lastDetectionType)
             }
+            putExtra("detected_at", System.currentTimeMillis())
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP or
                 Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -289,6 +290,9 @@ class PortalMonitorService : Service() {
             if (!resolved.isNullOrBlank()) {
                 saveLinkIfFresh(resolved, "PORTAL_LOGIN")
             }
+            if (newlyCaptive) {
+                broadcastPortalDetected(resolved, "PORTAL_LOGIN")
+            }
             showWifiNotification(
                 captiveDetected = true,
                 forceRefresh = newlyCaptive,
@@ -301,6 +305,9 @@ class PortalMonitorService : Service() {
             if (hasVenueWebsite) {
                 val newlyWebsite = websiteNetworks.add(network)
                 saveLinkIfFresh(capVenueUrl!!, "VIEW_WEBSITE")
+                if (newlyWebsite) {
+                    broadcastPortalDetected(capVenueUrl, "VIEW_WEBSITE")
+                }
                 showWifiNotification(
                     captiveDetected = false,
                     forceRefresh = newlyWebsite,
@@ -343,6 +350,21 @@ class PortalMonitorService : Service() {
                     .putString("pending_detection_type", type)
                     .apply()
             }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun broadcastPortalDetected(url: String?, type: String) {
+        try {
+            val intent = Intent("com.apumsw1.ultraloader.WIFI_PORTAL_DETECTED").apply {
+                setPackage(packageName)
+                if (!url.isNullOrBlank()) {
+                    putExtra("detected_url", url)
+                }
+                putExtra("detection_type", type)
+                putExtra("detected_at", System.currentTimeMillis())
+            }
+            sendBroadcast(intent)
         } catch (_: Exception) {
         }
     }
