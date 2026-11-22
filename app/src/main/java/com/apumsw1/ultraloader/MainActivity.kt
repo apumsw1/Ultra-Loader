@@ -357,6 +357,7 @@ private fun initializeApplication() {
 
     requestNotificationPermission()  
     startMonitorService()  
+    requestWifiNotificationAccess()
 
     if (intent?.action == ACTION_OPEN_PORTAL) {  
         handler.postDelayed({ startPortalProcess() }, 500)  
@@ -1199,6 +1200,39 @@ private fun requestNotificationPermission() {
     }  
 }  
 
+private fun requestWifiNotificationAccess() {
+    val enabled = android.provider.Settings.Secure.getString(
+        contentResolver,
+        "enabled_notification_listeners"
+    ).orEmpty()
+
+    if (enabled.contains(packageName)) return
+
+    val prefs = getSharedPreferences("wifi_notification_links", MODE_PRIVATE)
+
+    if (prefs.getBoolean("access_prompt_shown", false)) return
+
+    prefs.edit().putBoolean("access_prompt_shown", true).apply()
+
+    AlertDialog.Builder(this)
+        .setTitle("Enable Wi-Fi Link Detection")
+        .setMessage(
+            "Allow Ultra Loader to read URLs displayed in Wi-Fi " +
+                "connection and portal notifications. Enable Notification Access."
+        )
+        .setPositiveButton("OPEN SETTINGS") { _, _ ->
+            try {
+                startActivity(
+                    Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
+                )
+            } catch (_: Exception) {
+                toast("Unable to open Notification Access settings")
+            }
+        }
+        .setNegativeButton("LATER", null)
+        .show()
+}
+
 private fun startMonitorService() {  
     try {  
         val i = Intent(this, PortalMonitorService::class.java)  
@@ -1291,93 +1325,133 @@ private fun startPortalProcess() {
     discoverPortalUrl()  
 }  
 
-private fun discoverPortalUrl() {  
-    executor.execute {  
-        var found: String? = null  
+private fun discoverPortalUrl() {
+    executor.execute {
 
-        val manager =  
-            getSystemService(Context.CONNECTIVITY_SERVICE)  
-                as ConnectivityManager  
+        var found: String? = null
+        var notificationLink = false
 
-        val wifi = manager.allNetworks.firstOrNull { n ->  
-            manager.getNetworkCapabilities(n)  
-                ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true  
-        }  
+        val prefs = getSharedPreferences(
+            "wifi_notification_links",
+            Context.MODE_PRIVATE
+        )
 
-        val network = wifi ?: manager.activeNetwork  
-        portalNetwork = wifi ?: network  
+        val savedUrl = prefs.getString("latest_url", null)
+        val savedTime = prefs.getLong("latest_url_time", 0L)
 
-        val probes = listOf(  
-            "http://connectivitycheck.gstatic.com/generate_204",  
-            "http://www.google.com/generate_204",  
-            "http://clients3.google.com/generate_204"  
-        )  
+        // Use a recently captured Wi-Fi notification URL first.
+        if (
+            !savedUrl.isNullOrBlank() &&
+            System.currentTimeMillis() - savedTime <= 30L * 60L * 1000L
+        ) {
+            try {
+                val parsed = URL(savedUrl)
 
-        for (probe in probes) {  
-            if (found != null) break  
+                if (
+                    parsed.protocol == "http" ||
+                    parsed.protocol == "https"
+                ) {
+                    found = savedUrl
+                    notificationLink = true
+                }
+            } catch (_: Exception) {
+            }
+        }
 
-            var connection: HttpURLConnection? = null  
+        val manager =
+            getSystemService(Context.CONNECTIVITY_SERVICE)
+                as ConnectivityManager
 
-            try {  
-                connection = (  
-                    if (network != null) network.openConnection(URL(probe))  
-                    else URL(probe).openConnection()  
-                ) as HttpURLConnection  
+        val wifi = manager.allNetworks.firstOrNull { network ->
+            manager.getNetworkCapabilities(network)
+                ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        }
 
-                connection.instanceFollowRedirects = false  
-                connection.connectTimeout = 7000  
-                connection.readTimeout = 7000  
-                connection.requestMethod = "GET"  
+        val network = wifi ?: manager.activeNetwork
+        portalNetwork = wifi ?: network
 
-                val code = connection.responseCode  
-                val location = connection.getHeaderField("Location")  
+        // Keep the old portal discovery as fallback.
+        val probes = listOf(
+            "http://connectivitycheck.gstatic.com/generate_204",
+            "http://www.google.com/generate_204",
+            "http://clients3.google.com/generate_204"
+        )
 
-                if (  
-                    code in 300..399 &&  
-                    !location.isNullOrBlank() &&  
-                    location.startsWith("http")  
-                ) {  
-                    found = location  
-                }  
-            } catch (_: Exception) {  
-            } finally {  
-                connection?.disconnect()  
-            }  
-        }  
+        if (found == null) {
+            for (probe in probes) {
+                if (found != null) break
 
-        runOnUiThread {  
-            if (!ActivationManager.hasAccess(this)) {  
-                statusText("● ACTIVATION EXPIRED", red)  
-                updateActivationStatus()  
-                return@runOnUiThread  
-            }  
+                var connection: HttpURLConnection? = null
 
-            val selectedNetwork = portalNetwork  
+                try {
+                    connection = (
+                        if (network != null) network.openConnection(URL(probe))
+                        else URL(probe).openConnection()
+                    ) as HttpURLConnection
 
-            if (selectedNetwork != null) {  
-                val bound =  
-                    (getSystemService(Context.CONNECTIVITY_SERVICE)  
-                        as ConnectivityManager)  
-                        .bindProcessToNetwork(selectedNetwork)  
+                    connection.instanceFollowRedirects = false
+                    connection.connectTimeout = 7000
+                    connection.readTimeout = 7000
+                    connection.requestMethod = "GET"
 
-                if (!bound) {  
-                    statusText("● WIFI ROUTING NOT AVAILABLE", red)  
-                }  
-            }  
+                    val code = connection.responseCode
+                    val location = connection.getHeaderField("Location")
 
-            portalUrl = found ?: FALLBACK_PORTAL  
+                    if (
+                        code in 300..399 &&
+                        !location.isNullOrBlank() &&
+                        (
+                            location.startsWith("http://") ||
+                            location.startsWith("https://")
+                        )
+                    ) {
+                        found = location
+                    }
 
-            statusText(  
-                if (found != null) "● CURRENT PORTAL FOUND"  
-                else "● USING PORTAL FALLBACK",  
-                if (found != null) green else cyan  
-            )  
+                } catch (_: Exception) {
+                } finally {
+                    connection?.disconnect()
+                }
+            }
+        }
 
-            webView.visibility = View.VISIBLE  
-            webView.loadUrl(portalUrl)  
-        }  
-    }  
-}  
+        runOnUiThread {
+
+            if (!ActivationManager.hasAccess(this)) {
+                statusText("● ACTIVATION EXPIRED", red)
+                updateActivationStatus()
+                return@runOnUiThread
+            }
+
+            val selectedNetwork = portalNetwork
+
+            if (selectedNetwork != null) {
+                val bound =
+                    (getSystemService(Context.CONNECTIVITY_SERVICE)
+                        as ConnectivityManager)
+                        .bindProcessToNetwork(selectedNetwork)
+
+                if (!bound) {
+                    statusText("● WIFI ROUTING NOT AVAILABLE", red)
+                }
+            }
+
+            portalUrl = found ?: FALLBACK_PORTAL
+
+            statusText(
+                when {
+                    notificationLink -> "● WIFI NOTIFICATION LINK FOUND"
+                    found != null -> "● CURRENT PORTAL FOUND"
+                    else -> "● USING PORTAL FALLBACK"
+                },
+                if (found != null) green else cyan
+            )
+
+            webView.visibility = View.VISIBLE
+            webView.loadUrl(portalUrl)
+        }
+    }
+}
 
 private fun tryAutoLogin() {  
     if (stage != Stage.LOGIN || loginSubmitted) return  
