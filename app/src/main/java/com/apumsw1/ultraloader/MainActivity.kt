@@ -907,17 +907,15 @@ private fun createScreen() {
     // Keep WebView attached but invisible for background portal automation
     root.addView(webView, LinearLayout.LayoutParams(1, 1))
 
-    val footer = TextView(this).apply {  
-        text = "✦ M'r AB Creation ✦"  
-        gravity = Gravity.CENTER  
-        textSize = 11f  
-        setTextColor(cyan)  
-        setPadding(5, 12, 5, 12)  
-    }  
+    val footer = TextView(this).apply {
+        text = "Copy Right ULTRA"
+        gravity = Gravity.CENTER
+        textSize = 11f
+        setTextColor(cyan)
+        setPadding(5, 12, 5, 12)
+    }
 
-    content.addView(footer, matchWrap())  
-    content.addView(secondLoginTimerStatus, matchWrap())  
-    content.addView(secondLoginStageStatus, matchWrap())  
+    content.addView(footer, matchWrap())
 
     root.addView(  
         scroll,  
