@@ -157,6 +157,7 @@ private val netCheckPageTimeoutRunnable = Runnable {
 
 private var activationPopup: AlertDialog? = null  
 private var flashDialog: AlertDialog? = null
+private var vpnDialog: AlertDialog? = null
 private var flashPopupChecked = false
 
 private var connectivityManager: ConnectivityManager? = null  
@@ -1620,6 +1621,8 @@ private fun startPortalProcess() {
     loginSubmitted = false  
     vpnOpened = false  
     vpnDialogShown = false
+    vpnDialog?.dismiss()
+    vpnDialog = null
 
     stopSecondLoginTimer()  
     secondLoginElapsedSeconds = 0L  
@@ -1768,6 +1771,7 @@ private fun discoverPortalUrl() {
         }
         probeTargets.add("http://captive.apple.com/hotspot-detect.html" to false)
         probeTargets.add("http://detectportal.firefox.com/canonical.html" to false)
+        probeTargets.add("http://www.msftconnecttest.com/redirect" to false)
         probeTargets.add("http://neverssl.com/" to false)
 
         if (found == null) {
@@ -1917,15 +1921,20 @@ private fun tryAutoLogin() {
           });  
 
           if(!uf||!pf){
+            var btns=Array.from(document.querySelectorAll('a,button,input[type=button],input[type=submit],[role=button]'));
+            var hasLogout=btns.some(function(b){
+              var sig=((b.innerText||'')+' '+(b.value||'')+' '+(b.id||'')+' '+(b.name||'')+' '+(b.getAttribute('href')||'')).toLowerCase();
+              return /log.?out|sign.?out/.test(sig);
+            });
             var bodyTxt=(document.body?document.body.innerText:'').toLowerCase();
-            if(/log.?out|sign.?out|welcome|successfully connected|connected successfully/.test(bodyTxt)){
+            if(hasLogout || /successfully connected|connected successfully/.test(bodyTxt)){
               return 'ALREADY_LOGGED_IN';
             }
-            var navBtns=Array.from(document.querySelectorAll('a,button,input[type=button],input[type=submit]'));
-            var nav=navBtns.find(function(b){
-              return /log.?in|sign.?in|connect|continue|view/i.test((b.innerText||b.value||''));
+            var nav=btns.find(function(b){
+              var sig=((b.innerText||'')+' '+(b.value||'')+' '+(b.id||'')+' '+(b.name||''));
+              return /log.?in|sign.?in|connect|continue|enter|proceed/i.test(sig);
             });
-            if(nav && ${if (autoLoginLinkClicks < 2) "true" else "false"}){
+            if(nav && ${if (autoLoginLinkClicks < 3) "true" else "false"}){
               nav.click();
               return 'NAVIGATED';
             }
@@ -2083,12 +2092,18 @@ private fun checkVpnStatus() {
     if (connected) {  
         workflowStatus("VPN CONNECTION DETECTED")  
 
+        try {
+            vpnDialog?.dismiss()
+            vpnDialog = null
+        } catch (_: Exception) {
+        }
+
         if (stage == Stage.WAIT_VPN) {  
             stage = Stage.LOGOUT  
             logoutSearchAttempts = 0  
             logoutSearchRunning = false  
 
-            handler.postDelayed({ clickPortalLogout() }, 5000)  
+            handler.postDelayed({ clickPortalLogout() }, 2000)  
         }  
 
         updateInternetStatus()  
@@ -2118,21 +2133,40 @@ private fun showVpnDialog() {
 
     vpnDialogShown = true
 
-    AlertDialog.Builder(this)
+    val dialog = AlertDialog.Builder(this)
         .setTitle("THUNDER VPN")
         .setMessage(
             "Please open Thunder VPN and connect manually. " +
-            "After connecting, return to ULTRA LOADER. " +
-            "Your VPN connection will be checked automatically."
+            "After connecting VPN, return to ULTRA LOADER and tap CONNECT."
         )
-        .setPositiveButton("OPEN VPN") { _, _ ->
+        .setPositiveButton("CONNECT") { _, _ ->
+            vpnDialog = null
+            if (isVpnConnected()) {
+                workflowStatus("VPN CONNECTION DETECTED")
+                if (stage == Stage.WAIT_VPN || stage == Stage.LOGOUT) {
+                    stage = Stage.LOGOUT
+                    logoutSearchAttempts = 0
+                    logoutSearchRunning = false
+                    clickPortalLogout()
+                }
+            } else {
+                toast("Connect Thunder VPN first")
+                vpnDialogShown = false
+                showVpnDialog()
+            }
+        }
+        .setNeutralButton("OPEN VPN") { _, _ ->
+            vpnDialog = null
+            vpnDialogShown = false
             openThunderVpn()
         }
-        .setNeutralButton("CHECK CONNECTION") { _, _ ->
-            checkVpnStatus()
+        .setNegativeButton("LATER") { _, _ ->
+            vpnDialog = null
         }
-        .setNegativeButton("LATER", null)
-        .show()
+        .create()
+
+    vpnDialog = dialog
+    dialog.show()
 }  
 
 private fun clickPortalLogout() {  
@@ -2155,9 +2189,10 @@ private fun clickPortalLogout() {
 
     val script = """  
         (function(){  
-          var a=Array.from(document.querySelectorAll('a,button,input[type=button],input[type=submit]'));  
+          var a=Array.from(document.querySelectorAll('a,button,input[type=button],input[type=submit],[role=button]'));  
           var x=a.find(function(n){  
-            return /log.?out|sign.?out/i.test((n.innerText||'')+' '+(n.value||''));  
+            var sig=(n.innerText||'')+' '+(n.value||'')+' '+(n.id||'')+' '+(n.name||'')+' '+(n.title||'')+' '+(n.getAttribute('aria-label')||'')+' '+(n.getAttribute('href')||'');
+            return /log.?out|sign.?out/i.test(sig);  
           });  
           if(!x)return 'LOGOUT_NOT_FOUND';  
           x.click();  
@@ -2175,7 +2210,12 @@ private fun clickPortalLogout() {
             startSecondLoginTimer()  
             handler.postDelayed({ clickPortalLoginAgent() }, 2500)  
         } else if (logoutSearchAttempts < 10) {  
-            handler.postDelayed({ clickPortalLogout() }, 3000)  
+            if (logoutSearchAttempts == 3 || logoutSearchAttempts == 6) {
+                if (::webView.isInitialized && portalUrl.startsWith("http")) {
+                    webView.loadUrl(portalUrl)
+                }
+            }
+            handler.postDelayed({ clickPortalLogout() }, 2500)  
         } else {  
             workflowStatus("PORTAL LOGOUT BUTTON NOT FOUND")  
         }  
@@ -2227,9 +2267,10 @@ private fun clickPortalLoginAgent() {
 
     val script = """  
         (function(){  
-          var a=Array.from(document.querySelectorAll('a,button,input[type=button],input[type=submit]'));  
+          var a=Array.from(document.querySelectorAll('a,button,input[type=button],input[type=submit],[role=button]'));  
           var x=a.find(function(n){  
-            return /log.?in|sign.?in/i.test((n.innerText||'')+' '+(n.value||''));  
+            var sig=(n.innerText||'')+' '+(n.value||'')+' '+(n.id||'')+' '+(n.name||'')+' '+(n.title||'')+' '+(n.getAttribute('aria-label')||'')+' '+(n.getAttribute('href')||'');
+            return /log.?in|sign.?in/i.test(sig);  
           });  
           if(!x)return 'LOGIN_AGENT_NOT_FOUND';  
           x.click();  
@@ -2736,6 +2777,7 @@ override fun onDestroy() {
 
     activationPopup?.dismiss()  
     flashDialog?.dismiss()
+    vpnDialog?.dismiss()
 
     if (wifiPortalReceiverRegistered) {
         try {
