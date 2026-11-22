@@ -210,6 +210,15 @@ class PortalMonitorService : Service() {
     @Suppress("DEPRECATION")
     private fun refreshCurrentNetworks() {
         try {
+            WifiNotificationListener.scanActiveNotificationsNow(notifyService = true)
+
+            val prefs = getSharedPreferences("wifi_notification_links", Context.MODE_PRIVATE)
+            val recentType = prefs.getString("pending_detection_type", null)
+            val recentAt = prefs.getLong("latest_notification_time", 0L)
+            if (!recentType.isNullOrBlank() && System.currentTimeMillis() - recentAt <= 10 * 60_000L) {
+                lastDetectionType = recentType
+            }
+
             for (network in connectivityManager.allNetworks) {
                 val capabilities =
                     connectivityManager.getNetworkCapabilities(network)
@@ -220,7 +229,11 @@ class PortalMonitorService : Service() {
                     ) == true
                 ) {
                     wifiNetworks.add(network)
-                    showWifiNotification()
+                    showWifiNotification(
+                        captiveDetected = lastDetectionType == "PORTAL_LOGIN",
+                        forceRefresh = false,
+                        websiteDetected = lastDetectionType == "VIEW_WEBSITE"
+                    )
                     evaluateNetwork(network, capabilities)
                 }
             }
@@ -305,9 +318,9 @@ class PortalMonitorService : Service() {
 
             if (!hasVenueWebsite) {
                 showWifiNotification(
-                    captiveDetected = false,
+                    captiveDetected = lastDetectionType == "PORTAL_LOGIN",
                     forceRefresh = false,
-                    websiteDetected = false
+                    websiteDetected = lastDetectionType == "VIEW_WEBSITE"
                 )
             }
         }
@@ -351,14 +364,14 @@ class PortalMonitorService : Service() {
 
     private fun updateMonitorNotification() {
         val message = when {
-            captiveNetworks.isNotEmpty() ->
-                "Captive Portal detected"
+            captiveNetworks.isNotEmpty() || lastDetectionType == "PORTAL_LOGIN" ->
+                "Wi-Fi Login Portal detected"
 
-            websiteNetworks.isNotEmpty() ->
-                "Connected website / portal detected"
+            websiteNetworks.isNotEmpty() || lastDetectionType == "VIEW_WEBSITE" ->
+                "Connected / Tap to view website detected"
 
             validatedNetworks.isNotEmpty() ->
-                "Wi-Fi connected — internet available"
+                "Wi-Fi connected — waiting for portal"
 
             wifiNetworks.isNotEmpty() ->
                 "Wi-Fi connected — monitoring notifications"
@@ -446,12 +459,13 @@ class PortalMonitorService : Service() {
                 if (!detectionType.isNullOrBlank()) {
                     lastDetectionType = detectionType
                 }
-                val isWebsite = detectionType == "VIEW_WEBSITE"
+                val isWebsite = lastDetectionType == "VIEW_WEBSITE"
                 showWifiNotification(
                     captiveDetected = !isWebsite,
                     forceRefresh = true,
                     websiteDetected = isWebsite
                 )
+                updateMonitorNotification()
             }
         }
         return START_STICKY

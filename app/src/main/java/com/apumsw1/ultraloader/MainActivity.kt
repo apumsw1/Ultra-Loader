@@ -89,6 +89,7 @@ private lateinit var internetStatus: TextView
 private lateinit var activationStatus: TextView  
 private lateinit var userInput: EditText  
 private lateinit var passwordInput: EditText  
+private lateinit var notifAccessButton: Button
 private lateinit var webView: WebView  
 private lateinit var webTitle: TextView  
 
@@ -856,6 +857,21 @@ private fun createScreen() {
         }  
     )  
 
+    notifAccessButton = makeButton("⚠ ENABLE WIFI NOTIFICATION ACCESS") {
+        try {
+            startActivity(
+                Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
+            )
+        } catch (_: Exception) {
+            toast("Unable to open Notification Access settings")
+        }
+    }.apply {
+        textSize = 11.5f
+        background = rounded(Color.rgb(120, 35, 35), red)
+        visibility = if (isNotificationAccessEnabled()) View.GONE else View.VISIBLE
+    }
+    loginPanel.addView(notifAccessButton)
+
     webTitle = TextView(this).apply {  
         text = "📈 LIVE INTERNET USAGE GRAPH"  
         textSize = 12f  
@@ -1467,13 +1483,26 @@ private fun requestNotificationPermission() {
     }  
 }  
 
-private fun requestWifiNotificationAccess() {
-    val enabled = android.provider.Settings.Secure.getString(
-        contentResolver,
-        "enabled_notification_listeners"
-    ).orEmpty()
+private fun isNotificationAccessEnabled(): Boolean {
+    return try {
+        val enabled = android.provider.Settings.Secure.getString(
+            contentResolver,
+            "enabled_notification_listeners"
+        ).orEmpty()
+        enabled.contains(packageName)
+    } catch (_: Exception) {
+        false
+    }
+}
 
-    if (enabled.contains(packageName)) return
+private fun updateNotificationAccessButton() {
+    if (!::notifAccessButton.isInitialized) return
+    notifAccessButton.visibility =
+        if (isNotificationAccessEnabled()) View.GONE else View.VISIBLE
+}
+
+private fun requestWifiNotificationAccess() {
+    if (isNotificationAccessEnabled()) return
 
     val prefs = getSharedPreferences("wifi_notification_links", MODE_PRIVATE)
 
@@ -1630,11 +1659,44 @@ private fun startPortalProcess() {
     discoverPortalUrl()  
 }  
 
+private fun getWifiGatewayIp(manager: ConnectivityManager, network: Network?): String? {
+    try {
+        if (network != null) {
+            val lp = manager.getLinkProperties(network)
+            val routeGateway = lp?.routes?.firstOrNull { route ->
+                route.isDefaultRoute && route.gateway is java.net.Inet4Address
+            }?.gateway?.hostAddress
+            if (!routeGateway.isNullOrBlank() && routeGateway != "0.0.0.0") {
+                return routeGateway
+            }
+        }
+    } catch (_: Exception) {
+    }
+    try {
+        @Suppress("DEPRECATION")
+        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+        @Suppress("DEPRECATION")
+        val gw = wm.dhcpInfo?.gateway ?: 0
+        if (gw != 0) {
+            return String.format(
+                Locale.US,
+                "%d.%d.%d.%d",
+                gw and 0xff,
+                gw shr 8 and 0xff,
+                gw shr 16 and 0xff,
+                gw shr 24 and 0xff
+            )
+        }
+    } catch (_: Exception) {
+    }
+    return null
+}
+
 private fun discoverPortalUrl() {
     executor.execute {
 
         // Scan all active Wi-Fi notifications right when START ULTRA LOADER runs
-        WifiNotificationListener.scanActiveNotificationsNow()
+        WifiNotificationListener.scanActiveNotificationsNow(notifyService = true)
 
         var found: String? = null
         var notificationLink = false
@@ -1698,15 +1760,18 @@ private fun discoverPortalUrl() {
             }
         }
 
-        // Keep HTTP redirect and HTML/JS captive portal discovery as fallback.
-        val probes = listOf(
-            "http://connectivitycheck.gstatic.com/generate_204",
-            "http://www.google.com/generate_204",
-            "http://clients3.google.com/generate_204"
-        )
+        // Probe Wi-Fi gateway and standard non-Google captive endpoints
+        val probeTargets = mutableListOf<Pair<String, Boolean>>()
+        val gatewayIp = getWifiGatewayIp(manager, network)
+        if (!gatewayIp.isNullOrBlank()) {
+            probeTargets.add("http://$gatewayIp/" to true)
+        }
+        probeTargets.add("http://captive.apple.com/hotspot-detect.html" to false)
+        probeTargets.add("http://detectportal.firefox.com/canonical.html" to false)
+        probeTargets.add("http://neverssl.com/" to false)
 
         if (found == null) {
-            for (probe in probes) {
+            for ((probe, isGateway) in probeTargets) {
                 if (found != null) break
 
                 var connection: HttpURLConnection? = null
@@ -1718,8 +1783,8 @@ private fun discoverPortalUrl() {
                     ) as HttpURLConnection
 
                     connection.instanceFollowRedirects = false
-                    connection.connectTimeout = 7000
-                    connection.readTimeout = 7000
+                    connection.connectTimeout = 5000
+                    connection.readTimeout = 5000
                     connection.requestMethod = "GET"
 
                     val code = connection.responseCode
@@ -1727,16 +1792,22 @@ private fun discoverPortalUrl() {
 
                     if (
                         code in 300..399 &&
-                        !location.isNullOrBlank() &&
-                        (
-                            location.startsWith("http://") ||
-                            location.startsWith("https://")
-                        )
+                        !location.isNullOrBlank()
                     ) {
-                        found = location
+                        val resolvedLocation = try {
+                            URL(URL(probe), location).toString()
+                        } catch (_: Exception) {
+                            location
+                        }
+                        if (
+                            resolvedLocation.startsWith("http://") ||
+                            resolvedLocation.startsWith("https://")
+                        ) {
+                            found = resolvedLocation
+                        }
                     } else if (code == 200) {
                         val body = try {
-                            connection.inputStream.bufferedReader().use { it.readText().take(8192) }
+                            connection.inputStream.bufferedReader().use { it.readText().take(16384) }
                         } catch (_: Exception) {
                             ""
                         }
@@ -1746,6 +1817,12 @@ private fun discoverPortalUrl() {
                         ).find(body)?.groupValues?.getOrNull(1)
                         if (!htmlRedirect.isNullOrBlank()) {
                             found = htmlRedirect
+                        } else if (
+                            isGateway &&
+                            body.contains("<input", ignoreCase = true) &&
+                            Regex("""password|log.?in|sign.?in|log.?out|sign.?out|portal|captive""", RegexOption.IGNORE_CASE).containsMatchIn(body)
+                        ) {
+                            found = probe
                         }
                     }
 
@@ -1764,6 +1841,17 @@ private fun discoverPortalUrl() {
                 return@runOnUiThread
             }
 
+            if (found.isNullOrBlank()) {
+                stage = Stage.IDLE
+                updateNotificationAccessButton()
+                if (!isNotificationAccessEnabled()) {
+                    statusText("● ENABLE WIFI NOTIFICATION ACCESS", red)
+                } else {
+                    statusText("● PORTAL URL NOT FOUND — TAP WIFI NOTIFICATION", red)
+                }
+                return@runOnUiThread
+            }
+
             val selectedNetwork = portalNetwork
 
             if (selectedNetwork != null) {
@@ -1777,14 +1865,11 @@ private fun discoverPortalUrl() {
                 }
             }
 
-            portalUrl = found ?: FALLBACK_PORTAL
+            portalUrl = found
 
             workflowStatus(
-                when {
-                    notificationLink -> "WIFI NOTIFICATION LINK FOUND"
-                    found != null -> "CURRENT PORTAL FOUND"
-                    else -> "USING PORTAL FALLBACK"
-                }
+                if (notificationLink) "WIFI NOTIFICATION LINK FOUND"
+                else "CURRENT PORTAL FOUND"
             )
 
             webView.visibility = View.INVISIBLE
@@ -2621,9 +2706,14 @@ override fun onResume() {
     if (!appInitialized) return  
 
     updateActivationStatus()  
+    updateNotificationAccessButton()
     updateInternetStatus()  
     updateDeviceDataUsage()  
     verifyLicenseWhenOnline()  
+
+    if (isNotificationAccessEnabled()) {
+        startMonitorService(refresh = true)
+    }
 
     if (!ActivationManager.hasAccess(this)) {  
         statusText("● ACTIVATION EXPIRED", red)  

@@ -26,10 +26,12 @@ class WifiNotificationListener : NotificationListenerService() {
         @Volatile
         private var activeInstance: WifiNotificationListener? = null
 
-        fun scanActiveNotificationsNow(): Boolean {
+        fun isConnected(): Boolean = activeInstance != null
+
+        fun scanActiveNotificationsNow(notifyService: Boolean = false): Boolean {
             val instance = activeInstance ?: return false
             return try {
-                instance.scanAllActiveNotifications()
+                instance.scanAllActiveNotifications(notifyService)
                 true
             } catch (_: Exception) {
                 false
@@ -44,7 +46,7 @@ class WifiNotificationListener : NotificationListenerService() {
         super.onListenerConnected()
         activeInstance = this
         try {
-            scanAllActiveNotifications()
+            scanAllActiveNotifications(notifyService = true)
         } catch (_: Exception) {
         }
     }
@@ -63,7 +65,7 @@ class WifiNotificationListener : NotificationListenerService() {
         super.onDestroy()
     }
 
-    fun scanAllActiveNotifications() {
+    fun scanAllActiveNotifications(notifyService: Boolean = false) {
         if (!isWifiConnected()) return
         val active = try {
             activeNotifications
@@ -71,9 +73,17 @@ class WifiNotificationListener : NotificationListenerService() {
             null
         } ?: return
 
+        var latestDetection: Pair<String?, String>? = null
         // Process oldest to newest so the newest notification becomes latest_url
         active.sortedBy { it.postTime }.forEach { sbn ->
-            processStatusBarNotification(sbn, notifyMonitorService = false)
+            val matched = processStatusBarNotification(sbn, notifyMonitorService = false)
+            if (matched != null) {
+                latestDetection = matched
+            }
+        }
+
+        if (notifyService && latestDetection != null) {
+            notifyMonitorService(latestDetection!!.first, latestDetection!!.second)
         }
     }
 
@@ -85,11 +95,11 @@ class WifiNotificationListener : NotificationListenerService() {
     private fun processStatusBarNotification(
         sbn: StatusBarNotification,
         notifyMonitorService: Boolean
-    ) {
-        if (sbn.packageName == packageName) return
-        if (!isWifiConnected()) return
+    ): Pair<String?, String>? {
+        if (sbn.packageName == packageName) return null
+        if (!isWifiConnected()) return null
 
-        val notification = sbn.notification ?: return
+        val notification = sbn.notification ?: return null
         val extras = notification.extras ?: Bundle.EMPTY
         val texts = mutableListOf<String>()
         val extraUrls = mutableListOf<String>()
@@ -101,6 +111,7 @@ class WifiNotificationListener : NotificationListenerService() {
         }
 
         addText(extras.getCharSequence(Notification.EXTRA_TITLE))
+        addText(extras.getCharSequence(Notification.EXTRA_TITLE_BIG))
         addText(extras.getCharSequence(Notification.EXTRA_TEXT))
         addText(extras.getCharSequence(Notification.EXTRA_BIG_TEXT))
         addText(extras.getCharSequence(Notification.EXTRA_SUB_TEXT))
@@ -110,6 +121,12 @@ class WifiNotificationListener : NotificationListenerService() {
 
         extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
             ?.forEach { addText(it) }
+
+        notification.publicVersion?.extras?.let { pubExtras ->
+            addText(pubExtras.getCharSequence(Notification.EXTRA_TITLE))
+            addText(pubExtras.getCharSequence(Notification.EXTRA_TEXT))
+            collectBundleValues(pubExtras, texts, extraUrls, depth = 0)
+        }
 
         notification.actions?.forEach { action ->
             addText(action?.title)
@@ -161,11 +178,11 @@ class WifiNotificationListener : NotificationListenerService() {
                         lowerText.contains("portal")))
 
         if (!isViewWebsiteNotification && !isLoginPortalNotification && urls.isEmpty()) {
-            return
+            return null
         }
 
         if (!systemWifiPkg && !hasWifiKeywords && !isViewWebsiteNotification && !isLoginPortalNotification) {
-            return
+            return null
         }
 
         val detectionType = if (isViewWebsiteNotification) "VIEW_WEBSITE" else "PORTAL_LOGIN"
@@ -191,11 +208,6 @@ class WifiNotificationListener : NotificationListenerService() {
                 .putString("latest_url", resolvedUrl)
                 .putLong("latest_url_time", System.currentTimeMillis())
                 .putString("url_history", history.joinToString("\n"))
-        } else {
-            val oldTime = prefs.getLong("latest_url_time", 0L)
-            if (System.currentTimeMillis() - oldTime > 30_000L) {
-                editor.remove("latest_url").remove("latest_url_time")
-            }
         }
 
         editor
@@ -211,12 +223,14 @@ class WifiNotificationListener : NotificationListenerService() {
         if (notifyMonitorService) {
             notifyMonitorService(resolvedUrl, detectionType)
         }
+
+        return Pair(resolvedUrl, detectionType)
     }
 
     private fun notifyMonitorService(resolvedUrl: String?, detectionType: String) {
         val now = System.currentTimeMillis()
         val signature = "$detectionType|${resolvedUrl.orEmpty()}"
-        if (signature == lastServiceUpdateSignature && now - lastServiceUpdateAt < 15_000L) {
+        if (signature == lastServiceUpdateSignature && now - lastServiceUpdateAt < 10_000L) {
             return
         }
         lastServiceUpdateSignature = signature
@@ -303,7 +317,8 @@ class WifiNotificationListener : NotificationListenerService() {
             lower == "com.android.systemui" ||
             lower.contains("networkstack") ||
             lower.contains("captiveportallogin") ||
-            lower.contains(".wifi") ||
+            lower.contains("wifi") ||
+            lower.contains("wireless") ||
             lower.contains("connectivity")
     }
 
