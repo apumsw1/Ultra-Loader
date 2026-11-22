@@ -91,9 +91,16 @@ private lateinit var ipDetails: TextView
 private lateinit var licenseDetails: TextView  
 private lateinit var dataDetails: TextView  
 private lateinit var globeView: GlobeView  
+private lateinit var globeLocationDetails: TextView
+private lateinit var cyberRadarView: CyberRadarView
+private lateinit var radarStatusText: TextView
+private lateinit var trafficGraphView: LiveTrafficGraphView
+private lateinit var trafficSummaryText: TextView
 private lateinit var clockText: TextView  
 private lateinit var secondLoginTimerStatus: TextView  
 private lateinit var secondLoginStageStatus: TextView  
+
+private var peakSpeedBps = 0L
 
 private var dataBaselineRx = 0L  
 private var dataBaselineTx = 0L  
@@ -121,6 +128,8 @@ private var secondLoginButtonFound = false
 private var logoutSearchRunning = false  
 private var loginActionSearchRunning = false  
 private var secondFormCheckRunning = false  
+private var netCheckRunning = false
+private var netWorkingVerified = false
 
 private var activationPopup: AlertDialog? = null  
 private var flashDialog: AlertDialog? = null
@@ -129,6 +138,8 @@ private var flashPopupChecked = false
 private var connectivityManager: ConnectivityManager? = null  
 private var networkCallbackRegistered = false  
 private var lastLicenseNetworkState = false  
+private var lastIpFetchAt = 0L
+private var lastKnownVpnForIp = false
 
 /*  
  * Network callback:  
@@ -142,6 +153,7 @@ private val licenseNetworkCallback =
             handler.post {  
                 updateInternetStatus()  
                 verifyLicenseWhenOnline()  
+                refreshIpLocationIfNeeded()
             }  
         }  
 
@@ -158,6 +170,7 @@ private val licenseNetworkCallback =
 
                 if (validated) {  
                     verifyLicenseWhenOnline()  
+                    refreshIpLocationIfNeeded()
                 }  
             }  
         }  
@@ -166,6 +179,7 @@ private val licenseNetworkCallback =
             handler.post {  
                 lastLicenseNetworkState = false  
                 updateInternetStatus()  
+                refreshIpLocationIfNeeded(force = true)
             }  
         }  
     }  
@@ -205,9 +219,9 @@ private val timerUpdater = object : Runnable {
 
 private val globeUpdater = object : Runnable {  
     override fun run() {  
-        if (!::globeView.isInitialized) return  
-        globeView.invalidate()  
-        handler.postDelayed(this, 45)  
+        if (::globeView.isInitialized) globeView.invalidate()  
+        if (::cyberRadarView.isInitialized) cyberRadarView.invalidate()
+        handler.postDelayed(this, 40)  
     }  
 }  
 
@@ -643,10 +657,18 @@ private fun createScreen() {
         background = rounded(panel, cyan)  
     }  
 
-    val topRow = LinearLayout(this).apply {  
+    val dashboardColumns = LinearLayout(this).apply {  
         orientation = LinearLayout.HORIZONTAL  
-        gravity = Gravity.CENTER  
+        gravity = Gravity.TOP  
     }  
+
+    val leftColumn = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+    }
+
+    val rightColumn = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+    }
 
     val ipPanel = createPanel()  
     ipPanel.addView(panelHeading("🌐 IP DETAILS"))  
@@ -656,21 +678,31 @@ private fun createScreen() {
     )  
     ipPanel.addView(ipDetails)  
 
+    val dataPanel = createPanel()  
+    dataPanel.addView(panelHeading("📊 DATA USAGE"))  
+
+    dataDetails = panelText(  
+        "DOWNLOAD: --\nUPLOAD: --\nTOTAL: --\nSPEED: --"  
+    )  
+    dataPanel.addView(dataDetails)  
+
+    val radarPanel = createPanel()
+    radarPanel.addView(panelHeading("🛰 NETWORK PULSE"))
+
+    val radarHeightPx = (145 * resources.displayMetrics.density).toInt()
+    cyberRadarView = CyberRadarView(this).apply {
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            radarHeightPx
+        )
+    }
+    radarPanel.addView(cyberRadarView)
+
+    radarStatusText = panelText("RADAR: SCANNING\nSIGNAL: ACTIVE")
+    radarPanel.addView(radarStatusText)
+
     val activationPanel = createPanel()  
     activationPanel.addView(panelHeading("🔐 ACTIVATION KEY"))  
-
-    val activationButton = TextView(this).apply {  
-        text = "● ON / OFF  ⚙"  
-        textSize = 14f  
-        gravity = Gravity.CENTER  
-        typeface = Typeface.DEFAULT_BOLD  
-        setTextColor(green)  
-        setPadding(8, 10, 8, 10)  
-        background = rounded(Color.rgb(7, 48, 48), green)  
-        setOnClickListener { showActivationPopup() }  
-    }  
-
-    activationPanel.addView(activationButton)  
 
     licenseDetails = panelText(  
         "ULTRA ACTIVATION\nCHECKING LICENSE..."  
@@ -682,56 +714,63 @@ private fun createScreen() {
     }  
     activationPanel.addView(buyButton)  
 
-    topRow.addView(  
-        ipPanel,  
-        LinearLayout.LayoutParams(0, -2, 1f).apply {  
-            setMargins(3, 3, 5, 3)  
-        }  
-    )  
-
-    topRow.addView(  
-        activationPanel,  
-        LinearLayout.LayoutParams(0, -2, 1f).apply {  
-            setMargins(5, 3, 3, 3)  
-        }  
-    )  
-
-    val bottomRow = LinearLayout(this).apply {  
-        orientation = LinearLayout.HORIZONTAL  
-        gravity = Gravity.CENTER  
-    }  
-
-    val dataPanel = createPanel()  
-    dataPanel.addView(panelHeading("📊 DATA USAGE"))  
-
-    dataDetails = panelText(  
-        "DOWNLOAD: --\nUPLOAD: --\nTOTAL: --\nSPEED: --"  
-    )  
-    dataPanel.addView(dataDetails)  
-
     val globePanel = createPanel()  
     globePanel.addView(panelHeading("🌍 LIVE GLOBE"))  
 
+    val globeSizePx = (155 * resources.displayMetrics.density).toInt()
     globeView = GlobeView(this).apply {  
         layoutParams = LinearLayout.LayoutParams(  
             LinearLayout.LayoutParams.MATCH_PARENT,  
-            185  
+            globeSizePx
         )  
     }  
 
     globePanel.addView(globeView)  
 
-    bottomRow.addView(  
-        dataPanel,  
+    globeLocationDetails = panelText(
+        "📍 LOCATION: CHECKING...\nIP: --"
+    )
+    globePanel.addView(globeLocationDetails)
+
+    leftColumn.addView(
+        ipPanel,
+        matchWrap().apply {
+            setMargins(0, 0, 0, 8)
+        }
+    )
+    leftColumn.addView(
+        dataPanel,
+        matchWrap().apply {
+            setMargins(0, 0, 0, 8)
+        }
+    )
+    leftColumn.addView(
+        radarPanel,
+        matchWrap()
+    )
+
+    rightColumn.addView(
+        activationPanel,
+        matchWrap().apply {
+            setMargins(0, 0, 0, 8)
+        }
+    )
+    rightColumn.addView(
+        globePanel,
+        matchWrap()
+    )
+
+    dashboardColumns.addView(  
+        leftColumn,  
         LinearLayout.LayoutParams(0, -2, 1f).apply {  
-            setMargins(3, 3, 5, 3)  
+            setMargins(3, 4, 5, 3)  
         }  
     )  
 
-    bottomRow.addView(  
-        globePanel,  
+    dashboardColumns.addView(  
+        rightColumn,  
         LinearLayout.LayoutParams(0, -2, 1f).apply {  
-            setMargins(5, 3, 3, 3)  
+            setMargins(5, 4, 3, 3)  
         }  
     )  
 
@@ -776,7 +815,7 @@ private fun createScreen() {
     )  
 
     webTitle = TextView(this).apply {  
-        text = "▣ PORTAL LOGIN PAGE"  
+        text = "📈 LIVE INTERNET USAGE GRAPH"  
         textSize = 12f  
         typeface = Typeface.DEFAULT_BOLD  
         setTextColor(cyan)  
@@ -784,7 +823,8 @@ private fun createScreen() {
     }  
 
     webView = WebView(this).apply {  
-        setBackgroundColor(Color.WHITE)  
+        visibility = View.INVISIBLE
+        alpha = 0f
 
         settings.javaScriptEnabled = true  
         settings.domStorageEnabled = true  
@@ -808,8 +848,8 @@ private fun createScreen() {
                 url: String?,  
                 favicon: Bitmap?  
             ) {  
-                if (!dashboardShown) {  
-                    statusText("● PORTAL PAGE LOADING...", cyan)  
+                if (!dashboardShown && stage != Stage.IDLE && !netWorkingVerified) {  
+                    workflowStatus("PORTAL PAGE LOADING...")  
                 }  
             }  
 
@@ -831,25 +871,41 @@ private fun createScreen() {
         }  
     }  
 
+    val density = resources.displayMetrics.density
+    val trafficPanel = createPanel()
+
+    trafficSummaryText = TextView(this).apply {
+        text = "↓ DL: 0 B/s  •  ↑ UL: 0 B/s  •  PEAK: 0 B/s"
+        textSize = 10.5f
+        gravity = Gravity.CENTER
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(green)
+        setPadding(4, 2, 4, 8)
+    }
+    trafficPanel.addView(trafficSummaryText, matchWrap())
+
+    trafficGraphView = LiveTrafficGraphView(this).apply {
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            (165 * density).toInt()
+        )
+    }
+    trafficPanel.addView(trafficGraphView)
+
     secondLoginTimerStatus = panelText("LOGIN TIMER: NOT STARTED")  
     secondLoginStageStatus = panelText("FREE DATA CANECTION: WAITING")  
 
     content.addView(title, matchWrap())  
     content.addView(subtitle, matchWrap())  
     content.addView(status, matchWrap())  
-    content.addView(topRow, matchWrap())  
-    content.addView(bottomRow, matchWrap())  
+    content.addView(dashboardColumns, matchWrap())  
     content.addView(clockTextView(), matchWrap())  
     content.addView(loginPanel, matchWrap())  
     content.addView(webTitle, matchWrap())  
+    content.addView(trafficPanel, matchWrap())
 
-    content.addView(  
-        webView,  
-        LinearLayout.LayoutParams(  
-            LinearLayout.LayoutParams.MATCH_PARENT,  
-            500  
-        )  
-    )  
+    // Keep WebView attached but invisible for background portal automation
+    root.addView(webView, LinearLayout.LayoutParams(1, 1))
 
     val footer = TextView(this).apply {  
         text = "✦ M'r AB Creation ✦"  
@@ -1003,11 +1059,31 @@ private fun updateActivationStatus() {
     }  
 }  
 
+private fun refreshIpLocationIfNeeded(force: Boolean = false) {
+    if (!appInitialized || isFinishing || isDestroyed) return
+    val now = SystemClock.elapsedRealtime()
+    val vpnNow = isVpnConnected()
+    val vpnChanged = vpnNow != lastKnownVpnForIp
+
+    if (force || vpnChanged || (now - lastIpFetchAt >= 4000L)) {
+        lastKnownVpnForIp = vpnNow
+        updateIpDetails()
+    }
+}
+
 private fun updateIpDetails() {  
     if (!::ipDetails.isInitialized) return  
 
+    lastIpFetchAt = SystemClock.elapsedRealtime()
+    lastKnownVpnForIp = isVpnConnected()
+
     ipDetails.text =  
         "PUBLIC IP: CHECKING...\nCOUNTRY: --\nCITY: --\nISP: --\nVPN: CHECKING..."  
+
+    if (::globeLocationDetails.isInitialized) {
+        globeLocationDetails.text = "📍 LOCATION: CHECKING...\nIP: --"
+        globeLocationDetails.setTextColor(cyan)
+    }
 
     executor.execute {  
         var data: JSONObject? = null  
@@ -1030,26 +1106,65 @@ private fun updateIpDetails() {
 
         val success = data?.optBoolean("success", false) == true  
 
-        val ip = if (success) data?.optString("ip") else "Unavailable"  
-        val country = if (success) data?.optString("country") else "Unavailable"  
-        val city = if (success) data?.optString("city") else "Unavailable"  
+        val ip = if (success) data?.optString("ip").orEmpty().ifBlank { "Unavailable" } else "Unavailable"  
+        val country = if (success) data?.optString("country").orEmpty().ifBlank { "Unavailable" } else "Unavailable"  
+        val countryCode = if (success) data?.optString("country_code").orEmpty() else ""
+        val city = if (success) data?.optString("city").orEmpty().ifBlank { "Unavailable" } else "Unavailable"  
         val isp = if (success) {  
             data?.optJSONObject("connection")?.optString("isp")  
         } else "Unavailable"  
 
+        val hasCoords = success &&
+            data?.has("latitude") == true &&
+            data.has("longitude")
+        val lat = if (hasCoords) data?.optDouble("latitude", 0.0) ?: 0.0 else 0.0
+        val lon = if (hasCoords) data?.optDouble("longitude", 0.0) ?: 0.0 else 0.0
+
         runOnUiThread {  
             if (!::ipDetails.isInitialized) return@runOnUiThread  
+
+            val vpnConnected = isVpnConnected()
 
             ipDetails.text =  
                 "PUBLIC IP: $ip\n" +  
                 "COUNTRY: $country\n" +  
                 "CITY: $city\n" +  
                 "ISP: ${isp ?: "Unavailable"}\n" +  
-                "VPN: ${if (isVpnConnected()) "CONNECTED" else "DISCONNECTED"}"  
+                "VPN: ${if (vpnConnected) "CONNECTED" else "DISCONNECTED"}"  
 
             ipDetails.setTextColor(  
-                if (isVpnConnected()) green else cyan  
+                if (vpnConnected) green else cyan  
             )  
+
+            if (::globeView.isInitialized) {
+                val shortLabel = when {
+                    city != "Unavailable" && countryCode.isNotBlank() -> "$city, $countryCode"
+                    country != "Unavailable" -> country
+                    else -> ""
+                }
+                globeView.setLiveLocation(
+                    available = hasCoords,
+                    lat = lat,
+                    lon = lon,
+                    label = shortLabel,
+                    vpnConnected = vpnConnected
+                )
+            }
+
+            if (::globeLocationDetails.isInitialized) {
+                globeLocationDetails.text = if (success) {
+                    val place = listOf(city, country)
+                        .filter { it.isNotBlank() && it != "Unavailable" }
+                        .joinToString(", ")
+                        .ifBlank { "Detected" }
+                    "📍 $place\nIP: $ip\n${if (vpnConnected) "🛡 VPN CONNECTED" else "🌐 DIRECT IP"}"
+                } else {
+                    "📍 LOCATION: UNAVAILABLE\nIP: Offline"
+                }
+                globeLocationDetails.setTextColor(
+                    if (success && vpnConnected) green else cyan
+                )
+            }
         }  
     }  
 }  
@@ -1091,6 +1206,32 @@ private fun updateDeviceDataUsage() {
         "SPEED: ↓${formatSize(rxSpeed)}/s  ↑${formatSize(txSpeed)}/s"  
 
     dataDetails.setTextColor(green)  
+
+    val combinedSpeed = rxSpeed + txSpeed
+    if (combinedSpeed > peakSpeedBps) {
+        peakSpeedBps = combinedSpeed
+    }
+
+    if (::trafficGraphView.isInitialized) {
+        trafficGraphView.addSample(rxSpeed, txSpeed)
+    }
+
+    val vpnNow = isVpnConnected()
+    if (::cyberRadarView.isInitialized) {
+        cyberRadarView.updateTelemetry(rxSpeed, txSpeed, vpnNow)
+    }
+
+    if (::radarStatusText.isInitialized) {
+        val stateLabel = if (vpnNow) "SHIELD: VPN LOCKED" else "SIGNAL: DIRECT LINK"
+        val flowLabel = if (combinedSpeed > 0L) "FLOW: ${formatSize(combinedSpeed)}/s" else "FLOW: STANDBY"
+        radarStatusText.text = "$stateLabel\n$flowLabel"
+        radarStatusText.setTextColor(if (vpnNow) green else cyan)
+    }
+
+    if (::trafficSummaryText.isInitialized) {
+        trafficSummaryText.text =
+            "↓ DL: ${formatSize(rxSpeed)}/s  •  ↑ UL: ${formatSize(txSpeed)}/s  •  PEAK: ${formatSize(peakSpeedBps)}/s"
+    }
 }  
 
 private fun formatSize(bytes: Long): String {  
@@ -1172,8 +1313,15 @@ private fun statusText(message: String, color: Int) {
     if (::status.isInitialized) {  
         status.text = message  
         status.setTextColor(color)  
-    }  
-}  
+    }
+}
+
+private fun workflowStatus(@Suppress("UNUSED_PARAMETER") logDetail: String) {
+    if (::status.isInitialized && !netWorkingVerified) {
+        status.text = "● WAIT TO CONNECT"
+        status.setTextColor(cyan)
+    }
+}
 
 private fun toast(message: String) {  
     Toast.makeText(this, message, Toast.LENGTH_LONG).show()  
@@ -1352,9 +1500,10 @@ private fun startPortalProcess() {
     logoutSearchRunning = false  
     loginActionSearchRunning = false  
     secondFormCheckRunning = false  
+    netCheckRunning = false
+    netWorkingVerified = false
 
-    statusText("● FINDING CURRENT PORTAL...", cyan)  
-    webTitle.text = "▣ PORTAL LOGIN PAGE"  
+    workflowStatus("FINDING CURRENT PORTAL...")
 
     discoverPortalUrl()  
 }  
@@ -1472,16 +1621,15 @@ private fun discoverPortalUrl() {
 
             portalUrl = found ?: FALLBACK_PORTAL
 
-            statusText(
+            workflowStatus(
                 when {
-                    notificationLink -> "● WIFI NOTIFICATION LINK FOUND"
-                    found != null -> "● CURRENT PORTAL FOUND"
-                    else -> "● USING PORTAL FALLBACK"
-                },
-                if (found != null) green else cyan
+                    notificationLink -> "WIFI NOTIFICATION LINK FOUND"
+                    found != null -> "CURRENT PORTAL FOUND"
+                    else -> "USING PORTAL FALLBACK"
+                }
             )
 
-            webView.visibility = View.VISIBLE
+            webView.visibility = View.INVISIBLE
             webView.loadUrl(portalUrl)
         }
     }
@@ -1566,14 +1714,14 @@ private fun tryAutoLogin() {
             loginSubmitted = true  
             stage = Stage.CHECK_LOGIN  
 
-            statusText("● LOGIN SUBMITTED - VERIFYING...", cyan)  
+            workflowStatus("LOGIN SUBMITTED - VERIFYING...")  
 
             handler.postDelayed({ checkPortalLogin() }, 3000)  
 
         } else if (result?.contains("FORM_NOT_FOUND") == true) {  
-            statusText("● PORTAL LOGIN FORM NOT FOUND", red)  
+            workflowStatus("PORTAL LOGIN FORM NOT FOUND")  
         } else {  
-            statusText("● CHECKING PORTAL FORM...", cyan)  
+            workflowStatus("CHECKING PORTAL FORM...")  
             handler.postDelayed({ tryAutoLogin() }, 2000)  
         }  
     }  
@@ -1597,7 +1745,7 @@ private fun checkPortalLogin() {
     webView.evaluateJavascript(script) { result ->  
         when {  
             result?.contains("LOGIN_OK") == true -> {  
-                statusText("● PORTAL LOGIN VERIFIED", green)  
+                workflowStatus("PORTAL LOGIN VERIFIED")  
 
                 (getSystemService(Context.CONNECTIVITY_SERVICE)  
                     as ConnectivityManager).bindProcessToNetwork(null)  
@@ -1606,7 +1754,7 @@ private fun checkPortalLogin() {
             }  
 
             result?.contains("LOGIN_FORM_STILL_HERE") == true -> {  
-                statusText("● LOGIN NOT CONFIRMED", red)  
+                workflowStatus("LOGIN NOT CONFIRMED")  
                 handler.postDelayed({ checkPortalLogin() }, 3000)  
             }  
 
@@ -1635,7 +1783,7 @@ private fun openThunderVpn() {
     }  
 
     try {  
-        statusText("● OPENING THUNDER VPN — CONNECT MANUALLY", cyan)  
+        workflowStatus("OPENING THUNDER VPN — CONNECT MANUALLY")  
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)  
         startActivity(launch)  
 
@@ -1665,7 +1813,7 @@ private fun checkVpnStatus() {
     }  
 
     if (connected) {  
-        statusText("● VPN CONNECTION DETECTED", green)  
+        workflowStatus("VPN CONNECTION DETECTED")  
 
         if (stage == Stage.WAIT_VPN) {  
             stage = Stage.LOGOUT  
@@ -1679,7 +1827,7 @@ private fun checkVpnStatus() {
         updateIpDetails()  
     } else {  
         if (stage == Stage.WAIT_VPN) {  
-            statusText("● PLEASE CONNECT VPN", red)  
+            workflowStatus("WAITING FOR VPN CONNECTION")  
             showVpnDialog()  
         }  
     }  
@@ -1723,14 +1871,14 @@ private fun clickPortalLogout() {
     if (stage != Stage.LOGOUT || logoutSearchRunning) return  
 
     if (logoutSearchAttempts >= 10) {  
-        statusText("● PORTAL LOGOUT BUTTON NOT FOUND", red)  
+        workflowStatus("PORTAL LOGOUT BUTTON NOT FOUND")  
         return  
     }  
 
     logoutSearchRunning = true  
     logoutSearchAttempts++  
 
-    statusText("● SEARCHING PORTAL LOGOUT... $logoutSearchAttempts/10", cyan)  
+    workflowStatus("SEARCHING PORTAL LOGOUT... $logoutSearchAttempts/10")  
 
     portalNetwork?.let {  
         (getSystemService(Context.CONNECTIVITY_SERVICE)  
@@ -1755,13 +1903,13 @@ private fun clickPortalLogout() {
         if (stage != Stage.LOGOUT) return@evaluateJavascript  
 
         if (result?.contains("LOGOUT_CLICKED") == true) {  
-            statusText("● LOGOUT CLICKED", green)  
+            workflowStatus("LOGOUT CLICKED")  
             startSecondLoginTimer()  
             handler.postDelayed({ clickPortalLoginAgent() }, 2500)  
         } else if (logoutSearchAttempts < 10) {  
             handler.postDelayed({ clickPortalLogout() }, 3000)  
         } else {  
-            statusText("● PORTAL LOGOUT BUTTON NOT FOUND", red)  
+            workflowStatus("PORTAL LOGOUT BUTTON NOT FOUND")  
         }  
     }  
 }  
@@ -1798,16 +1946,15 @@ private fun clickPortalLoginAgent() {
         stopSecondLoginTimer()  
         secondLoginStageStatus.text = "SECOND LOGIN BUTTON NOT FOUND"  
         secondLoginStageStatus.setTextColor(red)  
-        statusText("● PORTAL LOGIN ACTION NOT FOUND", red)  
+        workflowStatus("PORTAL LOGIN ACTION NOT FOUND")  
         return  
     }  
 
     loginActionSearchRunning = true  
     loginActionSearchAttempts++  
 
-    statusText(  
-        "● SEARCHING SECOND LOGIN BUTTON... $loginActionSearchAttempts/60",  
-        cyan  
+    workflowStatus(  
+        "SEARCHING SECOND LOGIN BUTTON... $loginActionSearchAttempts/60"
     )  
 
     val script = """  
@@ -1833,7 +1980,7 @@ private fun clickPortalLoginAgent() {
 
             stopSecondLoginTimer()  
             secondLoginStageStatus.text = "LOGIN BUTTON CLICKED"  
-            statusText("● SECOND LOGIN BUTTON FOUND", green)  
+            workflowStatus("SECOND LOGIN BUTTON FOUND")  
 
             handler.postDelayed({ checkSecondLoginForm() }, 1000)  
 
@@ -1843,7 +1990,7 @@ private fun clickPortalLoginAgent() {
             stopSecondLoginTimer()  
             secondLoginStageStatus.text = "SECOND LOGIN BUTTON NOT FOUND"  
             secondLoginStageStatus.setTextColor(red)  
-            statusText("● PORTAL LOGIN ACTION NOT FOUND", red)  
+            workflowStatus("PORTAL LOGIN ACTION NOT FOUND")  
         }  
     }  
 }  
@@ -1874,25 +2021,87 @@ private fun checkSecondLoginForm() {
             secondFormCheckRunning = false  
             stopSecondLoginTimer()  
 
+            try {
+                (getSystemService(Context.CONNECTIVITY_SERVICE)
+                    as ConnectivityManager).bindProcessToNetwork(null)
+            } catch (_: Exception) {
+            }
+
             secondLoginStageStatus.text =  
-                "LOGIN FORM READY — AUTOMATION STOPPED"  
-            secondLoginStageStatus.setTextColor(green)  
+                "SECOND LOGIN FORM FOUND — CHECKING NET..."  
+            secondLoginStageStatus.setTextColor(cyan)  
 
-            statusText(  
-                "● FINAL LOGIN PAGE READY — AUTOMATION STOPPED",  
-                green  
-            )  
+            workflowStatus("SECOND LOGIN FORM FOUND — CHECKING INTERNET")  
 
-            loadIpDashboard()  
+            startLiveNetWorkingCheck()  
         } else {  
             secondFormCheckRunning = false  
 
-            statusText("● WAITING FOR SECOND LOGIN FORM...", cyan)  
+            workflowStatus("WAITING FOR SECOND LOGIN FORM...")  
 
             handler.postDelayed({ checkSecondLoginForm() }, 2000)  
         }  
     }  
 }  
+
+private fun startLiveNetWorkingCheck() {
+    if (netCheckRunning || netWorkingVerified || stage != Stage.FINISHED || isFinishing || isDestroyed) {
+        return
+    }
+
+    netCheckRunning = true
+
+    executor.execute {
+        val working = isRealInternetResponding()
+
+        runOnUiThread {
+            netCheckRunning = false
+            if (stage != Stage.FINISHED || isFinishing || isDestroyed) return@runOnUiThread
+
+            if (working) {
+                netWorkingVerified = true
+                statusText("● CONNECT NET WORKING", green)
+
+                if (::secondLoginStageStatus.isInitialized) {
+                    secondLoginStageStatus.text = "SECOND LOGIN FORM FOUND • CONNECT NET WORKING"
+                    secondLoginStageStatus.setTextColor(green)
+                }
+
+                loadIpDashboard()
+                updateIpDetails()
+            } else {
+                workflowStatus("CHECKING INTERNET CONNECTION...")
+                handler.postDelayed({ startLiveNetWorkingCheck() }, 1500)
+            }
+        }
+    }
+}
+
+private fun isRealInternetResponding(): Boolean {
+    val testUrls = listOf(
+        "https://clients3.google.com/generate_204",
+        "http://connectivitycheck.gstatic.com/generate_204"
+    )
+    for (testUrl in testUrls) {
+        var conn: HttpURLConnection? = null
+        try {
+            conn = URL(testUrl).openConnection() as HttpURLConnection
+            conn.instanceFollowRedirects = false
+            conn.connectTimeout = 3500
+            conn.readTimeout = 3500
+            conn.useCaches = false
+            conn.requestMethod = "GET"
+            val code = conn.responseCode
+            if (code == 204 || code == 200) {
+                return true
+            }
+        } catch (_: Exception) {
+        } finally {
+            conn?.disconnect()
+        }
+    }
+    return false
+}
 
 private fun hasValidatedInternet(): Boolean {  
     val cm =  
@@ -1914,6 +2123,10 @@ private fun updateInternetStatus() {
 
     internetStatus.setTextColor(if (validated) green else red)  
 
+    if (stage == Stage.FINISHED && !netWorkingVerified) {
+        startLiveNetWorkingCheck()
+    }
+
     if (  
         stage == Stage.FINISHED &&  
         isVpnConnected() &&  
@@ -1928,12 +2141,13 @@ private fun loadIpDashboard() {
     if (  
         dashboardShown ||  
         !isVpnConnected() ||  
-        !hasValidatedInternet()  
+        !(hasValidatedInternet() || netWorkingVerified)  
     ) return  
 
     dashboardShown = true  
-    statusText("● VPN + INTERNET VERIFIED", green)  
-    webTitle.text = "▣ LIVE CONNECTION INFORMATION"  
+    if (netWorkingVerified) {
+        statusText("● CONNECT NET WORKING", green)
+    }
 
     updateIpDetails()  
 }  
@@ -2094,102 +2308,819 @@ override fun onDestroy() {
     super.onDestroy()  
 }  
 
-private inner class GlobeView(context: Context) : View(context) {  
+private inner class GlobeView(context: Context) : View(context) {
 
-    private val globePaint = Paint(Paint.ANTI_ALIAS_FLAG)  
-    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG)  
-    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG)  
+    private val oceanPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val landFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.rgb(42, 196, 114)
+    }
+    private val landStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1.6f
+        strokeJoin = Paint.Join.ROUND
+        color = Color.rgb(128, 250, 178)
+    }
+    private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1f
+        color = Color.argb(65, 130, 235, 255)
+    }
+    private val shinePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pulsePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2.5f
+    }
+    private val badgeBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.argb(215, 4, 18, 38)
+    }
+    private val badgeStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1.8f
+    }
+    private val badgeTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        typeface = Typeface.DEFAULT_BOLD
+        textAlign = Paint.Align.CENTER
+    }
 
-    private var rotation = 0f  
-    private var blink = false  
+    private val clipPath = Path()
+    private val polyPath = Path()
+    private val graticulePath = Path()
 
-    override fun onDraw(canvas: Canvas) {  
-        super.onDraw(canvas)  
+    private var rotation = 75f
+    private var pulsePhase = 0f
 
-        val cx = width / 2f  
-        val cy = height / 2f  
-        val radius = minOf(width, height) * 0.38f  
+    private var hasLocation = false
+    private var locationLat = 0.0
+    private var locationLon = 0.0
+    private var locationLabel = ""
+    private var vpnActive = false
 
-        rotation += 1.2f  
-        blink = !blink  
+    private val axialTiltRad = Math.toRadians(14.0)
+    private val cosTilt = kotlin.math.cos(axialTiltRad)
+    private val sinTilt = kotlin.math.sin(axialTiltRad)
 
-        globePaint.shader = RadialGradient(  
-            cx - radius * 0.3f,  
-            cy - radius * 0.3f,  
-            radius * 1.5f,  
-            intArrayOf(  
-                Color.rgb(25, 105, 145),  
-                Color.rgb(5, 45, 85),  
-                Color.rgb(2, 13, 34)  
-            ),  
-            null,  
-            Shader.TileMode.CLAMP  
-        )  
+    // World continent polygons in (lon, lat) degrees
+    private val continents: List<List<Pair<Double, Double>>> = listOf(
+        // North America
+        listOf(
+            -168.0 to 66.0, -160.0 to 71.0, -135.0 to 69.0, -110.0 to 72.0,
+            -82.0 to 68.0, -65.0 to 60.0, -53.0 to 47.0, -66.0 to 44.0,
+            -75.0 to 35.0, -81.0 to 25.0, -87.0 to 21.0, -83.0 to 10.0,
+            -78.0 to 8.0, -85.0 to 11.0, -92.0 to 15.0, -105.0 to 20.0,
+            -110.0 to 24.0, -117.0 to 32.0, -124.0 to 41.0, -125.0 to 49.0,
+            -137.0 to 58.0, -152.0 to 60.0, -165.0 to 60.0
+        ),
+        // Greenland
+        listOf(
+            -52.0 to 60.0, -42.0 to 60.0, -22.0 to 70.0, -18.0 to 81.0,
+            -45.0 to 83.0, -68.0 to 77.0, -55.0 to 68.0
+        ),
+        // South America
+        listOf(
+            -78.0 to 9.0, -71.0 to 12.0, -62.0 to 10.0, -50.0 to 1.0,
+            -35.0 to -6.0, -39.0 to -15.0, -42.0 to -23.0, -53.0 to -33.0,
+            -62.0 to -40.0, -67.0 to -54.0, -74.0 to -52.0, -73.0 to -40.0,
+            -71.0 to -30.0, -70.0 to -18.0, -81.0 to -5.0, -79.0 to 2.0
+        ),
+        // Europe
+        listOf(
+            -9.0 to 37.0, -9.0 to 43.0, -2.0 to 44.0, -5.0 to 48.0,
+            2.0 to 51.0, 8.0 to 54.0, 10.0 to 58.0, 5.0 to 61.0,
+            15.0 to 69.0, 28.0 to 71.0, 42.0 to 68.0, 55.0 to 67.0,
+            58.0 to 55.0, 45.0 to 45.0, 36.0 to 45.0, 29.0 to 41.0,
+            23.0 to 37.0, 18.0 to 40.0, 13.0 to 44.0, 16.0 to 38.0,
+            12.0 to 42.0, 7.0 to 44.0, 3.0 to 42.0, -5.0 to 36.0
+        ),
+        // UK & Ireland
+        listOf(
+            -6.0 to 50.0, 1.0 to 51.0, -2.0 to 58.0, -7.0 to 57.0, -9.0 to 52.0
+        ),
+        // Africa
+        listOf(
+            -17.0 to 15.0, -13.0 to 28.0, -6.0 to 36.0, 10.0 to 37.0,
+            12.0 to 33.0, 25.0 to 32.0, 33.0 to 31.0, 40.0 to 16.0,
+            51.0 to 12.0, 45.0 to 2.0, 40.0 to -10.0, 35.0 to -24.0,
+            28.0 to -33.0, 18.0 to -35.0, 14.0 to -22.0, 12.0 to -12.0,
+            9.0 to 4.0, 2.0 to 6.0, -8.0 to 5.0, -15.0 to 11.0
+        ),
+        // Madagascar
+        listOf(
+            44.0 to -25.0, 47.0 to -25.0, 50.0 to -13.0, 48.0 to -15.0, 44.0 to -20.0
+        ),
+        // Asia
+        listOf(
+            28.0 to 41.0, 36.0 to 37.0, 35.0 to 31.0, 43.0 to 13.0,
+            58.0 to 22.0, 56.0 to 26.0, 62.0 to 25.0, 68.0 to 23.0,
+            77.0 to 8.0, 82.0 to 16.0, 90.0 to 22.0, 98.0 to 15.0,
+            104.0 to 2.0, 105.0 to 10.0, 109.0 to 14.0, 108.0 to 21.0,
+            120.0 to 25.0, 122.0 to 31.0, 119.0 to 39.0, 126.0 to 38.0,
+            129.0 to 35.0, 131.0 to 42.0, 141.0 to 53.0, 155.0 to 60.0,
+            175.0 to 66.0, 160.0 to 70.0, 130.0 to 73.0, 105.0 to 76.0,
+            72.0 to 73.0, 58.0 to 68.0, 58.0 to 55.0, 46.0 to 44.0, 38.0 to 45.0
+        ),
+        // Japan
+        listOf(
+            131.0 to 32.0, 136.0 to 34.0, 141.0 to 38.0, 145.0 to 44.0,
+            140.0 to 42.0, 137.0 to 37.0, 130.0 to 34.0
+        ),
+        // Southeast Asia Islands (Sumatra/Java)
+        listOf(
+            96.0 to 5.0, 105.0 to -6.0, 114.0 to -8.0, 114.0 to -7.0,
+            102.0 to -3.0, 98.0 to 2.0
+        ),
+        // Borneo
+        listOf(
+            109.0 to 1.0, 115.0 to 6.0, 118.0 to 4.0, 117.0 to -3.0, 111.0 to -3.0
+        ),
+        // Australia
+        listOf(
+            114.0 to -22.0, 122.0 to -17.0, 131.0 to -12.0, 136.0 to -12.0,
+            137.0 to -15.0, 142.0 to -11.0, 146.0 to -18.0, 153.0 to -28.0,
+            150.0 to -37.0, 141.0 to -38.0, 136.0 to -35.0, 129.0 to -32.0,
+            116.0 to -34.0, 114.0 to -27.0
+        ),
+        // New Zealand
+        listOf(
+            172.0 to -35.0, 178.0 to -38.0, 175.0 to -42.0, 168.0 to -46.0,
+            166.0 to -45.0, 172.0 to -41.0
+        ),
+        // Antarctica polar cap
+        listOf(
+            -180.0 to -72.0, -140.0 to -73.0, -100.0 to -72.0, -60.0 to -66.0,
+            -20.0 to -70.0, 20.0 to -69.0, 60.0 to -68.0, 100.0 to -67.0,
+            140.0 to -67.0, 180.0 to -72.0, 180.0 to -88.0, 120.0 to -88.0,
+            60.0 to -88.0, 0.0 to -88.0, -60.0 to -88.0, -120.0 to -88.0,
+            -180.0 to -88.0
+        )
+    )
 
-        canvas.drawCircle(cx, cy, radius, globePaint)  
-        globePaint.shader = null  
+    fun setLiveLocation(
+        available: Boolean,
+        lat: Double,
+        lon: Double,
+        label: String,
+        vpnConnected: Boolean
+    ) {
+        hasLocation = available
+        locationLat = lat
+        locationLon = lon
+        locationLabel = label
+        vpnActive = vpnConnected
+        if (available) {
+            // Smoothly bring the newly connected location into front view
+            rotation = (lon.toFloat() - 12f + 360f) % 360f
+        }
+        invalidate()
+    }
 
-        globePaint.style = Paint.Style.STROKE  
-        globePaint.strokeWidth = 1.5f  
-        globePaint.color = cyan  
-        canvas.drawCircle(cx, cy, radius, globePaint)  
+    private fun projectPoint(
+        lonDeg: Double,
+        latDeg: Double,
+        viewLonDeg: Double
+    ): Triple<Float, Float, Float> {
+        var relLon = (lonDeg - viewLonDeg) % 360.0
+        if (relLon > 180.0) relLon -= 360.0
+        if (relLon < -180.0) relLon += 360.0
 
-        linePaint.color = Color.argb(150, 0, 220, 190)  
-        linePaint.strokeWidth = 1.2f  
-        linePaint.style = Paint.Style.STROKE  
+        val latRad = Math.toRadians(latDeg)
+        val lonRad = Math.toRadians(relLon)
+        val cosLat = kotlin.math.cos(latRad)
 
-        for (fraction in listOf(-0.65f, -0.30f, 0f, 0.30f, 0.65f)) {  
-            val h = radius * kotlin.math.sqrt(  
-                1f - fraction * fraction  
-            )  
+        val x0 = cosLat * kotlin.math.sin(lonRad)
+        val y0 = kotlin.math.sin(latRad)
+        val z0 = cosLat * kotlin.math.cos(lonRad)
 
-            canvas.drawOval(  
-                cx - radius,  
-                cy + fraction * radius - h * 0.15f,  
-                cx + radius,  
-                cy + fraction * radius + h * 0.15f,  
-                linePaint  
-            )  
-        }  
+        val yRot = y0 * cosTilt - z0 * sinTilt
+        val zRot = z0 * cosTilt + y0 * sinTilt
 
-        for (i in 0..3) {  
-            val angle = Math.toRadians(  
-                (rotation + i * 45.0).toDouble()  
-            )  
+        return Triple(x0.toFloat(), yRot.toFloat(), zRot.toFloat())
+    }
 
-            val ovalWidth = kotlin.math.abs(  
-                kotlin.math.cos(angle).toFloat()  
-            ) * radius  
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
 
-            canvas.drawOval(  
-                cx - ovalWidth,  
-                cy - radius,  
-                cx + ovalWidth,  
-                cy + radius,  
-                linePaint  
-            )  
-        }  
+        if (width <= 0 || height <= 0) return
 
-        if (isVpnConnected()) {  
-            dotPaint.color =  
-                if (blink) Color.RED else Color.rgb(255, 100, 100)  
+        val cx = width / 2f
+        val cy = height / 2f
+        val radius = minOf(width, height) * 0.44f
 
-            dotPaint.setShadowLayer(10f, 0f, 0f, Color.RED)  
+        rotation = (rotation + 0.85f) % 360f
+        pulsePhase = (pulsePhase + 0.055f) % 1f
 
-            val markerAngle = Math.toRadians(  
-                (rotation + 65.0).toDouble()  
-            )  
+        val viewLon = rotation.toDouble()
 
-            val mx = cx +  
-                (radius * 0.65f * kotlin.math.cos(markerAngle)).toFloat()  
+        // Outer atmospheric halo
+        haloPaint.shader = RadialGradient(
+            cx,
+            cy,
+            radius * 1.15f,
+            intArrayOf(
+                Color.argb(95, 0, 210, 255),
+                Color.argb(30, 0, 180, 255),
+                Color.TRANSPARENT
+            ),
+            floatArrayOf(0.82f, 0.94f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        canvas.drawCircle(cx, cy, radius * 1.14f, haloPaint)
 
-            val my = cy - radius * 0.25f  
+        // Earth Ocean Sphere
+        oceanPaint.style = Paint.Style.FILL
+        oceanPaint.shader = RadialGradient(
+            cx - radius * 0.32f,
+            cy - radius * 0.32f,
+            radius * 1.45f,
+            intArrayOf(
+                Color.rgb(52, 175, 245),
+                Color.rgb(16, 102, 192),
+                Color.rgb(5, 34, 84)
+            ),
+            null,
+            Shader.TileMode.CLAMP
+        )
+        canvas.drawCircle(cx, cy, radius, oceanPaint)
+        oceanPaint.shader = null
 
-            canvas.drawCircle(mx, my, 5f, dotPaint)  
-            dotPaint.clearShadowLayer()  
-        }  
+        // Clip interior to globe circle
+        canvas.save()
+        clipPath.reset()
+        clipPath.addCircle(cx, cy, radius, Path.Direction.CW)
+        canvas.clipPath(clipPath)
 
-                globePaint.style = Paint.Style.FILL
+        // Subtle latitude/longitude graticule
+        for (lat in listOf(-60.0, -30.0, 0.0, 30.0, 60.0)) {
+            graticulePath.reset()
+            var started = false
+            var lon = -180.0
+            while (lon <= 180.0) {
+                val (px, py, pz) = projectPoint(lon, lat, viewLon)
+                if (pz >= -0.02f) {
+                    val sx = cx + px * radius
+                    val sy = cy - py * radius
+                    if (!started) {
+                        graticulePath.moveTo(sx, sy)
+                        started = true
+                    } else {
+                        graticulePath.lineTo(sx, sy)
+                    }
+                } else {
+                    started = false
+                }
+                lon += 10.0
+            }
+            canvas.drawPath(graticulePath, gridPaint)
+        }
+
+        for (lonLine in 0 until 360 step 45) {
+            graticulePath.reset()
+            var started = false
+            var lat = -85.0
+            while (lat <= 85.0) {
+                val (px, py, pz) = projectPoint(lonLine.toDouble(), lat, viewLon)
+                if (pz >= -0.02f) {
+                    val sx = cx + px * radius
+                    val sy = cy - py * radius
+                    if (!started) {
+                        graticulePath.moveTo(sx, sy)
+                        started = true
+                    } else {
+                        graticulePath.lineTo(sx, sy)
+                    }
+                } else {
+                    started = false
+                }
+                lat += 10.0
+            }
+            canvas.drawPath(graticulePath, gridPaint)
+        }
+
+        // Draw World Continents
+        for (poly in continents) {
+            var anyFront = false
+            val projected = ArrayList<Triple<Float, Float, Float>>(poly.size)
+
+            for ((lon, lat) in poly) {
+                val pt = projectPoint(lon, lat, viewLon)
+                if (pt.third >= -0.05f) {
+                    anyFront = true
+                }
+                projected.add(pt)
+            }
+
+            if (!anyFront) continue
+
+            polyPath.reset()
+            var first = true
+
+            for ((px, py, pz) in projected) {
+                var fx = px
+                var fy = py
+                if (pz < 0f) {
+                    val len = kotlin.math.hypot(fx.toDouble(), fy.toDouble()).toFloat()
+                    if (len > 0.0001f) {
+                        fx /= len
+                        fy /= len
+                    }
+                }
+                val sx = cx + fx * radius
+                val sy = cy - fy * radius
+                if (first) {
+                    polyPath.moveTo(sx, sy)
+                    first = false
+                } else {
+                    polyPath.lineTo(sx, sy)
+                }
+            }
+            polyPath.close()
+
+            canvas.drawPath(polyPath, landFillPaint)
+            canvas.drawPath(polyPath, landStrokePaint)
+        }
+
+        // Specular sunlight highlight
+        shinePaint.shader = RadialGradient(
+            cx - radius * 0.38f,
+            cy - radius * 0.38f,
+            radius * 0.95f,
+            intArrayOf(
+                Color.argb(55, 255, 255, 255),
+                Color.TRANSPARENT
+            ),
+            null,
+            Shader.TileMode.CLAMP
+        )
+        canvas.drawCircle(cx, cy, radius, shinePaint)
+
+        canvas.restore()
+
+        // Outer neon rim
+        rimPaint.style = Paint.Style.STROKE
+        rimPaint.strokeWidth = 2.2f
+        rimPaint.color = cyan
+        canvas.drawCircle(cx, cy, radius, rimPaint)
+
+        // Live Connected IP Location Marker
+        val vpnNow = isVpnConnected() || vpnActive
+        if (hasLocation) {
+            val (px, py, pz) = projectPoint(locationLon, locationLat, viewLon)
+            val pinColor = if (vpnNow) green else Color.rgb(255, 80, 95)
+
+            if (pz >= 0f) {
+                val mx = cx + px * radius
+                val my = cy - py * radius
+
+                // Expanding radar ring
+                val pulseRadius = (6f + pulsePhase * 18f) * (resources.displayMetrics.density / 2.5f).coerceAtLeast(1f)
+                pulsePaint.color = Color.argb(
+                    ((1f - pulsePhase) * 230).toInt().coerceIn(0, 255),
+                    Color.red(pinColor),
+                    Color.green(pinColor),
+                    Color.blue(pinColor)
+                )
+                canvas.drawCircle(mx, my, pulseRadius, pulsePaint)
+
+                // Soft glow + bright core dot
+                dotPaint.color = Color.argb(110, Color.red(pinColor), Color.green(pinColor), Color.blue(pinColor))
+                canvas.drawCircle(mx, my, 11f, dotPaint)
+
+                dotPaint.color = Color.WHITE
+                canvas.drawCircle(mx, my, 6.5f, dotPaint)
+
+                dotPaint.color = pinColor
+                canvas.drawCircle(mx, my, 4.5f, dotPaint)
+
+                // Floating location badge next to pin
+                if (locationLabel.isNotBlank()) {
+                    drawLocationBadge(canvas, mx, my - 16f, "📍 $locationLabel", pinColor)
+                }
+            } else if (locationLabel.isNotBlank()) {
+                // Keep live connected location indicator visible while pin rotates around the back
+                drawLocationBadge(canvas, cx, cy + radius - 8f, "↻ $locationLabel", pinColor)
+            }
+        } else if (vpnNow) {
+            // Fallback pulsing VPN marker if coordinates are still resolving
+            val (px, py, pz) = projectPoint(40.0, 22.0, viewLon)
+            if (pz >= 0f) {
+                val mx = cx + px * radius
+                val my = cy - py * radius
+                dotPaint.color = green
+                canvas.drawCircle(mx, my, 5.5f, dotPaint)
+            }
+        }
+    }
+
+    private fun drawLocationBadge(
+        canvas: Canvas,
+        anchorX: Float,
+        anchorY: Float,
+        text: String,
+        accentColor: Int
+    ) {
+        val density = resources.displayMetrics.density
+        badgeTextPaint.textSize = 9.5f * density
+
+        val textWidth = badgeTextPaint.measureText(text)
+        val padH = 7f * density
+        val boxW = textWidth + padH * 2f
+        val boxH = 17f * density
+
+        val left = (anchorX - boxW / 2f).coerceIn(4f, (width - boxW - 4f).coerceAtLeast(4f))
+        val top = (anchorY - boxH).coerceIn(4f, (height - boxH - 4f).coerceAtLeast(4f))
+        val right = left + boxW
+        val bottom = top + boxH
+
+        val rect = RectF(left, top, right, bottom)
+        badgeStrokePaint.color = accentColor
+
+        canvas.drawRoundRect(rect, boxH / 2f, boxH / 2f, badgeBgPaint)
+        canvas.drawRoundRect(rect, boxH / 2f, boxH / 2f, badgeStrokePaint)
+
+        val fm = badgeTextPaint.fontMetrics
+        val textY = rect.centerY() - (fm.ascent + fm.descent) / 2f
+        canvas.drawText(text, rect.centerX(), textY, badgeTextPaint)
+    }
+}
+
+private inner class LiveTrafficGraphView(context: Context) : View(context) {
+
+    private val maxSamples = 60
+    private val rxSamples = ArrayList<Long>(maxSamples)
+    private val txSamples = ArrayList<Long>(maxSamples)
+
+    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.rgb(4, 13, 28)
+    }
+    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1.5f
+        color = Color.rgb(18, 78, 108)
+    }
+    private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1f
+        color = Color.argb(55, 0, 225, 255)
+    }
+    private val axisTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(185, 175, 225, 245)
+    }
+    private val rxLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+        color = green
+    }
+    private val txLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2.4f
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+        color = cyan
+    }
+    private val rxFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
+    private val txFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
+    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
+
+    private val rxLinePath = Path()
+    private val rxFillPath = Path()
+    private val txLinePath = Path()
+    private val txFillPath = Path()
+
+    fun addSample(rxBps: Long, txBps: Long) {
+        if (rxSamples.size >= maxSamples) rxSamples.removeAt(0)
+        if (txSamples.size >= maxSamples) txSamples.removeAt(0)
+        rxSamples.add(rxBps.coerceAtLeast(0L))
+        txSamples.add(txBps.coerceAtLeast(0L))
+        invalidate()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (width <= 0 || height <= 0) return
+
+        val density = resources.displayMetrics.density
+        val padLeft = 56f * density / 2.5f
+        val padRight = 10f * density
+        val padTop = 22f * density
+        val padBottom = 18f * density
+
+        val chartRect = RectF(0f, 0f, width.toFloat(), height.toFloat())
+        canvas.drawRoundRect(chartRect, 14f, 14f, bgPaint)
+        canvas.drawRoundRect(chartRect, 14f, 14f, borderPaint)
+
+        val graphLeft = padLeft.coerceAtLeast(18f * density)
+        val graphRight = (width - padRight).coerceAtLeast(graphLeft + 20f)
+        val graphTop = padTop
+        val graphBottom = (height - padBottom).coerceAtLeast(graphTop + 20f)
+        val graphW = graphRight - graphLeft
+        val graphH = graphBottom - graphTop
+
+        // Compute dynamic Y scale (minimum 10 KB/s so small spikes stay clean)
+        val rawMax = maxOf(
+            rxSamples.maxOrNull() ?: 0L,
+            txSamples.maxOrNull() ?: 0L,
+            10L * 1024L
+        )
+        val maxVal = (rawMax * 1.15).toLong().coerceAtLeast(10L * 1024L)
+
+        axisTextPaint.textSize = 8.5f * density
+        axisTextPaint.textAlign = Paint.Align.LEFT
+
+        // Horizontal grid & Y-axis labels
+        for (step in 0..3) {
+            val frac = step / 3f
+            val y = graphBottom - frac * graphH
+            canvas.drawLine(graphLeft, y, graphRight, y, gridPaint)
+
+            val labelVal = (maxVal * frac).toLong()
+            val labelText = "${formatSize(labelVal)}/s"
+            canvas.drawText(labelText, 6f * density, y - 2f * density, axisTextPaint)
+        }
+
+        // Vertical time gridlines
+        for (col in 1..4) {
+            val x = graphLeft + (col / 5f) * graphW
+            canvas.drawLine(x, graphTop, x, graphBottom, gridPaint)
+        }
+
+        // Legend header
+        axisTextPaint.textAlign = Paint.Align.RIGHT
+        axisTextPaint.color = green
+        canvas.drawText("● DL (RX)", graphRight - 66f * density, 13f * density, axisTextPaint)
+        axisTextPaint.color = cyan
+        canvas.drawText("● UL (TX)", graphRight - 4f * density, 13f * density, axisTextPaint)
+        axisTextPaint.color = Color.argb(185, 175, 225, 245)
+        axisTextPaint.textAlign = Paint.Align.LEFT
+        canvas.drawText("-60s", graphLeft, height - 4f * density, axisTextPaint)
+        axisTextPaint.textAlign = Paint.Align.RIGHT
+        canvas.drawText("LIVE", graphRight, height - 4f * density, axisTextPaint)
+
+        if (rxSamples.isEmpty()) return
+
+        rxFillPaint.shader = LinearGradient(
+            0f, graphTop, 0f, graphBottom,
+            Color.argb(95, 0, 235, 145),
+            Color.argb(5, 0, 235, 145),
+            Shader.TileMode.CLAMP
+        )
+        txFillPaint.shader = LinearGradient(
+            0f, graphTop, 0f, graphBottom,
+            Color.argb(80, 0, 225, 255),
+            Color.argb(5, 0, 225, 255),
+            Shader.TileMode.CLAMP
+        )
+
+        fun buildSeriesPaths(
+            samples: List<Long>,
+            linePath: Path,
+            fillPath: Path
+        ): Pair<Float, Float> {
+            linePath.reset()
+            fillPath.reset()
+
+            val count = samples.size
+            val startIndex = maxSamples - count
+            var lastX = graphLeft
+            var lastY = graphBottom
+
+            for (i in samples.indices) {
+                val x = graphLeft + ((startIndex + i).toFloat() / (maxSamples - 1).coerceAtLeast(1)) * graphW
+                val norm = (samples[i].toFloat() / maxVal.toFloat()).coerceIn(0f, 1f)
+                val y = graphBottom - norm * graphH
+
+                if (i == 0) {
+                    linePath.moveTo(x, y)
+                    fillPath.moveTo(x, graphBottom)
+                    fillPath.lineTo(x, y)
+                } else {
+                    val prevX = lastX
+                    val midX = (prevX + x) / 2f
+                    linePath.cubicTo(midX, lastY, midX, y, x, y)
+                    fillPath.cubicTo(midX, lastY, midX, y, x, y)
+                }
+                lastX = x
+                lastY = y
+            }
+
+            fillPath.lineTo(lastX, graphBottom)
+            fillPath.close()
+            return Pair(lastX, lastY)
+        }
+
+        val (rxEndX, rxEndY) = buildSeriesPaths(rxSamples, rxLinePath, rxFillPath)
+        val (txEndX, txEndY) = buildSeriesPaths(txSamples, txLinePath, txFillPath)
+
+        canvas.drawPath(rxFillPath, rxFillPaint)
+        canvas.drawPath(txFillPath, txFillPaint)
+        canvas.drawPath(rxLinePath, rxLinePaint)
+        canvas.drawPath(txLinePath, txLinePaint)
+
+        // Glowing live head dots
+        dotPaint.color = Color.argb(110, 0, 235, 145)
+        canvas.drawCircle(rxEndX, rxEndY, 7f, dotPaint)
+        dotPaint.color = green
+        canvas.drawCircle(rxEndX, rxEndY, 3.8f, dotPaint)
+
+        dotPaint.color = Color.argb(110, 0, 225, 255)
+        canvas.drawCircle(txEndX, txEndY, 6f, dotPaint)
+        dotPaint.color = cyan
+        canvas.drawCircle(txEndX, txEndY, 3.2f, dotPaint)
+    }
+}
+
+private inner class CyberRadarView(context: Context) : View(context) {
+
+    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
+    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1.3f
+        color = Color.argb(85, 0, 225, 255)
+    }
+    private val tickPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1.6f
+        color = Color.argb(140, 0, 225, 255)
+    }
+    private val sweepPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
+    private val arcBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        color = Color.argb(40, 255, 255, 255)
+    }
+    private val arcPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val blipPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
+    private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.rgb(6, 20, 40)
+    }
+    private val coreTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+        typeface = Typeface.DEFAULT_BOLD
+    }
+
+    private var sweepAngle = 0f
+    private var pulseWave = 0f
+    private var rxLevel = 0.08f
+    private var txLevel = 0.05f
+    private var targetRxLevel = 0.08f
+    private var targetTxLevel = 0.05f
+    private var vpnShield = false
+
+    fun updateTelemetry(rxBps: Long, txBps: Long, vpnConnected: Boolean) {
+        vpnShield = vpnConnected
+        targetRxLevel = if (rxBps <= 0L) 0.06f else {
+            (kotlin.math.log10((rxBps + 1).toDouble()).toFloat() / 6.5f).coerceIn(0.12f, 1f)
+        }
+        targetTxLevel = if (txBps <= 0L) 0.05f else {
+            (kotlin.math.log10((txBps + 1).toDouble()).toFloat() / 6.5f).coerceIn(0.10f, 1f)
+        }
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (width <= 0 || height <= 0) return
+
+        val density = resources.displayMetrics.density
+        val cx = width / 2f
+        val cy = height / 2f
+        val maxR = minOf(width, height) * 0.44f
+        val innerR = maxR * 0.80f
+
+        sweepAngle = (sweepAngle + 3.8f) % 360f
+        pulseWave = (pulseWave + 0.035f) % 1f
+        rxLevel += (targetRxLevel - rxLevel) * 0.18f
+        txLevel += (targetTxLevel - txLevel) * 0.18f
+
+        val accent = if (vpnShield) green else cyan
+
+        // Radar scope background glow
+        bgPaint.shader = RadialGradient(
+            cx,
+            cy,
+            innerR,
+            intArrayOf(
+                Color.argb(45, Color.red(accent), Color.green(accent), Color.blue(accent)),
+                Color.rgb(4, 15, 32)
+            ),
+            null,
+            Shader.TileMode.CLAMP
+        )
+        canvas.drawCircle(cx, cy, innerR, bgPaint)
+        bgPaint.shader = null
+
+        // Concentric radar rings & crosshairs
+        for (factor in listOf(0.35f, 0.65f, 1f)) {
+            canvas.drawCircle(cx, cy, innerR * factor, ringPaint)
+        }
+        canvas.drawLine(cx - innerR, cy, cx + innerR, cy, ringPaint)
+        canvas.drawLine(cx, cy - innerR, cx, cy + innerR, ringPaint)
+
+        // Outer compass ticks
+        for (deg in 0 until 360 step 30) {
+            val rad = Math.toRadians(deg.toDouble())
+            val r1 = maxR * 0.84f
+            val r2 = maxR * 0.90f
+            canvas.drawLine(
+                cx + (r1 * kotlin.math.cos(rad)).toFloat(),
+                cy + (r1 * kotlin.math.sin(rad)).toFloat(),
+                cx + (r2 * kotlin.math.cos(rad)).toFloat(),
+                cy + (r2 * kotlin.math.sin(rad)).toFloat(),
+                tickPaint
+            )
+        }
+
+        // Rotating radar sweep beam
+        val sweepMatrix = Matrix().apply {
+            setRotate(sweepAngle, cx, cy)
+        }
+        val sweepShader = SweepGradient(
+            cx,
+            cy,
+            intArrayOf(
+                Color.TRANSPARENT,
+                Color.TRANSPARENT,
+                Color.argb(150, Color.red(accent), Color.green(accent), Color.blue(accent))
+            ),
+            floatArrayOf(0f, 0.72f, 1f)
+        )
+        sweepShader.setLocalMatrix(sweepMatrix)
+        sweepPaint.shader = sweepShader
+        canvas.drawCircle(cx, cy, innerR, sweepPaint)
+        sweepPaint.shader = null
+
+        // Expanding sonar pulse ring
+        val waveRadius = innerR * pulseWave
+        val waveAlpha = ((1f - pulseWave) * 165).toInt().coerceIn(0, 255)
+        ringPaint.color = Color.argb(waveAlpha, Color.red(accent), Color.green(accent), Color.blue(accent))
+        canvas.drawCircle(cx, cy, waveRadius, ringPaint)
+        ringPaint.color = Color.argb(85, 0, 225, 255)
+
+        // Blips on radar
+        val blips = listOf(
+            35.0 to 0.55f,
+            155.0 to 0.72f,
+            265.0 to 0.45f
+        )
+        for ((angleDeg, distFrac) in blips) {
+            val diff = ((sweepAngle - angleDeg.toFloat()) + 360f) % 360f
+            val blipAlpha = if (diff < 95f) ((1f - diff / 95f) * 235).toInt() else 35
+            val rad = Math.toRadians(angleDeg)
+            val bx = cx + (innerR * distFrac * kotlin.math.cos(rad)).toFloat()
+            val by = cy + (innerR * distFrac * kotlin.math.sin(rad)).toFloat()
+            blipPaint.color = Color.argb(blipAlpha, Color.red(accent), Color.green(accent), Color.blue(accent))
+            canvas.drawCircle(bx, by, 3.2f * density, blipPaint)
+        }
+
+        // Outer Download & Upload live activity gauge arcs
+        val gaugeStroke = 3.2f * density
+        arcBgPaint.strokeWidth = gaugeStroke
+        arcPaint.strokeWidth = gaugeStroke
+
+        val outerRect = RectF(cx - maxR, cy - maxR, cx + maxR, cy + maxR)
+        canvas.drawArc(outerRect, -165f, 150f, false, arcBgPaint)
+        arcPaint.color = green
+        canvas.drawArc(outerRect, -165f, 150f * rxLevel, false, arcPaint)
+
+        canvas.drawArc(outerRect, 15f, 150f, false, arcBgPaint)
+        arcPaint.color = cyan
+        canvas.drawArc(outerRect, 15f, 150f * txLevel, false, arcPaint)
+
+        // Center shield core badge
+        val coreR = innerR * 0.34f
+        canvas.drawCircle(cx, cy, coreR, corePaint)
+        ringPaint.color = accent
+        canvas.drawCircle(cx, cy, coreR, ringPaint)
+        ringPaint.color = Color.argb(85, 0, 225, 255)
+
+        coreTextPaint.color = accent
+        coreTextPaint.textSize = 8.5f * density
+        val coreLabel = if (vpnShield) "VPN" else "NET"
+        val fm = coreTextPaint.fontMetrics
+        val textY = cy - (fm.ascent + fm.descent) / 2f
+        canvas.drawText(coreLabel, cx, textY, coreTextPaint)
     }
 }
 }
