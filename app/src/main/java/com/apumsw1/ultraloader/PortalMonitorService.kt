@@ -30,10 +30,10 @@ class PortalMonitorService : Service() {
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
     private var callbackRegistered = false
     private var lastMonitorMessage: String? = null
-    private var captiveNotificationVisible = false
+    private var wifiNotificationVisible = false
 
-    private val captiveNetworks = mutableSetOf<Network>()
     private val wifiNetworks = mutableSetOf<Network>()
+    private val captiveNetworks = mutableSetOf<Network>()
     private val validatedNetworks = mutableSetOf<Network>()
 
     override fun onCreate() {
@@ -65,7 +65,7 @@ class PortalMonitorService : Service() {
                 "Ultra Loader Monitoring",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Quiet Wi-Fi and network monitoring"
+                description = "Wi-Fi and portal monitoring"
                 enableVibration(false)
                 setSound(null, null)
                 setShowBadge(false)
@@ -118,7 +118,6 @@ class PortalMonitorService : Service() {
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOnlyAlertOnce(true)
             .setDefaults(0)
-            .setVibrate(longArrayOf(0L))
             .setSound(null)
             .setContentTitle(title)
             .setContentText(message)
@@ -133,9 +132,7 @@ class PortalMonitorService : Service() {
         if (callbackRegistered) return
 
         val request = NetworkRequest.Builder()
-            .addTransportType(
-                NetworkCapabilities.TRANSPORT_WIFI
-            )
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .build()
 
         val callback =
@@ -143,6 +140,7 @@ class PortalMonitorService : Service() {
 
                 override fun onAvailable(network: Network) {
                     wifiNetworks.add(network)
+                    showWifiNotification()
 
                     evaluateNetwork(
                         network,
@@ -189,6 +187,7 @@ class PortalMonitorService : Service() {
                     ) == true
                 ) {
                     wifiNetworks.add(network)
+                    showWifiNotification()
                     evaluateNetwork(network, capabilities)
                 }
             }
@@ -196,7 +195,6 @@ class PortalMonitorService : Service() {
             updateMonitorNotification()
 
         } catch (_: Exception) {
-            // Future changes are handled by NetworkCallback.
         }
     }
 
@@ -216,6 +214,7 @@ class PortalMonitorService : Service() {
         }
 
         wifiNetworks.add(network)
+        showWifiNotification()
 
         val captive = capabilities.hasCapability(
             NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL
@@ -226,14 +225,8 @@ class PortalMonitorService : Service() {
         )
 
         if (captive) {
+            captiveNetworks.add(network)
             validatedNetworks.remove(network)
-
-            val newlyDetected = captiveNetworks.add(network)
-
-            if (newlyDetected) {
-                showCaptivePortalNotification()
-            }
-
         } else {
             captiveNetworks.remove(network)
 
@@ -241,10 +234,6 @@ class PortalMonitorService : Service() {
                 validatedNetworks.add(network)
             } else {
                 validatedNetworks.remove(network)
-            }
-
-            if (captiveNetworks.isEmpty()) {
-                clearCaptiveNotification()
             }
         }
 
@@ -256,8 +245,8 @@ class PortalMonitorService : Service() {
         captiveNetworks.remove(network)
         validatedNetworks.remove(network)
 
-        if (captiveNetworks.isEmpty()) {
-            clearCaptiveNotification()
+        if (wifiNetworks.isEmpty()) {
+            clearWifiNotification()
         }
 
         updateMonitorNotification()
@@ -266,19 +255,18 @@ class PortalMonitorService : Service() {
     private fun updateMonitorNotification() {
         val message = when {
             captiveNetworks.isNotEmpty() ->
-                "Captive Portal detected — login required"
+                "Captive Portal detected"
 
             validatedNetworks.isNotEmpty() ->
                 "Wi-Fi connected — internet available"
 
             wifiNetworks.isNotEmpty() ->
-                "Wi-Fi connected — checking internet"
+                "Wi-Fi connected — monitoring notifications"
 
             else ->
                 "Waiting for Wi-Fi connection"
         }
 
-        // Notify only when the actual status changes.
         if (message == lastMonitorMessage) return
 
         lastMonitorMessage = message
@@ -293,25 +281,25 @@ class PortalMonitorService : Service() {
         )
     }
 
-    private fun showCaptivePortalNotification() {
-        if (captiveNotificationVisible) return
+    private fun showWifiNotification() {
+        if (wifiNotificationVisible) return
 
-        captiveNotificationVisible = true
+        wifiNotificationVisible = true
 
         notificationManager().notify(
             WIFI_NOTIFICATION_ID,
             buildNotification(
-                "Ultra Loader — Login Required",
-                "Wi-Fi login page detected. Tap to open.",
+                "Ultra Loader — Wi-Fi Detected",
+                "Wi-Fi detected. Tap to open Ultra Loader.",
                 false
             )
         )
     }
 
-    private fun clearCaptiveNotification() {
-        if (!captiveNotificationVisible) return
+    private fun clearWifiNotification() {
+        if (!wifiNotificationVisible) return
 
-        captiveNotificationVisible = false
+        wifiNotificationVisible = false
         notificationManager().cancel(WIFI_NOTIFICATION_ID)
     }
 
@@ -339,12 +327,12 @@ class PortalMonitorService : Service() {
 
         callbackRegistered = false
 
-        captiveNetworks.clear()
         wifiNetworks.clear()
+        captiveNetworks.clear()
         validatedNetworks.clear()
 
         lastMonitorMessage = null
-        captiveNotificationVisible = false
+        wifiNotificationVisible = false
 
         super.onDestroy()
     }
