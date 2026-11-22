@@ -15,12 +15,16 @@ android {
         versionName = "3.1"
     }
 
+    val debugKeystoreFile = file("${rootDir}/debug.keystore")
+
     signingConfigs {
-        create("debugConfig") {
-            storeFile = file("${rootDir}/debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        if (debugKeystoreFile.exists()) {
+            create("debugConfig") {
+                storeFile = debugKeystoreFile
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
         }
         create("release") {
             storeFile = file(
@@ -38,7 +42,9 @@ android {
 
     buildTypes {
         getByName("debug") {
-            signingConfig = signingConfigs.getByName("debugConfig")
+            if (debugKeystoreFile.exists()) {
+                signingConfig = signingConfigs.getByName("debugConfig")
+            }
         }
         getByName("release") {
             signingConfig = signingConfigs.getByName("release")

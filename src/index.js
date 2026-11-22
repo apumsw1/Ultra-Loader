@@ -22,7 +22,7 @@ async function cleanupExpiredDeviceRegistries(db, now = nowISO()) {
     WHERE key_hash IN (
       SELECT key_hash
       FROM activation_keys
-      WHERE expires_at <= ?
+      WHERE expires_at <= ? OR revoked = 1
     )
   `).bind(now).run();
 
@@ -436,11 +436,29 @@ async function setRevoked(db, key, revoked, ownerId = null) {
     ? "UPDATE activation_keys SET revoked=? WHERE key_hash=? AND owner_id=?"
     : "UPDATE activation_keys SET revoked=? WHERE key_hash=?";
 
-  const r = ownerId
-    ? await db.prepare(sql).bind(revoked ? 1 : 0, hash, ownerId).run()
-    : await db.prepare(sql).bind(revoked ? 1 : 0, hash).run();
+  const update = ownerId
+    ? db.prepare(sql).bind(revoked ? 1 : 0, hash, ownerId)
+    : db.prepare(sql).bind(revoked ? 1 : 0, hash);
 
-  return (r.meta?.changes || 0) > 0;
+  if (revoked) {
+    const deleteDevices = ownerId
+      ? db.prepare(
+          "DELETE FROM devices WHERE key_hash IN (SELECT key_hash FROM activation_keys WHERE key_hash=? AND owner_id=?)"
+        ).bind(hash, ownerId)
+      : db.prepare(
+          "DELETE FROM devices WHERE key_hash=?"
+        ).bind(hash);
+
+    const results = await db.batch([
+      update,
+      deleteDevices
+    ]);
+
+    return Number(results[0]?.meta?.changes || 0) > 0;
+  }
+
+  const result = await update.run();
+  return Number(result.meta?.changes || 0) > 0;
 }
 
 async function resetKey(db, key, body, ownerId = null) {
@@ -625,25 +643,45 @@ async function adminRoutes(req, env, db, path) {
     const reqId = crypto.randomUUID();
     const t = nowISO();
 
-    const upd = await db.prepare(
-      "UPDATE subadmins SET balance=balance+?,updated_at=? WHERE id=? AND balance+?>=0"
-    ).bind(delta, t, id, delta).run();
+    const results = await db.batch([
+      db.prepare(`
+        UPDATE subadmins
+        SET balance=balance+?,updated_at=?
+        WHERE id=? AND balance+?>=0
+      `).bind(delta, t, id, delta),
 
-    if (!(upd.meta?.changes > 0)) {
-      return json({ error: "Balance update failed; retry" }, 409);
+      db.prepare(`
+        INSERT INTO wallet_transactions(
+          id,subadmin_id,amount,type,note,actor_id,request_id,created_at
+        )
+        SELECT ?,?,?,?,?,?,?,?
+        WHERE changes()>0
+      `).bind(
+        crypto.randomUUID(),
+        id,
+        delta,
+        type,
+        note,
+        "MAIN",
+        reqId,
+        t
+      )
+    ]);
+
+    if (!(results[0]?.meta?.changes > 0)) {
+      return json({
+        error: "Balance update failed; retry"
+      }, 409);
     }
-
-    await db.prepare(
-      "INSERT INTO wallet_transactions(id,subadmin_id,amount,type,note,actor_id,request_id,created_at) VALUES(?,?,?,?,?,?,?,?)"
-    ).bind(
-      crypto.randomUUID(), id, delta, type, note, "MAIN", reqId, t
-    ).run();
 
     const after = await db.prepare(
       "SELECT balance FROM subadmins WHERE id=?"
     ).bind(id).first();
 
-    return json({ ok: true, balance: after.balance });
+    return json({
+      ok: true,
+      balance: after.balance
+    });
   }
 
   if (path === "/api/admin/subadmins/status" && method === "POST") {
@@ -695,9 +733,22 @@ async function adminRoutes(req, env, db, path) {
 
     if (!a) return json({ error: "Subadmin not found" }, 404);
 
-    await db.prepare(
-      "UPDATE activation_keys SET revoked=1 WHERE owner_id=?"
-    ).bind(id).run();
+    await db.batch([
+      db.prepare(`
+        UPDATE activation_keys
+        SET revoked=1
+        WHERE owner_id=?
+      `).bind(id),
+
+      db.prepare(`
+        DELETE FROM devices
+        WHERE key_hash IN (
+          SELECT key_hash
+          FROM activation_keys
+          WHERE owner_id=?
+        )
+      `).bind(id)
+    ]);
 
     await db.prepare(
       "UPDATE wallet_transactions SET username_snapshot=? WHERE subadmin_id=? AND username_snapshot=''"
@@ -892,7 +943,7 @@ async function subRoutes(req, env, db, path) {
 
     let price;
     try {
-      price = priceForDuration(b);
+      price = await getPrice(db);
       // Validate duration before charging the wallet.
       validDuration(b);
       if (b.customSuffix) makeKey(b.customSuffix);
@@ -1099,7 +1150,7 @@ button{padding:10px 13px;margin:4px;background:#0788b5;color:white;border:0;bord
 
 <div class="panel">
 <h2>Key Pricing &amp; Wallet History</h2>
-<p class="muted">Automatic duration pricing: 1 day ৳50 · 2 days ৳100 · 3 days ৳150 · 4–7 days ৳200 · 8–15 days ৳300 · 16–30 days ৳400 · Above 30 days: ৳400 per 30-day block.</p>
+<p class="muted">Automatic duration pricing: 1 day $50 · 2 days $100 · 3 days $150 · 4–7 days $200 · 8–15 days $300 · 16–30 days $400 · Above 30 days: $400 per 30-day block.</p>
 <label>Legacy fixed price setting (kept for compatibility; duration pricing is used for new Subadmin keys)</label>
 <input id="price" type="number" min="0">
 <button onclick="savePrice()">Save Key Price</button>
@@ -1483,7 +1534,7 @@ async function loadSubs(){
     $("subs").innerHTML=d.subadmins.map(s=>\`
       <div class="item">
         <b>\${esc(s.username)}</b> |
-        Balance ৳\${s.balance} |
+        Balance $\${s.balance} |
         Keys \${s.total_keys} |
         \${s.active?"Active":"Disabled"}<br>
         <button onclick="walletOp('\${s.id}','add')">Add balance</button>
@@ -1501,7 +1552,7 @@ async function loadSubs(){
 }
 
 async function walletOp(id,type){
-  let amount=type==="reset"?1:Number(prompt("Amount in Taka"));
+  let amount=type==="reset"?1:Number(prompt("Amount in USD"));
 
   if(!Number.isInteger(amount)||amount<1)return;
 
@@ -1578,7 +1629,7 @@ async function savePrice(){
       {keyPrice:Number($("price").value)}
     );
 
-    $("submsg").textContent="Key price set to ৳"+d.keyPrice;
+    $("submsg").textContent="Key price set to $"+d.keyPrice;
   }catch(e){
     $("submsg").textContent=e.message;
   }
@@ -1592,7 +1643,7 @@ async function loadTransactions(){
       <div class="item">
         \${esc(t.username||t.subadmin_id)} |
         \${esc(t.type)} |
-        ৳\${t.amount} |
+        $\${t.amount} |
         \${esc(t.created_at)}<br>
         \${esc(t.note)}
       </div>
@@ -1611,7 +1662,7 @@ async function subTx(id){
     $("tx").innerHTML=d.transactions.map(t=>\`
       <div class="item">
         \${esc(t.type)} |
-        ৳\${t.amount} |
+        $\${t.amount} |
         \${esc(t.created_at)}<br>
         \${esc(t.note)}
       </div>
@@ -1652,12 +1703,12 @@ async function loadUpdate(){
 }
 
 async function loadWallet(){
-  const d=await request("/subadmin/me");
+  const d = await request("/subadmin/me");
 
-  $("wallet").textContent=
-    "User: "+d.username+
-    " | Balance: ৳"+d.balance+
-    " | Pricing: ৳50–৳400+ by validity";
+  $("wallet").textContent =
+    "User: " + d.username +
+    " | Balance: $" + d.balance +
+    " | Key Price: $" + d.keyPrice;
 }
 
 async function loadSubKeys(){
@@ -1695,7 +1746,7 @@ async function makeSubKey(){
     $("snewkey").textContent=
       d.key+
       "\\nExpires: "+d.expiresAt+
-      "\\nCharged: ৳"+d.charged;
+      "\\nCharged: $"+d.charged;
 
     await Promise.all([
       loadWallet(),
@@ -1733,7 +1784,7 @@ async function loadMyTx(){
     $("mytx").innerHTML=d.transactions.map(t=>\`
       <div class="item">
         \${esc(t.type)} |
-        ৳\${t.amount} |
+        $\${t.amount} |
         \${esc(t.created_at)}<br>
         \${esc(t.note)}
       </div>
