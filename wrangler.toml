@@ -7,3 +7,6 @@ workers_dev = true
 binding = "ULTRA_LOADER"
 database_name = "ultra-loader-db"
 database_id = "5e266d3f-850d-4f1f-9033-e9281dd5b399"
+
+[triggers]
+crons = ["*/15 * * * *"]

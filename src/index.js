@@ -15,6 +15,20 @@ const json = (data, status = 200) => new Response(JSON.stringify(data), {
 });
 
 const nowISO = () => new Date().toISOString();
+
+async function cleanupExpiredDeviceRegistries(db, now = nowISO()) {
+  const result = await db.prepare(`
+    DELETE FROM devices
+    WHERE key_hash IN (
+      SELECT key_hash
+      FROM activation_keys
+      WHERE expires_at <= ?
+    )
+  `).bind(now).run();
+
+  return Number(result.meta?.changes || 0);
+}
+
 const str = (v, max = 500) => String(v ?? "").trim().slice(0, max);
 
 function b64u(bytes) {
@@ -1740,6 +1754,23 @@ if(token&&role){
 </html>`;
 
 export default {
+  async scheduled(controller, env, ctx) {
+    if (!env.ULTRA_LOADER) {
+      throw new Error("D1 database binding ULTRA_LOADER is missing");
+    }
+
+    const db = env.ULTRA_LOADER;
+    await init(db);
+
+    const deletedDevices =
+      await cleanupExpiredDeviceRegistries(db, nowISO());
+
+    console.log(
+      "Expired device registry cleanup completed:",
+      deletedDevices
+    );
+  },
+
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS });
@@ -1857,6 +1888,8 @@ export default {
         const master = !!env.MASTER_KEY && key === env.MASTER_KEY;
         const hash = master ? "MASTER" : await sha256(key);
         const now = nowISO();
+        // Remove device records linked to expired keys.
+        await cleanupExpiredDeviceRegistries(db, now);
 
         let expiresAt = null;
         let limit = 99999;
