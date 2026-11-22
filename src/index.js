@@ -142,7 +142,8 @@ function priceForDuration(body) {
   if (days <= 1) return 50;
   if (days === 2) return 100;
   if (days === 3) return 150;
-  if (days <= 7) return 200;
+  if (days === 4) return 200;
+  if (days === 5) return 250;
   if (days <= 15) return 300;
   if (days <= 30) return 400;
   return Math.ceil(days / 30) * 400;
@@ -248,6 +249,28 @@ async function init(db) {
     force_update INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
   )`).run();
+
+  await db.prepare(`CREATE TABLE IF NOT EXISTS flash_messages (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    title TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 0,
+    file_url TEXT NOT NULL DEFAULT '',
+    file_name TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+
+  await ensureColumn(db, "flash_messages", "title", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, "flash_messages", "message", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, "flash_messages", "active", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn(db, "flash_messages", "file_url", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, "flash_messages", "file_name", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(db, "flash_messages", "updated_at", "TEXT NOT NULL DEFAULT ''");
+
+  await db.prepare(`
+    INSERT OR IGNORE INTO flash_messages(id,title,message,active,file_url,file_name,updated_at)
+    VALUES(1,'','',0,'','',?)
+  `).bind(nowISO()).run();
 
   await ensureColumn(
     db,
@@ -483,6 +506,118 @@ async function adminRoutes(req, env, db, path) {
   if (!admin) return json({ error: "Unauthorized" }, 401);
 
   const method = req.method;
+
+  if (path === "/api/admin/flash/upload" && method === "POST") {
+    if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) {
+      return json({
+        error: "GITHUB_TOKEN and GITHUB_REPO secrets are not configured on the Worker; paste a GitHub Releases APK/ZIP URL directly instead."
+      }, 503);
+    }
+
+    let form;
+    try {
+      form = await req.formData();
+    } catch {
+      return json({ error: "Invalid multipart form data" }, 400);
+    }
+
+    const file = form.get("file");
+    if (!file || typeof file.arrayBuffer !== "function" || !file.name) {
+      return json({ error: "Please select an APK or ZIP file" }, 400);
+    }
+
+    if (!/\.(apk|zip)$/i.test(file.name)) {
+      return json({ error: "Only .apk or .zip files are allowed" }, 400);
+    }
+
+    if (file.size <= 0 || file.size > 100 * 1024 * 1024) {
+      return json({ error: "File size must be between 1 byte and 100 MB" }, 400);
+    }
+
+    const safeName = str(file.name.replace(/[^A-Za-z0-9._-]/g, "_"), 120);
+    const repo = str(env.GITHUB_REPO, 120);
+    const tag = str(env.GITHUB_RELEASE_TAG || "flash-assets", 80);
+    const ghHeaders = {
+      "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
+      "Accept": "application/vnd.github+json",
+      "User-Agent": "UltraLoader-Worker/1.0"
+    };
+
+    let releaseRes = await fetch(
+      `https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`,
+      { headers: ghHeaders }
+    );
+
+    if (releaseRes.status === 404) {
+      releaseRes = await fetch(
+        `https://api.github.com/repos/${repo}/releases`,
+        {
+          method: "POST",
+          headers: { ...ghHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tag_name: tag,
+            name: "Flash Pop-up Assets",
+            draft: false,
+            prerelease: false
+          })
+        }
+      );
+    }
+
+    if (!releaseRes.ok) {
+      const errText = await releaseRes.text().catch(() => "");
+      return json({
+        error: `GitHub release error (HTTP ${releaseRes.status})`,
+        detail: errText.slice(0, 300)
+      }, 502);
+    }
+
+    const release = await releaseRes.json();
+    const existingAsset = (release.assets || []).find(a => a.name === safeName);
+    if (existingAsset?.id) {
+      await fetch(
+        `https://api.github.com/repos/${repo}/releases/assets/${existingAsset.id}`,
+        { method: "DELETE", headers: ghHeaders }
+      );
+    }
+
+    const uploadBase = String(release.upload_url || "").replace(/\{.*$/, "");
+    if (!uploadBase) {
+      return json({ error: "GitHub release upload URL missing" }, 502);
+    }
+
+    const contentType = safeName.toLowerCase().endsWith(".apk")
+      ? "application/vnd.android.package-archive"
+      : "application/zip";
+
+    const uploadRes = await fetch(
+      `${uploadBase}?name=${encodeURIComponent(safeName)}`,
+      {
+        method: "POST",
+        headers: {
+          ...ghHeaders,
+          "Content-Type": contentType
+        },
+        body: await file.arrayBuffer()
+      }
+    );
+
+    if (!uploadRes.ok) {
+      const errText = await uploadRes.text().catch(() => "");
+      return json({
+        error: `GitHub asset upload failed (HTTP ${uploadRes.status})`,
+        detail: errText.slice(0, 300)
+      }, 502);
+    }
+
+    const asset = await uploadRes.json();
+    return json({
+      ok: true,
+      fileUrl: asset.browser_download_url,
+      fileName: asset.name || safeName
+    });
+  }
+
   const b = method === "POST" ? await readBody(req) : {};
 
   if (path === "/api/admin/keys" && method === "GET") {
@@ -869,6 +1004,89 @@ async function adminRoutes(req, env, db, path) {
     });
   }
 
+  if (path === "/api/admin/flash" && method === "GET") {
+    const f = await db.prepare(
+      "SELECT * FROM flash_messages WHERE id=1"
+    ).first();
+
+    return json({
+      active: !!f?.active,
+      title: f?.title || "",
+      message: f?.message || "",
+      fileUrl: f?.file_url || "",
+      fileName: f?.file_name || "",
+      updatedAt: f?.updated_at || null,
+      githubUploadConfigured: !!(env.GITHUB_TOKEN && env.GITHUB_REPO)
+    });
+  }
+
+  if (path === "/api/admin/flash" && method === "POST") {
+    const active = b.active === true;
+    const title = str(b.title, 200);
+    const message = str(b.message, 4000);
+    const fileUrl = str(b.fileUrl, 1000);
+    let fileName = str(b.fileName, 200);
+
+    if (active && !title && !message) {
+      return json({
+        error: "Enter a Flash Pop-up title or message before enabling"
+      }, 400);
+    }
+
+    if (fileUrl) {
+      let parsed;
+      try {
+        parsed = new URL(fileUrl);
+      } catch {
+        return json({ error: "Invalid file URL" }, 400);
+      }
+
+      if (
+        parsed.protocol !== "https:" ||
+        parsed.hostname !== "github.com" ||
+        !parsed.pathname.includes("/releases/download/") ||
+        !/\.(apk|zip)$/i.test(parsed.pathname)
+      ) {
+        return json({
+          error: "Use a direct HTTPS GitHub Releases .apk or .zip URL"
+        }, 400);
+      }
+
+      if (!fileName) {
+        fileName = str(
+          decodeURIComponent(parsed.pathname.split("/").pop() || ""),
+          200
+        );
+      }
+    } else {
+      fileName = "";
+    }
+
+    const t = nowISO();
+
+    await db.prepare(`INSERT INTO flash_messages(
+      id,title,message,active,file_url,file_name,updated_at
+    ) VALUES(1,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET
+      title=excluded.title,
+      message=excluded.message,
+      active=excluded.active,
+      file_url=excluded.file_url,
+      file_name=excluded.file_name,
+      updated_at=excluded.updated_at`)
+      .bind(title, message, active ? 1 : 0, fileUrl, fileName, t).run();
+
+    return json({
+      ok: true,
+      active,
+      title,
+      message,
+      fileUrl,
+      fileName,
+      updatedAt: t
+    });
+  }
+
   return json({ error: "Not found" }, 404);
 }
 
@@ -943,7 +1161,7 @@ async function subRoutes(req, env, db, path) {
 
     let price;
     try {
-      price = await getPrice(db);
+      price = priceForDuration(b);
       // Validate duration before charging the wallet.
       validDuration(b);
       if (b.customSuffix) makeKey(b.customSuffix);
@@ -1150,7 +1368,7 @@ button{padding:10px 13px;margin:4px;background:#0788b5;color:white;border:0;bord
 
 <div class="panel">
 <h2>Key Pricing &amp; Wallet History</h2>
-<p class="muted">Automatic duration pricing: 1 day $50 · 2 days $100 · 3 days $150 · 4–7 days $200 · 8–15 days $300 · 16–30 days $400 · Above 30 days: $400 per 30-day block.</p>
+<p class="muted">Automatic duration pricing: 1 day $50 · 2 days $100 · 3 days $150 · 4 days $200 · 5 days $250 · 6–15 days $300 · 16–30 days $400 · Above 30 days: $400 per 30-day block.</p>
 <label>Legacy fixed price setting (kept for compatibility; duration pricing is used for new Subadmin keys)</label>
 <input id="price" type="number" min="0">
 <button onclick="savePrice()">Save Key Price</button>
@@ -1167,6 +1385,21 @@ button{padding:10px 13px;margin:4px;background:#0788b5;color:white;border:0;bord
 <label><input id="force" type="checkbox"> Force Update</label>
 <button onclick="saveUpdate()">Save Update</button>
 <p id="upmsg" class="msg"></p>
+</div>
+
+<div class="panel">
+<h2>Flash Pop-up Management</h2>
+<label><input id="flashActive" type="checkbox"> Enable Flash Pop-up</label>
+<input id="flashTitle" placeholder="Flash Pop-up Title">
+<textarea id="flashMessage" placeholder="Flash Pop-up Message"></textarea>
+<label>Optional File Upload (VPN Update APK or ZIP &rarr; GitHub Releases)</label>
+<input id="flashFileInput" type="file" accept=".apk,.zip">
+<button class="secondary" type="button" onclick="uploadFlashFile()">Upload APK/ZIP to GitHub Releases</button>
+<input id="flashFileUrl" placeholder="Optional GitHub Releases APK/ZIP URL (leave blank for no download)">
+<input id="flashFileName" placeholder="Optional File Name (auto-filled)">
+<button type="button" onclick="saveFlash()">Save Flash Pop-up</button>
+<button class="danger" type="button" onclick="clearFlashFile()">Remove File</button>
+<p id="flashmsg" class="msg"></p>
 </div>
 
 <button class="secondary" onclick="logout()">Logout</button>
@@ -1363,7 +1596,8 @@ async function start(){
       loadDevices(),
       loadSubs(),
       loadPrice(),
-      loadUpdate()
+      loadUpdate(),
+      loadFlash()
     ]);
   }else{
     await Promise.all([
@@ -1702,13 +1936,86 @@ async function loadUpdate(){
   }
 }
 
+async function loadFlash(){
+  try{
+    const d=await request("/admin/flash");
+
+    $("flashActive").checked=!!d.active;
+    $("flashTitle").value=d.title||"";
+    $("flashMessage").value=d.message||"";
+    $("flashFileUrl").value=d.fileUrl||"";
+    $("flashFileName").value=d.fileName||"";
+  }catch(e){
+    $("flashmsg").textContent=e.message;
+  }
+}
+
+async function saveFlash(){
+  try{
+    const d=await request("/admin/flash","POST",{
+      active:$("flashActive").checked,
+      title:$("flashTitle").value,
+      message:$("flashMessage").value,
+      fileUrl:$("flashFileUrl").value,
+      fileName:$("flashFileName").value
+    });
+
+    $("flashFileUrl").value=d.fileUrl||"";
+    $("flashFileName").value=d.fileName||"";
+    $("flashmsg").textContent=d.active
+      ? (d.fileUrl ? "Flash Pop-up enabled with file download" : "Flash Pop-up enabled (message only)")
+      : "Flash Pop-up saved (disabled)";
+  }catch(e){
+    $("flashmsg").textContent=e.message;
+  }
+}
+
+function clearFlashFile(){
+  $("flashFileInput").value="";
+  $("flashFileUrl").value="";
+  $("flashFileName").value="";
+  $("flashmsg").textContent="File cleared. Click Save Flash Pop-up to apply.";
+}
+
+async function uploadFlashFile(){
+  const input=$("flashFileInput");
+  const file=input?.files?.[0];
+  if(!file){
+    $("flashmsg").textContent="Please select an .apk or .zip file first";
+    return;
+  }
+
+  $("flashmsg").textContent="Uploading to GitHub Releases...";
+  try{
+    const form=new FormData();
+    form.append("file",file);
+
+    const r=await fetch("/api/admin/flash/upload",{
+      method:"POST",
+      headers:{ "Authorization":"Bearer "+token },
+      body:form
+    });
+
+    const d=await r.json();
+    if(!r.ok){
+      throw Error(d.detail ? d.error+": "+d.detail : (d.error || "Upload failed"));
+    }
+
+    $("flashFileUrl").value=d.fileUrl||"";
+    $("flashFileName").value=d.fileName||"";
+    $("flashmsg").textContent="Uploaded to GitHub Releases. Click Save Flash Pop-up to publish.";
+  }catch(e){
+    $("flashmsg").textContent=e.message;
+  }
+}
+
 async function loadWallet(){
   const d = await request("/subadmin/me");
 
   $("wallet").textContent =
     "User: " + d.username +
     " | Balance: $" + d.balance +
-    " | Key Price: $" + d.keyPrice;
+    " | Pricing: $50–$400+ by validity";
 }
 
 async function loadSubKeys(){
@@ -1905,6 +2212,27 @@ export default {
           message: u.message,
           forceUpdate: available && !!u.force_update,
           updatedAt: u.updated_at
+        });
+      }
+
+      if (path === "/api/flash" && request.method === "GET") {
+        const f = await db.prepare(
+          "SELECT * FROM flash_messages WHERE id=1"
+        ).first();
+
+        const active = !!f?.active;
+        const fileUrl = str(f?.file_url, 1000);
+        const hasFile = active && fileUrl.startsWith("https://");
+
+        return json({
+          ok: true,
+          active,
+          title: f?.title || "",
+          message: f?.message || "",
+          hasFile,
+          fileUrl: hasFile ? fileUrl : "",
+          fileName: hasFile ? (f?.file_name || "") : "",
+          updatedAt: f?.updated_at || null
         });
       }
 

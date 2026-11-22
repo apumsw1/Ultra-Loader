@@ -45,6 +45,9 @@ class MainActivity : Activity() {
         private const val UPDATE_API =
             "https://ultra-loader.ultraloader.workers.dev/api/update"
 
+        private const val FLASH_API =
+            "https://ultra-loader.ultraloader.workers.dev/api/flash"
+
         private const val VPN_PACKAGE =
             "com.fast.free.unblock.thunder.vpn"
 
@@ -120,6 +123,8 @@ private var loginActionSearchRunning = false
 private var secondFormCheckRunning = false  
 
 private var activationPopup: AlertDialog? = null  
+private var flashDialog: AlertDialog? = null
+private var flashPopupChecked = false
 
 private var connectivityManager: ConnectivityManager? = null  
 private var networkCallbackRegistered = false  
@@ -364,7 +369,142 @@ private fun initializeApplication() {
     updateClock()  
 
     verifyLicenseWhenOnline()  
-}  
+    checkForFlashPopup()
+}
+
+private fun checkForFlashPopup() {
+    if (flashPopupChecked || isFinishing || isDestroyed) return
+    flashPopupChecked = true
+
+    executor.execute {
+        var connection: HttpURLConnection? = null
+        try {
+            val url = URL(FLASH_API)
+            connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 9000
+            connection.readTimeout = 9000
+
+            val response = connection.inputStream.bufferedReader().use {
+                it.readText()
+            }
+
+            val json = JSONObject(response)
+            val active = json.optBoolean("active", false)
+            val title = json.optString("title", "").trim()
+            val message = json.optString("message", "").trim()
+            val hasFile = json.optBoolean("hasFile", false)
+            val fileUrl = json.optString("fileUrl", "").trim()
+            val fileName = json.optString("fileName", "").trim()
+
+            if (active && (title.isNotBlank() || message.isNotBlank())) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        showFlashPopupDialog(
+                            title = title,
+                            message = message,
+                            hasFile = hasFile && fileUrl.startsWith("https://"),
+                            fileUrl = fileUrl,
+                            fileName = fileName
+                        )
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Optional flash popup failure does not block app usage.
+        } finally {
+            connection?.disconnect()
+        }
+    }
+}
+
+private fun showFlashPopupDialog(
+    title: String,
+    message: String,
+    hasFile: Boolean,
+    fileUrl: String,
+    fileName: String
+) {
+    if (flashDialog?.isShowing == true || isFinishing || isDestroyed) return
+
+    val density = resources.displayMetrics.density
+    fun dp(v: Int) = (v * density).toInt()
+
+    val box = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(20), dp(18), dp(20), dp(14))
+        background = GradientDrawable().apply {
+            setColor(Color.rgb(5, 17, 35))
+            cornerRadius = dp(16).toFloat()
+            setStroke(2, cyan)
+        }
+    }
+
+    val heading = TextView(this).apply {
+        text = title.ifBlank { "FLASH NOTICE" }
+        textSize = 17f
+        gravity = Gravity.CENTER
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(cyan)
+        setPadding(0, 0, 0, dp(10))
+    }
+    box.addView(heading)
+
+    if (message.isNotBlank()) {
+        val msgView = TextView(this).apply {
+            text = message
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            setLineSpacing(4f, 1.1f)
+            setPadding(0, 0, 0, dp(14))
+        }
+        val scroll = ScrollView(this).apply {
+            addView(msgView)
+        }
+        box.addView(
+            scroll,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+    }
+
+    val dialog = AlertDialog.Builder(this)
+        .setView(box)
+        .create()
+
+    if (hasFile && fileUrl.startsWith("https://")) {
+        val label = if (fileName.isNotBlank()) {
+            "DOWNLOAD $fileName"
+        } else {
+            "DOWNLOAD FILE"
+        }
+
+        val downloadBtn = makeButton(label) {
+            try {
+                startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(fileUrl))
+                )
+            } catch (_: Exception) {
+                toast("Unable to open download link")
+            }
+        }.apply {
+            background = rounded(Color.rgb(0, 90, 115), green)
+        }
+        box.addView(downloadBtn)
+    }
+
+    val closeBtn = makeButton("CLOSE") {
+        dialog.dismiss()
+    }
+    box.addView(closeBtn)
+
+    dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+    flashDialog = dialog
+    dialog.show()
+}
 
 private fun registerLicenseNetworkCallback() {  
     if (networkCallbackRegistered) return  
@@ -1816,6 +1956,7 @@ override fun onDestroy() {
     executor.shutdownNow()  
 
     activationPopup?.dismiss()  
+    flashDialog?.dismiss()
 
     if (networkCallbackRegistered) {  
         try {  
