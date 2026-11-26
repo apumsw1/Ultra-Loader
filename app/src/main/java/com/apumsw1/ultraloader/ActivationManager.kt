@@ -22,6 +22,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -48,8 +49,14 @@ object ActivationManager {
 
     private const val PREFS = "ultra_loader_activation_v1"
     private const val PREF_LICENSE = "encrypted_license"
+    private const val PREF_LICENSES = "encrypted_licenses_v2"
     private const val PREF_DEVICE_ID = "stable_device_id"
     private const val KEY_ALIAS = "UltraLoaderActivationKeyV1"
+
+    internal const val STATUS_ACTIVE = "ACTIVE"
+    internal const val STATUS_EXPIRED = "EXPIRED"
+    internal const val STATUS_REVOKED = "REVOKED"
+    internal const val STATUS_INVALID = "INVALID"
 
     private const val CONNECT_TIMEOUT = 12000
     private const val READ_TIMEOUT = 15000
@@ -64,14 +71,35 @@ object ActivationManager {
 
     private val executor = Executors.newSingleThreadExecutor()
 
-    private data class License(
+    internal data class License(
         val key: String,
         val deviceId: String,
-        val expiresAt: Long
+        val expiresAt: Long,
+        val status: String = STATUS_ACTIVE,
+        val activatedAt: Long = 0L,
+        val durationDays: Int = 0,
+        val paidAmount: Int = 0
     )
+
+    internal interface CipherDelegate {
+        fun encrypt(plain: ByteArray): ByteArray
+        fun decrypt(payload: ByteArray): ByteArray
+    }
+
+    private val keyStoreCipher = object : CipherDelegate {
+        override fun encrypt(plain: ByteArray): ByteArray = aesGcmEncrypt(plain)
+        override fun decrypt(payload: ByteArray): ByteArray = aesGcmDecrypt(payload)
+    }
+
+    @Volatile
+    internal var cipherDelegate: CipherDelegate = keyStoreCipher
 
     @Volatile
     private var lastStatus = "NOT ACTIVATED"
+
+    internal fun resetCipherForProduction() {
+        cipherDelegate = keyStoreCipher
+    }
 
     private fun dp(context: Context, value: Int): Int {
         return (value * context.resources.displayMetrics.density).toInt()
@@ -177,36 +205,98 @@ object ActivationManager {
             .start()
     }
 
+    private fun isEffectiveActive(license: License, nowMs: Long = System.currentTimeMillis()): Boolean {
+        return license.status == STATUS_ACTIVE && license.expiresAt > nowMs
+    }
+
+    internal fun syncLocalExpiries(context: Context, nowMs: Long = System.currentTimeMillis()): List<License> {
+        val current = readLicenses(context)
+        var changed = false
+        val updated = current.map { lic ->
+            if (lic.status == STATUS_ACTIVE && lic.expiresAt <= nowMs) {
+                changed = true
+                lic.copy(status = STATUS_EXPIRED)
+            } else {
+                lic
+            }
+        }
+        if (changed) {
+            writeLicenses(context, updated)
+        }
+        return updated
+    }
+
+    internal fun getLicensesSnapshot(context: Context): List<License> {
+        return syncLocalExpiries(context)
+    }
+
     fun hasAccess(context: Context): Boolean {
-        val license = readLicense(context) ?: return false
-        return license.expiresAt > System.currentTimeMillis()
+        val nowMs = System.currentTimeMillis()
+        val licenses = syncLocalExpiries(context, nowMs)
+        return licenses.any { isEffectiveActive(it, nowMs) }
     }
 
     fun statusText(context: Context): String {
-        val license = readLicense(context)
+        val nowMs = System.currentTimeMillis()
+        val licenses = syncLocalExpiries(context, nowMs)
 
-        if (license == null) {
+        if (licenses.isEmpty()) {
             lastStatus = "NOT ACTIVATED"
             return "LICENSE: NOT ACTIVATED"
         }
 
-        if (license.expiresAt <= System.currentTimeMillis()) {
-            lastStatus = "EXPIRED"
-            return "LICENSE: EXPIRED"
+        val active = licenses.filter { isEffectiveActive(it, nowMs) }
+        if (active.isEmpty()) {
+            val latestNonActive = licenses.last()
+            lastStatus = latestNonActive.status
+            return "LICENSE: ${latestNonActive.status}"
         }
 
-        if (license.expiresAt == Long.MAX_VALUE) {
-            lastStatus = "ACTIVE (PERMANENT)"
-            return "LICENSE: ACTIVE (PERMANENT)"
+        lastStatus = "ACTIVE"
+        val permanent = active.any { it.expiresAt == Long.MAX_VALUE }
+        val countTag = if (active.size > 1) " (${active.size} KEYS)" else ""
+        if (permanent) {
+            return "LICENSE: ACTIVE$countTag (PERMANENT)"
         }
 
+        val primary = active.maxByOrNull { it.expiresAt } ?: active.first()
         val formatted = SimpleDateFormat(
             "dd MMM yyyy, hh:mm a",
             Locale.getDefault()
-        ).format(Date(license.expiresAt))
+        ).format(Date(primary.expiresAt))
 
-        lastStatus = "ACTIVE"
-        return "LICENSE: ACTIVE\nEXPIRES: $formatted"
+        return "LICENSE: ACTIVE$countTag\nEXPIRES: $formatted"
+    }
+
+    fun detailedStatusText(context: Context): String {
+        val nowMs = System.currentTimeMillis()
+        val licenses = syncLocalExpiries(context, nowMs)
+        if (licenses.isEmpty()) {
+            return "LICENSE: NOT ACTIVATED"
+        }
+
+        val formatter = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
+        return licenses.mapIndexed { index, lic ->
+            val effectiveStatus = if (lic.status == STATUS_ACTIVE && lic.expiresAt <= nowMs) {
+                STATUS_EXPIRED
+            } else {
+                lic.status
+            }
+            val masked = maskKey(lic.key)
+            val expiryLabel = when {
+                lic.expiresAt == Long.MAX_VALUE -> "PERMANENT"
+                lic.expiresAt > 0L -> formatter.format(Date(lic.expiresAt))
+                else -> "-"
+            }
+            val daysLabel = if (lic.durationDays > 0) " • ${lic.durationDays}d" else ""
+            "#${index + 1} $masked [$effectiveStatus$daysLabel]\nEXP: $expiryLabel"
+        }.joinToString("\n\n")
+    }
+
+    private fun maskKey(key: String): String {
+        val clean = key.trim()
+        if (clean.length <= 10) return clean
+        return clean.take(6) + "••••" + clean.takeLast(4)
     }
 
     fun requireActivation(
@@ -218,6 +308,21 @@ object ActivationManager {
             return
         }
 
+        showActivationDialog(activity, cancelable = false, onActivated = onActivated)
+    }
+
+    fun showAddKeyDialog(
+        activity: Activity,
+        onActivated: () -> Unit
+    ) {
+        showActivationDialog(activity, cancelable = true, onActivated = onActivated)
+    }
+
+    private fun showActivationDialog(
+        activity: Activity,
+        cancelable: Boolean,
+        onActivated: () -> Unit
+    ) {
         if (activity.isFinishing ||
             (Build.VERSION.SDK_INT >= 17 && activity.isDestroyed)
         ) return
@@ -457,6 +562,30 @@ object ActivationManager {
             )
         )
 
+        if (cancelable) {
+            addSpace(root, activity, 9)
+
+            val closeButton = makeButton(
+                activity,
+                "CLOSE",
+                rounded(
+                    0xFF142134.toInt(),
+                    dp(activity, 12),
+                    0xFF334E73.toInt(),
+                    dp(activity, 1)
+                ),
+                MUTED
+            )
+
+            root.addView(
+                closeButton,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dp(activity, 46)
+                )
+            )
+        }
+
         addSpace(root, activity, 16)
 
         root.addView(
@@ -485,8 +614,17 @@ object ActivationManager {
 
         val dialog = AlertDialog.Builder(activity)
             .setView(scroll)
-            .setCancelable(false)
+            .setCancelable(cancelable)
             .create()
+
+        dialog.setCanceledOnTouchOutside(cancelable)
+
+        if (cancelable) {
+            val closeBtn = root.getChildAt(root.childCount - 5)
+            closeBtn?.setOnClickListener {
+                dialog.dismiss()
+            }
+        }
 
         dialog.setOnShowListener {
             dialog.window?.setBackgroundDrawableResource(
@@ -546,7 +684,8 @@ object ActivationManager {
             executor.execute {
                 val result = sendActivation(
                     key,
-                    getDeviceId(activity)
+                    getDeviceId(activity),
+                    activity
                 )
 
                 activity.runOnUiThread {
@@ -559,7 +698,7 @@ object ActivationManager {
                     if (result.status == "VALID" &&
                         result.license != null
                     ) {
-                        saveLicense(activity, result.license)
+                        upsertLicense(activity, result.license)
                         lastStatus = "ACTIVE"
 
                         activateButton.text = "ACTIVATION SUCCESSFUL"
@@ -626,47 +765,69 @@ object ActivationManager {
         context: Context,
         callback: (String) -> Unit
     ) {
-        val saved = readLicense(context)
+        val nowMs = System.currentTimeMillis()
+        val licenses = syncLocalExpiries(context, nowMs)
 
-        if (saved == null) {
+        if (licenses.isEmpty()) {
+            lastStatus = "NOT ACTIVATED"
             callback("NO_LICENSE")
             return
         }
 
-        if (saved.expiresAt <= System.currentTimeMillis()) {
-            removeLicense(context)
-            lastStatus = "EXPIRED"
-            callback("EXPIRED")
+        val activeKeys = licenses.filter { isEffectiveActive(it, nowMs) }
+        if (activeKeys.isEmpty()) {
+            val fallbackStatus = licenses.last().status
+            lastStatus = fallbackStatus
+            callback(fallbackStatus)
             return
         }
 
         executor.execute {
-            val result = sendActivation(
-                saved.key,
-                saved.deviceId
-            )
+            var anyValid = false
+            var lastFailureStatus = "ERROR"
 
-            if (result.status == "VALID" &&
-                result.license != null
-            ) {
-                saveLicense(context, result.license)
+            for (saved in activeKeys) {
+                val result = sendActivation(
+                    saved.key,
+                    saved.deviceId,
+                    context
+                )
+
+                if (result.status == "VALID" && result.license != null) {
+                    upsertLicense(context, result.license)
+                    anyValid = true
+                } else if (
+                    result.status == STATUS_INVALID ||
+                    result.status == STATUS_REVOKED ||
+                    result.status == STATUS_EXPIRED
+                ) {
+                    markLicenseStatus(context, saved.key, result.status)
+                    lastFailureStatus = result.status
+                } else {
+                    lastFailureStatus = result.status
+                }
+            }
+
+            val finalStatus = if (anyValid) {
                 lastStatus = "ACTIVE"
-
-            } else if (
-                result.status == "INVALID" ||
-                result.status == "REVOKED" ||
-                result.status == "EXPIRED"
-            ) {
-                removeLicense(context)
-                lastStatus = result.status
+                "VALID"
+            } else {
+                val stillHasLocalActive = hasAccess(context)
+                if (stillHasLocalActive && lastFailureStatus == "ERROR") {
+                    lastStatus = "ACTIVE"
+                    "VALID"
+                } else {
+                    lastStatus = lastFailureStatus
+                    lastFailureStatus
+                }
             }
 
             if (context is Activity) {
                 context.runOnUiThread {
-                    callback(result.status)
+                    callback(finalStatus)
                 }
             } else {
-                callback(result.status)
+                callback(finalStatus)
             }
         }
     }
@@ -679,7 +840,8 @@ object ActivationManager {
 
     private fun sendActivation(
         key: String,
-        deviceId: String
+        deviceId: String,
+        context: Context? = null
     ): ActivationResult {
 
         var connection: HttpURLConnection? = null
@@ -706,9 +868,22 @@ object ActivationManager {
                 )
             }
 
+            val appVersion = context?.let {
+                try {
+                    it.packageManager.getPackageInfo(it.packageName, 0).versionName ?: ""
+                } catch (_: Exception) {
+                    ""
+                }
+            }.orEmpty()
+
+            val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
             val body = JSONObject()
                 .put("key", key)
                 .put("deviceId", deviceId)
+                .put("deviceName", deviceName)
+                .put("deviceModel", Build.MODEL ?: "")
+                .put("osVersion", "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+                .put("appVersion", appVersion)
                 .toString()
 
             connection.outputStream.use { output ->
@@ -765,6 +940,15 @@ object ActivationManager {
                     parseServerDate(expiryString)
                 }
 
+                val activatedAtString = json.optString("activatedAt", "")
+                val activatedAtMs = if (activatedAtString.isNotBlank() && activatedAtString != "null") {
+                    parseServerDate(activatedAtString)
+                } else {
+                    System.currentTimeMillis()
+                }
+                val durationDays = json.optInt("durationDays", 0)
+                val paidAmount = json.optInt("paidAmount", 0)
+
                 if (expiry <= System.currentTimeMillis()) {
                     ActivationResult(
                         "EXPIRED",
@@ -775,9 +959,13 @@ object ActivationManager {
                         status = "VALID",
                         message = "Activation successful",
                         license = License(
-                            key,
-                            deviceId,
-                            expiry
+                            key = key,
+                            deviceId = deviceId,
+                            expiresAt = expiry,
+                            status = STATUS_ACTIVE,
+                            activatedAt = activatedAtMs,
+                            durationDays = durationDays,
+                            paidAmount = paidAmount
                         )
                     )
                 }
@@ -897,18 +1085,60 @@ object ActivationManager {
         return id
     }
 
-    private fun saveLicense(
+    internal fun upsertLicense(
         context: Context,
         license: License
     ) {
-        val json = JSONObject()
-            .put("key", license.key)
-            .put("deviceId", license.deviceId)
-            .put("expiresAt", license.expiresAt)
-            .toString()
+        val current = readLicenses(context).toMutableList()
+        val idx = current.indexOfFirst { it.key == license.key }
+        if (idx >= 0) {
+            current[idx] = license
+        } else {
+            current.add(license)
+        }
+        writeLicenses(context, current)
+    }
 
-        val encrypted = encrypt(
-            json.toByteArray(Charsets.UTF_8)
+    internal fun markLicenseStatus(
+        context: Context,
+        key: String,
+        newStatus: String
+    ) {
+        val current = readLicenses(context)
+        var changed = false
+        val updated = current.map { lic ->
+            if (lic.key == key && lic.status != newStatus) {
+                changed = true
+                lic.copy(status = newStatus)
+            } else {
+                lic
+            }
+        }
+        if (changed) {
+            writeLicenses(context, updated)
+        }
+    }
+
+    private fun writeLicenses(
+        context: Context,
+        licenses: List<License>
+    ) {
+        val arr = JSONArray()
+        for (lic in licenses) {
+            arr.put(
+                JSONObject()
+                    .put("key", lic.key)
+                    .put("deviceId", lic.deviceId)
+                    .put("expiresAt", lic.expiresAt)
+                    .put("status", lic.status)
+                    .put("activatedAt", lic.activatedAt)
+                    .put("durationDays", lic.durationDays)
+                    .put("paidAmount", lic.paidAmount)
+            )
+        }
+
+        val encrypted = cipherDelegate.encrypt(
+            arr.toString().toByteArray(Charsets.UTF_8)
         )
 
         context.getSharedPreferences(
@@ -917,7 +1147,7 @@ object ActivationManager {
         )
             .edit()
             .putString(
-                PREF_LICENSE,
+                PREF_LICENSES,
                 Base64.encodeToString(
                     encrypted,
                     Base64.NO_WRAP
@@ -926,47 +1156,69 @@ object ActivationManager {
             .apply()
     }
 
-    private fun readLicense(context: Context): License? {
-        return try {
-            val prefs = context.getSharedPreferences(
-                PREFS,
-                Context.MODE_PRIVATE
-            )
+    private fun readLicenses(context: Context): List<License> {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val result = mutableListOf<License>()
 
-            val encoded = prefs.getString(
-                PREF_LICENSE,
-                null
-            ) ?: return null
-
-            val encrypted = Base64.decode(
-                encoded,
-                Base64.NO_WRAP
-            )
-
-            val plain = decrypt(encrypted)
-
-            val json = JSONObject(
-                String(plain, Charsets.UTF_8)
-            )
-
-            License(
-                key = json.getString("key"),
-                deviceId = json.getString("deviceId"),
-                expiresAt = json.getLong("expiresAt")
-            )
-
-        } catch (_: Exception) {
-            null
+        val multiEncoded = prefs.getString(PREF_LICENSES, null)
+        if (!multiEncoded.isNullOrBlank()) {
+            try {
+                val encrypted = Base64.decode(multiEncoded, Base64.NO_WRAP)
+                val plain = cipherDelegate.decrypt(encrypted)
+                val arr = JSONArray(String(plain, Charsets.UTF_8))
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val key = obj.optString("key", "")
+                    val deviceId = obj.optString("deviceId", "")
+                    if (key.isBlank() || deviceId.isBlank()) continue
+                    result.add(
+                        License(
+                            key = key,
+                            deviceId = deviceId,
+                            expiresAt = obj.optLong("expiresAt", 0L),
+                            status = obj.optString("status", STATUS_ACTIVE).ifBlank { STATUS_ACTIVE },
+                            activatedAt = obj.optLong("activatedAt", 0L),
+                            durationDays = obj.optInt("durationDays", 0),
+                            paidAmount = obj.optInt("paidAmount", 0)
+                        )
+                    )
+                }
+            } catch (_: Exception) {
+            }
         }
+
+        // Migrate any legacy single-key PREF_LICENSE record without dropping existing users.
+        val legacyEncoded = prefs.getString(PREF_LICENSE, null)
+        if (!legacyEncoded.isNullOrBlank()) {
+            try {
+                val encrypted = Base64.decode(legacyEncoded, Base64.NO_WRAP)
+                val plain = cipherDelegate.decrypt(encrypted)
+                val obj = JSONObject(String(plain, Charsets.UTF_8))
+                val key = obj.optString("key", "")
+                val deviceId = obj.optString("deviceId", "")
+                val expiresAt = obj.optLong("expiresAt", 0L)
+                if (key.isNotBlank() && deviceId.isNotBlank() && result.none { it.key == key }) {
+                    val migrated = License(
+                        key = key,
+                        deviceId = deviceId,
+                        expiresAt = expiresAt,
+                        status = if (expiresAt <= System.currentTimeMillis()) STATUS_EXPIRED else STATUS_ACTIVE
+                    )
+                    result.add(migrated)
+                    writeLicenses(context, result)
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        return result
     }
 
-    private fun removeLicense(context: Context) {
-        context.getSharedPreferences(
-            PREFS,
-            Context.MODE_PRIVATE
-        )
+    internal fun clearAllLicensesForTesting(context: Context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .remove(PREF_LICENSE)
+            .remove(PREF_LICENSES)
             .apply()
     }
 
@@ -1033,7 +1285,7 @@ object ActivationManager {
         }
     }
 
-    private fun encrypt(plain: ByteArray): ByteArray {
+    private fun aesGcmEncrypt(plain: ByteArray): ByteArray {
         val cipher = Cipher.getInstance(
             "AES/GCM/NoPadding"
         )
@@ -1048,7 +1300,7 @@ object ActivationManager {
         return cipher.iv + encrypted
     }
 
-    private fun decrypt(payload: ByteArray): ByteArray {
+    private fun aesGcmDecrypt(payload: ByteArray): ByteArray {
         require(payload.size > 12) {
             "Invalid encrypted license"
         }

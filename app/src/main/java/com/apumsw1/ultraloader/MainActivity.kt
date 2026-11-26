@@ -1667,12 +1667,19 @@ private fun showActivationPopup() {
     }  
 
     val details = TextView(this).apply {  
-        text = ActivationManager.statusText(this@MainActivity) +  
+        text = ActivationManager.detailedStatusText(this@MainActivity) +  
             "\n\n${if (ActivationManager.hasAccess(this@MainActivity)) "ACTIVATION: ON" else "ACTIVATION: OFF"}"  
         textSize = 13f  
         gravity = Gravity.CENTER  
         setTextColor(green)  
         setPadding(5, 12, 5, 15)  
+    }  
+
+    val addKey = makeButton("ADD ANOTHER KEY") {  
+        activationPopup?.dismiss()  
+        ActivationManager.showAddKeyDialog(this) {  
+            updateActivationStatus()  
+        }  
     }  
 
     val buy = makeButton("BUY NEW ACTIVATION KEY") {  
@@ -1685,6 +1692,7 @@ private fun showActivationPopup() {
 
     box.addView(heading)  
     box.addView(details)  
+    box.addView(addKey)  
     box.addView(buy)  
     box.addView(close)  
 
