@@ -14,7 +14,6 @@ import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
 
 class PortalMonitorService : Service() {
 
@@ -33,9 +32,6 @@ class PortalMonitorService : Service() {
 
         const val ACTION_PORTAL_NOTIFICATION_DETECTED =
             "com.apumsw1.ultraloader.PORTAL_NOTIFICATION_DETECTED"
-
-        const val ACTION_LOGOUT_STATUS_UPDATE =
-            "com.apumsw1.ultraloader.LOGOUT_STATUS_UPDATE"
 
         fun cancelVpnReturnNotification(context: Context) {
             try {
@@ -67,11 +63,6 @@ class PortalMonitorService : Service() {
 
     @Volatile
     private var sessionBroadcastSignature: String? = null
-
-    @Volatile
-    private var lastBgLogoutOutcomeText: String? = null
-
-    private val bgExecutor = Executors.newSingleThreadExecutor()
 
     private val wifiNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
     private val captiveNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
@@ -206,18 +197,12 @@ class PortalMonitorService : Service() {
             object : ConnectivityManager.NetworkCallback() {
 
                 override fun onAvailable(network: Network) {
-                    val caps = connectivityManager.getNetworkCapabilities(network)
-                    if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
-                        !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
-                    ) {
-                        wifiNetworks.add(network)
-                        PortalWorkflowCoordinator.updatePreservedWifiNetwork(network)
-                    }
+                    wifiNetworks.add(network)
                     showWifiNotification()
 
                     evaluateNetwork(
                         network,
-                        caps
+                        connectivityManager.getNetworkCapabilities(network)
                     )
                 }
 
@@ -225,11 +210,6 @@ class PortalMonitorService : Service() {
                     network: Network,
                     capabilities: NetworkCapabilities
                 ) {
-                    if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
-                        !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
-                    ) {
-                        PortalWorkflowCoordinator.updatePreservedWifiNetwork(network)
-                    }
                     evaluateNetwork(network, capabilities)
                 }
 
@@ -273,14 +253,6 @@ class PortalMonitorService : Service() {
                     handleConfirmedVpnWhileArmed()
                 }
             }
-
-            override fun onLost(network: Network) {
-                if (!PortalNetworkHelper.isVpnConnected(connectivityManager) &&
-                    !PortalWorkflowCoordinator.isLogoutCompleted()
-                ) {
-                    PortalWorkflowCoordinator.releaseLogoutClaimForRetry()
-                }
-            }
         }
 
         try {
@@ -293,71 +265,30 @@ class PortalMonitorService : Service() {
     }
 
     private fun handleConfirmedVpnWhileArmed() {
-        val waitingForVpn = PortalWorkflowCoordinator.isWaitingForVpn(this)
-        if (!VpnAutomationBridge.isArmed() && !waitingForVpn) return
-        if (!PortalNetworkHelper.isVpnConnected(connectivityManager)) return
+        if (!VpnAutomationBridge.isArmed() || VpnAutomationBridge.appInForeground) return
 
+        if (VpnAutoConnectService.requestReturnToUltraLoader(this)) {
+            return
+        }
+
+        if (!VpnAutomationBridge.claimReturnToApp()) return
         VpnAutomationBridge.disarm()
-        if (!waitingForVpn) return
 
-        // If MainActivity is alive (including in background while user is inside Thunder VPN),
-        // let its main-looper handler execute WebView + 2.8s HTTP fallback immediately.
-        if (PortalWorkflowCoordinator.notifyDelegateIfAlive()) {
-            return
-        }
-
-        // Fallback when MainActivity was destroyed: execute Logout directly over Wi-Fi in background.
-        if (!PortalWorkflowCoordinator.tryClaimVpnLogoutExecution()) return
-        val savedControl = PortalWorkflowCoordinator.getSavedControl(this)
-        if (savedControl == null) {
-            PortalWorkflowCoordinator.markLogoutOutcome(this, false, "SAVED_LOGOUT_CONTROL_MISSING")
-            showLogoutOutcomeNotification(false, "Saved Logout control missing")
-            return
-        }
-
-        bgExecutor.execute {
-            val wifiNet = PortalWorkflowCoordinator.getPreservedWifiNetwork()
-                ?: PortalNetworkHelper.findWifiNetwork(connectivityManager)
-            if (wifiNet == null) {
-                PortalWorkflowCoordinator.markLogoutOutcome(this@PortalMonitorService, false, "WIFI_NETWORK_NOT_AVAILABLE")
-                showLogoutOutcomeNotification(false, "Wi-Fi network unavailable for Logout")
-                return@execute
-            }
-
-            val result = BackgroundPortalLogoutRunner.executeLogoutOverWifi(
-                wifiNetwork = wifiNet,
-                control = savedControl,
-                userAgent = PortalWorkflowCoordinator.getUserAgent()
-            )
-
-            if (result.success) {
-                BackgroundPortalLogoutRunner.followSecondLoginLinkIfPresent(
-                    wifiNetwork = wifiNet,
-                    html = result.finalHtml,
-                    baseUrl = result.finalUrl.ifBlank { savedControl.pageUrl },
-                    userAgent = PortalWorkflowCoordinator.getUserAgent()
-                )
-                PortalWorkflowCoordinator.markLogoutOutcome(this@PortalMonitorService, true, result.diagnostic)
-                showLogoutOutcomeNotification(true, result.diagnostic)
-            } else {
-                PortalWorkflowCoordinator.markLogoutOutcome(this@PortalMonitorService, false, result.diagnostic)
-                showLogoutOutcomeNotification(false, result.diagnostic)
-            }
-        }
-    }
-
-    private fun showLogoutOutcomeNotification(success: Boolean, diagnostic: String) {
-        val label = if (success) "PORTAL LOGOUT SUCCESS" else "PORTAL LOGOUT FAILED"
-        lastBgLogoutOutcomeText = if (diagnostic.isNotBlank()) "$label ($diagnostic)" else label
-        updateMonitorNotification()
-
-        try {
-            val openIntent = Intent(this, MainActivity::class.java).apply {
-                action = "com.apumsw1.ultraloader.SHOW_DASHBOARD"
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+        val returnIntent = Intent(this, MainActivity::class.java).apply {
+            action = VpnAutomationBridge.ACTION_RETURN_FROM_VPN
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
                     Intent.FLAG_ACTIVITY_SINGLE_TOP
-            }
+            )
+        }
+
+        try {
+            startActivity(returnIntent)
+        } catch (_: Exception) {
+        }
+
+        try {
             val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     PendingIntent.FLAG_IMMUTABLE
@@ -367,7 +298,7 @@ class PortalMonitorService : Service() {
             val pi = PendingIntent.getActivity(
                 this,
                 VPN_RETURN_NOTIFICATION_ID,
-                openIntent,
+                returnIntent,
                 pendingFlags
             )
             val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -376,18 +307,13 @@ class PortalMonitorService : Service() {
                 @Suppress("DEPRECATION")
                 Notification.Builder(this)
             }
-            val msg = if (success) {
-                "Background Peplink Sign out verified (${diagnostic.ifBlank { "OK" }})"
-            } else {
-                "Background Sign out failed: ${diagnostic.ifBlank { "UNCONFIRMED" }}"
-            }
             val notif = builder
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
-                .setContentTitle("Ultra Loader — $label")
-                .setContentText(msg)
+                .setContentTitle("Ultra Loader — VPN Connected")
+                .setContentText("Tap to return to Ultra Loader & complete Portal Logout")
                 .setContentIntent(pi)
                 .setAutoCancel(true)
-                .setPriority(Notification.PRIORITY_DEFAULT)
+                .setPriority(Notification.PRIORITY_HIGH)
                 .build()
             notificationManager().notify(VPN_RETURN_NOTIFICATION_ID, notif)
         } catch (_: Exception) {
@@ -564,13 +490,8 @@ class PortalMonitorService : Service() {
             lastDetectedUrl = null
             lastDetectionType = null
             sessionBroadcastSignature = null
-            lastBgLogoutOutcomeText = null
-            PortalWorkflowCoordinator.clearPreservedWifiNetwork()
-            PortalWorkflowCoordinator.resetForNewWorkflow(this)
             WifiNotificationListener.clearSessionState(this)
             clearWifiNotification()
-        } else {
-            PortalWorkflowCoordinator.updatePreservedWifiNetwork(wifiNetworks.firstOrNull())
         }
 
         updateMonitorNotification()
@@ -578,9 +499,6 @@ class PortalMonitorService : Service() {
 
     private fun updateMonitorNotification() {
         val message = when {
-            !lastBgLogoutOutcomeText.isNullOrBlank() ->
-                lastBgLogoutOutcomeText!!
-
             captiveNetworks.isNotEmpty() || lastDetectionType == WifiNotificationListener.TYPE_PORTAL_LOGIN ->
                 "Wi-Fi Login Portal detected"
 
@@ -685,19 +603,11 @@ class PortalMonitorService : Service() {
                 )
                 updateMonitorNotification()
             }
-
-            ACTION_LOGOUT_STATUS_UPDATE -> {
-                val success = intent.getBooleanExtra("logout_success", false)
-                val diagnostic = intent.getStringExtra("logout_diagnostic").orEmpty()
-                showLogoutOutcomeNotification(success, diagnostic)
-            }
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
-        bgExecutor.shutdownNow()
-
         wifiCallback?.let { callback ->
             try {
                 connectivityManager.unregisterNetworkCallback(callback)

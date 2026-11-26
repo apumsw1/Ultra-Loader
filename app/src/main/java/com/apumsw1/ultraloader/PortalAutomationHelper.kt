@@ -15,18 +15,12 @@ data class DetectedLogoutControl(
     val tagName: String = "",
     val id: String = "",
     val name: String = "",
-    val className: String = "",
     val href: String = "",
-    val resolvedUrl: String = "",
-    val formAction: String = "",
-    val formMethod: String = "",
-    val formParamsJson: String = "",
     val text: String = "",
     val title: String = "",
     val ariaLabel: String = "",
     val onclick: String = "",
     val selector: String = "",
-    val loggedInDetected: Boolean = false,
     val detectedAt: Long = System.currentTimeMillis()
 ) {
     fun toJson(): String {
@@ -35,18 +29,12 @@ data class DetectedLogoutControl(
             .put("tagName", tagName)
             .put("id", id)
             .put("name", name)
-            .put("className", className)
             .put("href", href)
-            .put("resolvedUrl", resolvedUrl)
-            .put("formAction", formAction)
-            .put("formMethod", formMethod)
-            .put("formParamsJson", formParamsJson)
             .put("text", text)
             .put("title", title)
             .put("ariaLabel", ariaLabel)
             .put("onclick", onclick)
             .put("selector", selector)
-            .put("loggedInDetected", loggedInDetected)
             .put("detectedAt", detectedAt)
             .toString()
     }
@@ -61,18 +49,12 @@ data class DetectedLogoutControl(
                     tagName = obj.optString("tagName", ""),
                     id = obj.optString("id", ""),
                     name = obj.optString("name", ""),
-                    className = obj.optString("className", ""),
                     href = obj.optString("href", ""),
-                    resolvedUrl = obj.optString("resolvedUrl", ""),
-                    formAction = obj.optString("formAction", ""),
-                    formMethod = obj.optString("formMethod", ""),
-                    formParamsJson = obj.optString("formParamsJson", ""),
                     text = obj.optString("text", ""),
                     title = obj.optString("title", ""),
                     ariaLabel = obj.optString("ariaLabel", ""),
                     onclick = obj.optString("onclick", ""),
                     selector = obj.optString("selector", ""),
-                    loggedInDetected = obj.optBoolean("loggedInDetected", false),
                     detectedAt = obj.optLong("detectedAt", System.currentTimeMillis())
                 )
             } catch (_: Exception) {
@@ -85,12 +67,16 @@ data class DetectedLogoutControl(
 object VpnAutomationBridge {
     const val VPN_PACKAGE = "com.fast.free.unblock.thunder.vpn"
     const val VPN_DIALOG_PACKAGE = "com.android.vpndialogs"
+    const val ACTION_RETURN_FROM_VPN = "com.apumsw1.ultraloader.RETURN_FROM_VPN"
 
     @Volatile
     var appInForeground: Boolean = false
 
     @Volatile
     private var armedUntilMs: Long = 0L
+
+    @Volatile
+    private var returnToAppClaimed: Boolean = false
 
     @Volatile
     private var clickAttempts: Int = 0
@@ -100,6 +86,7 @@ object VpnAutomationBridge {
 
     fun arm(timeoutMs: Long = 60_000L) {
         armedUntilMs = System.currentTimeMillis() + timeoutMs
+        returnToAppClaimed = false
         clickAttempts = 0
         lastClickAtMs = 0L
     }
@@ -111,6 +98,13 @@ object VpnAutomationBridge {
     }
 
     fun isArmed(): Boolean = System.currentTimeMillis() < armedUntilMs
+
+    @Synchronized
+    fun claimReturnToApp(): Boolean {
+        if (returnToAppClaimed) return false
+        returnToAppClaimed = true
+        return true
+    }
 
     fun canAttemptClick(minIntervalMs: Long = 1800L, maxAttempts: Int = 6): Boolean {
         if (!isArmed()) return false
@@ -124,201 +118,7 @@ object VpnAutomationBridge {
     }
 }
 
-object PortalWorkflowCoordinator {
-
-    interface BackgroundLogoutDelegate {
-        fun onBackgroundVpnConfirmed()
-    }
-
-    @Volatile
-    private var delegate: BackgroundLogoutDelegate? = null
-
-    @Volatile
-    private var waitingForVpn: Boolean = false
-
-    @Volatile
-    private var logoutClaimed: Boolean = false
-
-    @Volatile
-    private var logoutCompleted: Boolean = false
-
-    @Volatile
-    private var lastLogoutSuccess: Boolean? = null
-
-    @Volatile
-    private var lastLogoutDiagnostic: String = ""
-
-    @Volatile
-    private var savedUserAgent: String = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"
-
-    @Volatile
-    private var preservedWifiNetworkRef: Network? = null
-
-    fun setDelegate(value: BackgroundLogoutDelegate?) {
-        delegate = value
-    }
-
-    fun updateUserAgent(ua: String?) {
-        if (!ua.isNullOrBlank()) {
-            savedUserAgent = ua
-        }
-    }
-
-    fun getUserAgent(): String = savedUserAgent
-
-    fun updatePreservedWifiNetwork(network: Network?) {
-        if (network != null) {
-            preservedWifiNetworkRef = network
-        }
-    }
-
-    fun getPreservedWifiNetwork(): Network? = preservedWifiNetworkRef
-
-    fun clearPreservedWifiNetwork() {
-        preservedWifiNetworkRef = null
-    }
-
-    @Synchronized
-    fun resetForNewWorkflow(context: Context? = null) {
-        waitingForVpn = false
-        logoutClaimed = false
-        logoutCompleted = false
-        lastLogoutSuccess = null
-        lastLogoutDiagnostic = ""
-        if (context != null) {
-            try {
-                context.getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
-                    .edit()
-                    .putBoolean("bg_waiting_vpn", false)
-                    .putBoolean("bg_logout_done", false)
-                    .remove("bg_logout_status")
-                    .remove("bg_logout_diagnostic")
-                    .apply()
-            } catch (_: Exception) {
-            }
-        }
-    }
-
-    @Synchronized
-    fun markWaitingForVpn(context: Context, control: DetectedLogoutControl, portalUrl: String) {
-        waitingForVpn = true
-        logoutClaimed = false
-        logoutCompleted = false
-        lastLogoutSuccess = null
-        lastLogoutDiagnostic = ""
-        try {
-            context.getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
-                .edit()
-                .putBoolean("bg_waiting_vpn", true)
-                .putBoolean("bg_logout_done", false)
-                .putString("detected_logout_json", control.toJson())
-                .putString("bg_portal_url", portalUrl)
-                .remove("bg_logout_status")
-                .remove("bg_logout_diagnostic")
-                .apply()
-        } catch (_: Exception) {
-        }
-    }
-
-    @Synchronized
-    fun isWaitingForVpn(context: Context? = null): Boolean {
-        if (waitingForVpn) return true
-        if (context == null) return false
-        return try {
-            val prefs = context.getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
-            val persisted = prefs.getBoolean("bg_waiting_vpn", false)
-            if (persisted) waitingForVpn = true
-            persisted
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    @Synchronized
-    fun tryClaimVpnLogoutExecution(): Boolean {
-        if (logoutClaimed || logoutCompleted) return false
-        logoutClaimed = true
-        waitingForVpn = false
-        return true
-    }
-
-    @Synchronized
-    fun releaseLogoutClaimForRetry() {
-        if (!logoutCompleted) {
-            logoutClaimed = false
-            waitingForVpn = true
-        }
-    }
-
-    @Synchronized
-    fun markLogoutOutcome(context: Context, success: Boolean, diagnostic: String) {
-        logoutCompleted = true
-        logoutClaimed = true
-        waitingForVpn = false
-        lastLogoutSuccess = success
-        lastLogoutDiagnostic = diagnostic
-        val statusLabel = if (success) "PORTAL LOGOUT SUCCESS" else "PORTAL LOGOUT FAILED"
-        try {
-            context.getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
-                .edit()
-                .putBoolean("bg_waiting_vpn", false)
-                .putBoolean("bg_logout_done", true)
-                .putString("bg_logout_status", statusLabel)
-                .putString("bg_logout_diagnostic", diagnostic)
-                .apply()
-        } catch (_: Exception) {
-        }
-    }
-
-    fun isLogoutCompleted(): Boolean = logoutCompleted
-
-    fun getLastLogoutOutcome(): Pair<Boolean?, String> = Pair(lastLogoutSuccess, lastLogoutDiagnostic)
-
-    @Synchronized
-    fun syncOutcomeFromPrefs(context: Context): Pair<Boolean?, String> {
-        if (logoutCompleted) return Pair(lastLogoutSuccess, lastLogoutDiagnostic)
-        return try {
-            val prefs = context.getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
-            if (prefs.getBoolean("bg_logout_done", false)) {
-                val st = prefs.getString("bg_logout_status", "")
-                val diag = prefs.getString("bg_logout_diagnostic", "").orEmpty()
-                val ok = st == "PORTAL LOGOUT SUCCESS"
-                logoutCompleted = true
-                logoutClaimed = true
-                waitingForVpn = false
-                lastLogoutSuccess = ok
-                lastLogoutDiagnostic = diag
-                Pair(ok, diag)
-            } else {
-                Pair(null, "")
-            }
-        } catch (_: Exception) {
-            Pair(null, "")
-        }
-    }
-
-    fun notifyDelegateIfAlive(): Boolean {
-        val target = delegate ?: return false
-        target.onBackgroundVpnConfirmed()
-        return true
-    }
-
-    fun getSavedControl(context: Context): DetectedLogoutControl? {
-        return try {
-            val raw = context.getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
-                .getString("detected_logout_json", null)
-            DetectedLogoutControl.fromJson(raw)
-        } catch (_: Exception) {
-            null
-        }
-    }
-}
-
 object PortalNetworkHelper {
-
-    @Volatile
-    var isWifiProcessBound: Boolean = false
-        private set
 
     fun isValidHttpUrl(value: String?): Boolean {
         if (value.isNullOrBlank()) return false
@@ -362,14 +162,8 @@ object PortalNetworkHelper {
     fun isVpnConnected(manager: ConnectivityManager): Boolean {
         return try {
             manager.allNetworks.any { network ->
-                val caps = manager.getNetworkCapabilities(network) ?: return@any false
-                if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@any false
-                val lp = try {
-                    manager.getLinkProperties(network)
-                } catch (_: Exception) {
-                    null
-                }
-                lp == null || !lp.interfaceName.isNullOrBlank() || lp.linkAddresses.isNotEmpty()
+                manager.getNetworkCapabilities(network)
+                    ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
             }
         } catch (_: Exception) {
             false
@@ -387,14 +181,7 @@ object PortalNetworkHelper {
         } ?: return null
 
         return try {
-            val bound = manager.bindProcessToNetwork(target)
-            if (bound) {
-                isWifiProcessBound = true
-                PortalWorkflowCoordinator.updatePreservedWifiNetwork(target)
-                target
-            } else {
-                null
-            }
+            if (manager.bindProcessToNetwork(target)) target else null
         } catch (_: Exception) {
             null
         }
@@ -404,8 +191,6 @@ object PortalNetworkHelper {
         try {
             manager.bindProcessToNetwork(null)
         } catch (_: Exception) {
-        } finally {
-            isWifiProcessBound = false
         }
     }
 

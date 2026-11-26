@@ -41,6 +41,12 @@ class VpnAutoConnectService : AccessibilityService() {
                 false
             }
         }
+
+        fun requestReturnToUltraLoader(context: Context): Boolean {
+            val instance = activeInstance ?: return false
+            instance.returnToUltraLoader()
+            return true
+        }
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -51,12 +57,17 @@ class VpnAutoConnectService : AccessibilityService() {
         inspectActiveWindowAndConnect()
     }
 
+    private val retryReturnRunnable = Runnable {
+        if (!VpnAutomationBridge.appInForeground && !VpnAutomationBridge.isArmed()) {
+            launchUltraLoaderForeground()
+        }
+    }
+
     private val vpnCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             handler.post {
-                val cm = connectivityManager ?: return@post
-                if (VpnAutomationBridge.isArmed() && PortalNetworkHelper.isVpnConnected(cm)) {
-                    onVpnConnectedDisarm()
+                if (VpnAutomationBridge.isArmed()) {
+                    returnToUltraLoader()
                 }
             }
         }
@@ -67,9 +78,8 @@ class VpnAutoConnectService : AccessibilityService() {
         ) {
             if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
                 handler.post {
-                    val cm = connectivityManager ?: return@post
-                    if (VpnAutomationBridge.isArmed() && PortalNetworkHelper.isVpnConnected(cm)) {
-                        onVpnConnectedDisarm()
+                    if (VpnAutomationBridge.isArmed()) {
+                        returnToUltraLoader()
                     }
                 }
             }
@@ -94,7 +104,7 @@ class VpnAutoConnectService : AccessibilityService() {
             }
 
         if (PortalNetworkHelper.isVpnConnected(cm)) {
-            onVpnConnectedDisarm()
+            returnToUltraLoader()
             return
         }
 
@@ -160,7 +170,7 @@ class VpnAutoConnectService : AccessibilityService() {
             }
 
         if (PortalNetworkHelper.isVpnConnected(cm)) {
-            onVpnConnectedDisarm()
+            returnToUltraLoader()
             return
         }
 
@@ -203,7 +213,7 @@ class VpnAutoConnectService : AccessibilityService() {
             }
             if (alreadyConnectedUi) {
                 if (PortalNetworkHelper.isVpnConnected(cm)) {
-                    onVpnConnectedDisarm()
+                    returnToUltraLoader()
                 }
                 return
             }
@@ -421,9 +431,28 @@ class VpnAutoConnectService : AccessibilityService() {
         }
     }
 
-    private fun onVpnConnectedDisarm() {
+    private fun returnToUltraLoader() {
         handler.removeCallbacks(inspectRunnable)
         VpnAutomationBridge.disarm()
-        PortalWorkflowCoordinator.notifyDelegateIfAlive()
+        if (!VpnAutomationBridge.claimReturnToApp()) return
+
+        launchUltraLoaderForeground()
+        handler.removeCallbacks(retryReturnRunnable)
+        handler.postDelayed(retryReturnRunnable, 350L)
+    }
+
+    private fun launchUltraLoaderForeground() {
+        try {
+            val intent = Intent(this, MainActivity::class.java).apply {
+                action = VpnAutomationBridge.ACTION_RETURN_FROM_VPN
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                )
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+        }
     }
 }

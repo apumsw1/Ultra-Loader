@@ -69,9 +69,6 @@ class MainActivity : Activity() {
 
     private const val TELEGRAM_URL =  
         "https://t.me/ultraloader"
-
-    private const val LOGOUT_DETECT_TIMEOUT_MS = 60_000L
-    private const val LOGOUT_JS_WATCHDOG_MS = 2800L
 }  
 
 private enum class Stage {
@@ -154,7 +151,6 @@ private var secondLoginTimerRunning = false
 private var autoLoginAttempts = 0
 private var loginVerifyAttempts = 0
 private var logoutDetectAttempts = 0
-private var logoutDetectStartedAt = 0L
 private var logoutSearchAttempts = 0
 private var logoutVerifyAttempts = 0
 private var loginActionSearchAttempts = 0
@@ -164,7 +160,6 @@ private var secondLoginButtonFound = false
 private var logoutDetectRunning = false
 private var logoutSearchRunning = false
 private var logoutVerifyRunning = false
-private var backgroundHttpFallbackUsed = false
 private var loginActionSearchRunning = false
 private var secondFormCheckRunning = false
 private var netCheckRunning = false
@@ -179,25 +174,9 @@ private val checkLoginRunnable = Runnable { checkPortalLogin() }
 private val detectLogoutRunnable = Runnable { detectLogoutControl() }
 private val logoutRetryRunnable = Runnable { clickPortalLogout() }
 private val verifyLogoutRunnable = Runnable { verifyPortalLogout() }
-private val logoutJsWatchdogRunnable = Runnable {
-    if (isFinishing || isDestroyed) return@Runnable
-    if (stage != Stage.LOGOUT && stage != Stage.VERIFY_LOGOUT) return@Runnable
-    if (secondLoginTimerRunning) return@Runnable
-    triggerBackgroundHttpLogoutFallback("WEBVIEW_BG_TIMEOUT")
-}
 private val secondLoginAgentRunnable = Runnable { clickPortalLoginAgent() }
 private val secondFormCheckRunnable = Runnable { checkSecondLoginForm() }
 private val liveNetCheckRunnable = Runnable { startLiveNetWorkingCheck() }
-
-private val backgroundLogoutDelegate = object : PortalWorkflowCoordinator.BackgroundLogoutDelegate {
-    override fun onBackgroundVpnConfirmed() {
-        handler.post {
-            if (!isFinishing && !isDestroyed) {
-                onVpnStateChanged(isVpnConnected())
-            }
-        }
-    }
-}
 
 private val netCheckRefreshRunnable = Runnable {
     loadNextNetCheckPage()
@@ -247,7 +226,6 @@ private val wifiNetworkCallback =
             if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
                 !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
             ) {
-                PortalWorkflowCoordinator.updatePreservedWifiNetwork(network)
                 handler.post {
                     preservedWifiNetwork = network
                     if (portalNetwork == null) {
@@ -264,7 +242,6 @@ private val wifiNetworkCallback =
             if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
                 !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
             ) {
-                PortalWorkflowCoordinator.updatePreservedWifiNetwork(network)
                 handler.post {
                     preservedWifiNetwork = network
                     if (portalNetwork == null) {
@@ -280,15 +257,12 @@ private val wifiNetworkCallback =
                 val replacement = PortalNetworkHelper.findWifiNetwork(cm)
                 if (replacement != null) {
                     preservedWifiNetwork = replacement
-                    PortalWorkflowCoordinator.updatePreservedWifiNetwork(replacement)
                     if (portalNetwork == network) {
                         portalNetwork = replacement
                     }
                 } else {
                     preservedWifiNetwork = null
                     portalNetwork = null
-                    PortalWorkflowCoordinator.clearPreservedWifiNetwork()
-                    PortalWorkflowCoordinator.resetForNewWorkflow(this@MainActivity)
                     activeSessionUrl = null
                     activeDetectionType = null
                     completedSessionUrl = null
@@ -554,7 +528,6 @@ private fun initializeApplication() {
 
     createScreen()
 
-    PortalWorkflowCoordinator.setDelegate(backgroundLogoutDelegate)
     registerLicenseNetworkCallback()
     registerWifiPortalReceiver()
     restorePersistedLogoutControl()
@@ -593,15 +566,7 @@ private fun initializeApplication() {
             handleDetectedPortalLaunch(detectedUrl, detectionType, detectedAt, forceIfIdleOrFinished = true)
         }
     } else {
-        val (persistedOk, persistedDiag) = PortalWorkflowCoordinator.syncOutcomeFromPrefs(this)
-        if (persistedOk == true) {
-            statusText("● PORTAL LOGOUT SUCCESS", green)
-            startInAppInternetRefreshCheck()
-        } else if (persistedOk == false) {
-            statusText("● PORTAL LOGOUT FAILED: ${persistedDiag.ifBlank { "UNCONFIRMED" }}", red)
-        } else {
-            checkExistingWifiPortalOnStartup()
-        }
+        checkExistingWifiPortalOnStartup()
     }
 
     updateIpDetails()
@@ -773,7 +738,6 @@ private fun registerLicenseNetworkCallback() {
             cm.registerNetworkCallback(wifiRequest, wifiNetworkCallback)
             wifiCallbackRegistered = true
             preservedWifiNetwork = PortalNetworkHelper.findWifiNetwork(cm)
-            PortalWorkflowCoordinator.updatePreservedWifiNetwork(preservedWifiNetwork)
         } catch (_: Exception) {
             wifiCallbackRegistered = false
         }
@@ -795,7 +759,7 @@ private fun registerLicenseNetworkCallback() {
 }  
 
 private fun verifyLicenseWhenOnline() {  
-    if (!appInitialized || isFinishing || isDestroyed || PortalNetworkHelper.isWifiProcessBound) return  
+    if (!appInitialized || isFinishing || isDestroyed) return  
 
     val online = hasValidatedInternet()  
 
@@ -1075,11 +1039,7 @@ private fun createScreen() {
     }
 
     webView = WebView(this).apply {
-        visibility = View.VISIBLE
-        alpha = 0f
-        isFocusable = false
-        isFocusableInTouchMode = false
-        isClickable = false
+        visibility = View.INVISIBLE
 
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
@@ -1087,10 +1047,8 @@ private fun createScreen() {
         settings.javaScriptCanOpenWindowsAutomatically = false
         settings.setSupportMultipleWindows(false)
 
-        val resolvedUa = WebSettings.getDefaultUserAgent(this@MainActivity)
+        settings.userAgentString = WebSettings.getDefaultUserAgent(this@MainActivity)
             .replace("; wv", "")
-        settings.userAgentString = resolvedUa
-        PortalWorkflowCoordinator.updateUserAgent(resolvedUa)
 
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
@@ -1274,25 +1232,8 @@ private fun createScreen() {
             1f
         )
     )
-
-    // Keep WebView at full viewport size behind the opaque dashboard so Chromium
-    // renders responsive Peplink controls cleanly without shrinking to 1x1.
-    val screenContainer = FrameLayout(this)
-    screenContainer.addView(
-        webView,
-        FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        )
-    )
-    screenContainer.addView(
-        root,
-        FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        )
-    )
-    setContentView(screenContainer)  
+    root.addView(webView, LinearLayout.LayoutParams(1, 1))
+    setContentView(root)  
 
     readCredentials()?.let {  
         userInput.setText(it.first)  
@@ -1436,7 +1377,7 @@ private fun refreshIpLocationIfNeeded(force: Boolean = false) {
 }
 
 private fun updateIpDetails() {  
-    if (!::ipDetails.isInitialized || PortalNetworkHelper.isWifiProcessBound) return  
+    if (!::ipDetails.isInitialized) return  
 
     lastIpFetchAt = SystemClock.elapsedRealtime()
     lastKnownVpnForIp = isVpnConnected()
@@ -1759,7 +1700,7 @@ private fun openVpnAutoConnectSettings() {
         .setTitle("Enable Auto Thunder VPN Connect")
         .setMessage(
             "Enable 'Ultra Loader Auto VPN Connect' in Accessibility Settings so Ultra Loader " +
-                "can tap Connect in Thunder VPN automatically while portal logout runs silently in the background."
+                "can automatically tap Connect in Thunder VPN and return to Ultra Loader for portal logout."
         )
         .setPositiveButton("OPEN SETTINGS") { _, _ ->
             try {
@@ -1895,7 +1836,6 @@ private fun cancelWorkflowCallbacks() {
     handler.removeCallbacks(detectLogoutRunnable)
     handler.removeCallbacks(logoutRetryRunnable)
     handler.removeCallbacks(verifyLogoutRunnable)
-    handler.removeCallbacks(logoutJsWatchdogRunnable)
     handler.removeCallbacks(secondLoginAgentRunnable)
     handler.removeCallbacks(secondFormCheckRunnable)
     handler.removeCallbacks(liveNetCheckRunnable)
@@ -1991,7 +1931,6 @@ private fun startPortalProcess(userInitiated: Boolean = false) {
 
     cancelWorkflowCallbacks()
     VpnAutomationBridge.disarm()
-    PortalWorkflowCoordinator.resetForNewWorkflow(this)
     PortalMonitorService.cancelVpnReturnNotification(this)
 
     dashboardShown = false
@@ -2017,7 +1956,6 @@ private fun startPortalProcess(userInitiated: Boolean = false) {
     autoLoginAttempts = 0
     loginVerifyAttempts = 0
     logoutDetectAttempts = 0
-    logoutDetectStartedAt = 0L
     logoutSearchAttempts = 0
     logoutVerifyAttempts = 0
     loginActionSearchAttempts = 0
@@ -2028,7 +1966,6 @@ private fun startPortalProcess(userInitiated: Boolean = false) {
     logoutDetectRunning = false
     logoutSearchRunning = false
     logoutVerifyRunning = false
-    backgroundHttpFallbackUsed = false
     loginActionSearchRunning = false
     secondFormCheckRunning = false
     netCheckRunning = false
@@ -2067,7 +2004,6 @@ private fun discoverPortalUrl() {
         val network = wifi ?: manager.activeNetwork
         if (wifi != null) {
             preservedWifiNetwork = wifi
-            PortalWorkflowCoordinator.updatePreservedWifiNetwork(wifi)
         }
         portalNetwork = wifi ?: network
 
@@ -2185,7 +2121,6 @@ private fun discoverPortalUrl() {
             if (boundNet != null) {
                 preservedWifiNetwork = boundNet
                 portalNetwork = boundNet
-                PortalWorkflowCoordinator.updatePreservedWifiNetwork(boundNet)
             } else if (portalNetwork != null) {
                 statusText("● WIFI ROUTING NOT AVAILABLE", red)
             }
@@ -2197,7 +2132,6 @@ private fun discoverPortalUrl() {
                 else "CURRENT PORTAL FOUND"
             )
 
-            webView.visibility = View.VISIBLE
             webView.loadUrl(portalUrl)
         }
     }
@@ -2367,7 +2301,6 @@ private fun tryAutoLogin() {
                 loginSubmitted = true
                 stage = Stage.DETECT_LOGOUT
                 logoutDetectAttempts = 0
-                logoutDetectStartedAt = SystemClock.elapsedRealtime()
                 logoutDetectRunning = false
                 workflowStatus("PORTAL LOGGED IN — INSPECTING LOGOUT...")
                 detectLogoutControl()
@@ -2392,7 +2325,6 @@ private fun tryAutoLogin() {
                 } else {
                     stage = Stage.DETECT_LOGOUT
                     logoutDetectAttempts = 0
-                    logoutDetectStartedAt = SystemClock.elapsedRealtime()
                     logoutDetectRunning = false
                     detectLogoutControl()
                 }
@@ -2429,7 +2361,6 @@ private fun checkPortalLogin() {
                 workflowStatus("PORTAL LOGIN VERIFIED — DETECTING LOGOUT")
                 stage = Stage.DETECT_LOGOUT
                 logoutDetectAttempts = 0
-                logoutDetectStartedAt = SystemClock.elapsedRealtime()
                 logoutDetectRunning = false
                 detectLogoutControl()
             }
@@ -2450,7 +2381,6 @@ private fun checkPortalLogin() {
                 } else {
                     stage = Stage.DETECT_LOGOUT
                     logoutDetectAttempts = 0
-                    logoutDetectStartedAt = SystemClock.elapsedRealtime()
                     logoutDetectRunning = false
                     detectLogoutControl()
                 }
@@ -2477,17 +2407,11 @@ private fun parseJsJsonObject(raw: String?): JSONObject? {
 private fun detectLogoutControl() {
     if (stage != Stage.DETECT_LOGOUT || logoutDetectRunning || isFinishing || isDestroyed) return
 
-    if (logoutDetectStartedAt == 0L) {
-        logoutDetectStartedAt = SystemClock.elapsedRealtime()
-    }
-
     handler.removeCallbacks(detectLogoutRunnable)
     logoutDetectRunning = true
     logoutDetectAttempts++
 
-    val elapsedBeforeMs = SystemClock.elapsedRealtime() - logoutDetectStartedAt
-    val elapsedSec = (elapsedBeforeMs / 1000L).toInt().coerceAtMost(60)
-    workflowStatus("DETECTING PORTAL LOGOUT... ${elapsedSec}s/60s")
+    workflowStatus("DETECTING PORTAL LOGOUT... $logoutDetectAttempts/8")
 
     val script = PortalJsScripts.buildDetectLogoutScript()
 
@@ -2507,49 +2431,30 @@ private fun detectLogoutControl() {
                 tagName = controlObj.optString("tagName", ""),
                 id = controlObj.optString("id", ""),
                 name = controlObj.optString("name", ""),
-                className = controlObj.optString("className", ""),
                 href = controlObj.optString("href", ""),
-                resolvedUrl = controlObj.optString("resolvedUrl", ""),
-                formAction = controlObj.optString("formAction", ""),
-                formMethod = controlObj.optString("formMethod", ""),
-                formParamsJson = controlObj.optString("formParamsJson", ""),
                 text = controlObj.optString("text", ""),
                 title = controlObj.optString("title", ""),
                 ariaLabel = controlObj.optString("ariaLabel", ""),
                 onclick = controlObj.optString("onclick", ""),
                 selector = controlObj.optString("selector", ""),
-                loggedInDetected = controlObj.optBoolean("loggedInDetected", false),
                 detectedAt = System.currentTimeMillis()
             )
             detectedLogoutControl = control
             persistDetectedLogoutControl(control)
-            PortalWorkflowCoordinator.markWaitingForVpn(this, control, portalUrl)
 
             // Do NOT click Logout yet. Release temporary process binding so Thunder VPN
             // can establish cleanly while keeping preservedWifiNetwork for the Logout step.
             connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
 
             openThunderVpn()
+        } else if (logoutDetectAttempts < 8) {
+            handler.postDelayed(detectLogoutRunnable, 900)
         } else {
-            val elapsedMs = SystemClock.elapsedRealtime() - logoutDetectStartedAt
-            if (elapsedMs < LOGOUT_DETECT_TIMEOUT_MS) {
-                handler.postDelayed(detectLogoutRunnable, 800)
-            } else {
-                detectedLogoutControl = null
-                clearPersistedLogoutControl()
-                PortalWorkflowCoordinator.resetForNewWorkflow(this)
-                connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
-                stage = Stage.IDLE
-                val reason = json?.optString("reason", "NOT_FOUND").orEmpty()
-                statusText(
-                    if (reason == "LOGIN_FORM_PRESENT") {
-                        "● PORTAL STILL ON LOGIN FORM (60s TIMEOUT)"
-                    } else {
-                        "● LOGOUT CONTROL NOT FOUND (60s TIMEOUT)"
-                    },
-                    red
-                )
-            }
+            detectedLogoutControl = null
+            clearPersistedLogoutControl()
+            connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
+            stage = Stage.IDLE
+            statusText("● NO PORTAL LOGOUT CONTROL FOUND", red)
         }
     }
 }
@@ -2571,16 +2476,16 @@ private fun openThunderVpn() {
     stage = Stage.WAIT_VPN
     vpnConnectedConfirmed = isVpnConnected()
 
-    if (vpnConnectedConfirmed) {
+    if (vpnConnectedConfirmed && isActivityInForeground) {
         proceedToLogoutAfterVpnConfirmed()
         return
     }
 
     if (vpnOpened) {
-        VpnAutomationBridge.arm(180_000L)
+        VpnAutomationBridge.arm(60_000L)
         statusText(
             if (isVpnAutoConnectEnabled()) "● AUTO-CONNECTING THUNDER VPN..."
-            else "● CONNECT THUNDER VPN (AUTO LOGOUT ARMED)",
+            else "● CONNECT THUNDER VPN MANUALLY",
             cyan
         )
         checkVpnStatus()
@@ -2588,7 +2493,7 @@ private fun openThunderVpn() {
     }
 
     vpnOpened = true
-    VpnAutomationBridge.arm(180_000L)
+    VpnAutomationBridge.arm(60_000L)
 
     val launch = packageManager.getLaunchIntentForPackage(VPN_PACKAGE)
 
@@ -2602,7 +2507,7 @@ private fun openThunderVpn() {
     try {
         statusText(
             if (isVpnAutoConnectEnabled()) "● AUTO-CONNECTING THUNDER VPN..."
-            else "● CONNECT THUNDER VPN (AUTO LOGOUT ARMED)",
+            else "● CONNECT THUNDER VPN MANUALLY",
             cyan
         )
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -2630,8 +2535,6 @@ private fun onVpnStateChanged(connected: Boolean) {
     }
 
     if (connected) {
-        VpnAutomationBridge.disarm()
-        PortalMonitorService.cancelVpnReturnNotification(this)
         try {
             vpnDialog?.dismiss()
             vpnDialog = null
@@ -2640,28 +2543,28 @@ private fun onVpnStateChanged(connected: Boolean) {
         }
 
         if (stage == Stage.WAIT_VPN) {
-            // Execute background Peplink Sign out immediately without pulling user out of Thunder VPN.
-            proceedToLogoutAfterVpnConfirmed()
-        } else if (stage == Stage.IDLE && PortalWorkflowCoordinator.isWaitingForVpn(this) && detectedLogoutControl != null) {
-            stage = Stage.WAIT_VPN
-            proceedToLogoutAfterVpnConfirmed()
+            if (isActivityInForeground) {
+                VpnAutomationBridge.disarm()
+                PortalMonitorService.cancelVpnReturnNotification(this)
+                proceedToLogoutAfterVpnConfirmed()
+            } else {
+                VpnAutoConnectService.requestReturnToUltraLoader(this)
+            }
         } else if (stage == Stage.IDLE || stage == Stage.FINISHED) {
             updateInternetStatus()
             refreshIpLocationIfNeeded()
         }
     } else {
         if (stage == Stage.WAIT_VPN ||
-            (stage == Stage.LOGOUT && !secondLoginTimerRunning && !PortalWorkflowCoordinator.isLogoutCompleted()) ||
+            (stage == Stage.LOGOUT && !secondLoginTimerRunning) ||
             stage == Stage.VERIFY_LOGOUT
         ) {
             VpnAutomationBridge.disarm()
             handler.removeCallbacks(logoutRetryRunnable)
             handler.removeCallbacks(verifyLogoutRunnable)
-            handler.removeCallbacks(logoutJsWatchdogRunnable)
             logoutSearchRunning = false
             logoutVerifyRunning = false
             awaitingLogoutPageReload = false
-            PortalWorkflowCoordinator.releaseLogoutClaimForRetry()
             connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
             stage = Stage.WAIT_VPN
             statusText("● VPN DISCONNECTED — RECONNECT THUNDER VPN", red)
@@ -2675,9 +2578,11 @@ private fun onVpnStateChanged(connected: Boolean) {
 }
 
 private fun proceedToLogoutAfterVpnConfirmed() {
-    if (stage != Stage.WAIT_VPN || isFinishing || isDestroyed) return
+    if (stage != Stage.WAIT_VPN || !isActivityInForeground || isFinishing || isDestroyed) return
     if (!isVpnConnected()) return
-    if (!PortalWorkflowCoordinator.tryClaimVpnLogoutExecution()) return
+
+    VpnAutomationBridge.disarm()
+    PortalMonitorService.cancelVpnReturnNotification(this)
 
     try {
         vpnDialog?.dismiss()
@@ -2686,12 +2591,10 @@ private fun proceedToLogoutAfterVpnConfirmed() {
     } catch (_: Exception) {
     }
 
-    PortalWorkflowCoordinator.updatePreservedWifiNetwork(preservedWifiNetwork)
     stage = Stage.LOGOUT
     logoutSearchAttempts = 0
     logoutSearchRunning = false
     awaitingLogoutPageReload = false
-    backgroundHttpFallbackUsed = false
     updateInternetStatus()
     clickPortalLogout()
 }
@@ -2712,14 +2615,14 @@ private fun checkVpnStatus() {
         } catch (_: Exception) {
         }
 
-        if (stage == Stage.WAIT_VPN) {
+        if (stage == Stage.WAIT_VPN && isActivityInForeground) {
             proceedToLogoutAfterVpnConfirmed()
         } else {
             updateInternetStatus()
             refreshIpLocationIfNeeded()
         }
     } else if (stage == Stage.WAIT_VPN) {
-        statusText("● CONNECT THUNDER VPN (AUTO LOGOUT ARMED)", cyan)
+        statusText("● CONNECT THUNDER VPN MANUALLY", cyan)
         if (isActivityInForeground) {
             showVpnDialog()
         }
@@ -2748,16 +2651,16 @@ private fun showVpnDialog() {
         .setTitle("THUNDER VPN")
         .setMessage(
             if (autoEnabled) {
-                "Waiting for Thunder VPN connection. You can stay in Thunder VPN — Ultra Loader will run Peplink Sign out automatically in the background once VPN connects."
+                "Waiting for Thunder VPN connection. Once connected, Ultra Loader will return automatically and click Portal Logout."
             } else {
-                "Open Thunder VPN and connect manually. You can stay in Thunder VPN — Ultra Loader will run portal Logout automatically as soon as VPN connects."
+                "Open Thunder VPN and connect manually, then return to Ultra Loader to execute Portal Logout and second login."
             }
         )
         .setPositiveButton("CHECK / CONTINUE") { _, _ ->
             vpnDialog = null
             vpnDialogShown = false
             if (isVpnConnected()) {
-                if (stage == Stage.WAIT_VPN) {
+                if (stage == Stage.WAIT_VPN && isActivityInForeground) {
                     proceedToLogoutAfterVpnConfirmed()
                 }
             } else {
@@ -2796,17 +2699,10 @@ private fun scheduleLogoutRetryAfterNetworkError() {
         onVpnStateChanged(false)
         return
     }
-    handler.removeCallbacks(logoutJsWatchdogRunnable)
     handler.removeCallbacks(verifyLogoutRunnable)
     handler.removeCallbacks(logoutRetryRunnable)
     logoutVerifyRunning = false
     logoutSearchRunning = false
-
-    if ((!isActivityInForeground || logoutSearchAttempts >= 2) && !backgroundHttpFallbackUsed) {
-        triggerBackgroundHttpLogoutFallback("WEBVIEW_NETWORK_ERROR")
-        return
-    }
-
     stage = Stage.LOGOUT
     if (logoutSearchAttempts < 6) {
         awaitingLogoutPageReload = true
@@ -2818,18 +2714,18 @@ private fun scheduleLogoutRetryAfterNetworkError() {
         if (boundWifi != null) {
             preservedWifiNetwork = boundWifi
             portalNetwork = boundWifi
-            PortalWorkflowCoordinator.updatePreservedWifiNetwork(boundWifi)
         }
         val targetPage = detectedLogoutControl?.pageUrl?.takeIf { PortalNetworkHelper.isValidHttpUrl(it) }
             ?: portalUrl
         if (::webView.isInitialized && PortalNetworkHelper.isValidHttpUrl(targetPage)) {
-            handler.postDelayed(logoutJsWatchdogRunnable, LOGOUT_JS_WATCHDOG_MS)
             webView.loadUrl(targetPage)
         } else {
-            triggerBackgroundHttpLogoutFallback("WEBVIEW_RELOAD_UNAVAILABLE")
+            handler.postDelayed(logoutRetryRunnable, 1000)
         }
     } else {
-        handleLogoutFinalFailure("PORTAL LOGOUT FAILED OVER WIFI")
+        connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
+        stage = Stage.IDLE
+        statusText("● PORTAL LOGOUT FAILED OVER WIFI", red)
     }
 }
 
@@ -2837,8 +2733,6 @@ private fun clickPortalLogout() {
     if (stage != Stage.LOGOUT || secondLoginTimerRunning || logoutSearchRunning || isFinishing || isDestroyed) return
 
     if (!isVpnConnected()) {
-        handler.removeCallbacks(logoutJsWatchdogRunnable)
-        PortalWorkflowCoordinator.releaseLogoutClaimForRetry()
         connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
         stage = Stage.WAIT_VPN
         statusText("● VPN DISCONNECTED — RECONNECT THUNDER VPN", red)
@@ -2847,16 +2741,13 @@ private fun clickPortalLogout() {
     }
 
     if (logoutSearchAttempts >= 6) {
-        if (!backgroundHttpFallbackUsed) {
-            triggerBackgroundHttpLogoutFallback("WEBVIEW_LOGOUT_CLICK_ATTEMPTS_EXHAUSTED")
-        } else {
-            handleLogoutFinalFailure("PORTAL LOGOUT BUTTON NOT FOUND")
-        }
+        connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
+        stage = Stage.IDLE
+        statusText("● PORTAL LOGOUT BUTTON NOT FOUND", red)
         return
     }
 
     handler.removeCallbacks(logoutRetryRunnable)
-    handler.removeCallbacks(logoutJsWatchdogRunnable)
     logoutSearchRunning = true
     logoutSearchAttempts++
 
@@ -2872,21 +2763,12 @@ private fun clickPortalLogout() {
     if (boundWifi != null) {
         preservedWifiNetwork = boundWifi
         portalNetwork = boundWifi
-        PortalWorkflowCoordinator.updatePreservedWifiNetwork(boundWifi)
-    }
-
-    if (!::webView.isInitialized) {
-        logoutSearchRunning = false
-        triggerBackgroundHttpLogoutFallback("WEBVIEW_NOT_INITIALIZED")
-        return
     }
 
     val script = PortalJsScripts.buildClickLogoutScript(detectedLogoutControl)
-    handler.postDelayed(logoutJsWatchdogRunnable, LOGOUT_JS_WATCHDOG_MS)
 
     webView.evaluateJavascript(script) { result ->
         logoutSearchRunning = false
-        handler.removeCallbacks(logoutJsWatchdogRunnable)
 
         if (stage != Stage.LOGOUT || isFinishing || isDestroyed) return@evaluateJavascript
 
@@ -2897,21 +2779,19 @@ private fun clickPortalLogout() {
             workflowStatus("VERIFYING PORTAL LOGOUT...")
             handler.removeCallbacks(verifyLogoutRunnable)
             handler.postDelayed(verifyLogoutRunnable, 900)
-            handler.postDelayed(logoutJsWatchdogRunnable, LOGOUT_JS_WATCHDOG_MS + 900L)
-        } else if ((!isActivityInForeground || logoutSearchAttempts >= 3) && !backgroundHttpFallbackUsed) {
-            triggerBackgroundHttpLogoutFallback("WEBVIEW_LOGOUT_CLICK_MISSED")
         } else if (logoutSearchAttempts < 6) {
             val targetPage = detectedLogoutControl?.pageUrl?.takeIf { PortalNetworkHelper.isValidHttpUrl(it) }
                 ?: portalUrl
             if (PortalNetworkHelper.isValidHttpUrl(targetPage)) {
                 awaitingLogoutPageReload = true
-                handler.postDelayed(logoutJsWatchdogRunnable, LOGOUT_JS_WATCHDOG_MS)
                 webView.loadUrl(targetPage)
             } else {
                 handler.postDelayed(logoutRetryRunnable, 900)
             }
         } else {
-            handleLogoutFinalFailure("PORTAL LOGOUT BUTTON NOT FOUND")
+            connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
+            stage = Stage.IDLE
+            statusText("● PORTAL LOGOUT BUTTON NOT FOUND", red)
         }
     }
 }
@@ -2920,8 +2800,6 @@ private fun verifyPortalLogout() {
     if (stage != Stage.VERIFY_LOGOUT || logoutVerifyRunning || isFinishing || isDestroyed) return
 
     if (!isVpnConnected()) {
-        handler.removeCallbacks(logoutJsWatchdogRunnable)
-        PortalWorkflowCoordinator.releaseLogoutClaimForRetry()
         connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
         stage = Stage.WAIT_VPN
         statusText("● VPN DISCONNECTED — RECONNECT THUNDER VPN", red)
@@ -2930,22 +2808,19 @@ private fun verifyPortalLogout() {
     }
 
     handler.removeCallbacks(verifyLogoutRunnable)
-    handler.removeCallbacks(logoutJsWatchdogRunnable)
     logoutVerifyRunning = true
     logoutVerifyAttempts++
 
     val previousPage = detectedLogoutControl?.pageUrl ?: portalUrl
     val script = PortalJsScripts.buildVerifyLogoutScript(previousPage)
-    handler.postDelayed(logoutJsWatchdogRunnable, LOGOUT_JS_WATCHDOG_MS)
 
     webView.evaluateJavascript(script) { result ->
         logoutVerifyRunning = false
-        handler.removeCallbacks(logoutJsWatchdogRunnable)
         if (stage != Stage.VERIFY_LOGOUT || isFinishing || isDestroyed) return@evaluateJavascript
 
         when {
             result?.contains("LOGOUT_VERIFIED_") == true -> {
-                handleLogoutVerifiedSuccess("WEBVIEW_DOM_VERIFIED")
+                statusText("● PORTAL LOGOUT SUCCESS", green)
                 stage = Stage.LOGOUT
                 loginActionSearchAttempts = 0
                 loginActionSearchRunning = false
@@ -2958,143 +2833,28 @@ private fun verifyPortalLogout() {
             }
 
             result?.contains("LOGOUT_STILL_PRESENT") == true -> {
-                if (!isActivityInForeground && logoutVerifyAttempts >= 3 && !backgroundHttpFallbackUsed) {
-                    triggerBackgroundHttpLogoutFallback("WEBVIEW_STILL_PRESENT_BG")
-                } else if (logoutVerifyAttempts == 3 || logoutVerifyAttempts == 6) {
+                if (logoutVerifyAttempts == 3 || logoutVerifyAttempts == 6) {
                     stage = Stage.LOGOUT
                     clickPortalLogout()
                 } else if (logoutVerifyAttempts < 12) {
                     handler.postDelayed(verifyLogoutRunnable, 600)
-                    handler.postDelayed(logoutJsWatchdogRunnable, LOGOUT_JS_WATCHDOG_MS)
-                } else if (!backgroundHttpFallbackUsed) {
-                    triggerBackgroundHttpLogoutFallback("LOGOUT_STILL_PRESENT_TIMEOUT")
                 } else {
-                    handleLogoutFinalFailure("LOGOUT NOT CONFIRMED BY PORTAL")
+                    connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
+                    stage = Stage.IDLE
+                    statusText("● LOGOUT NOT CONFIRMED BY PORTAL", red)
                 }
             }
 
             else -> {
-                if (!isActivityInForeground && logoutVerifyAttempts >= 3 && !backgroundHttpFallbackUsed) {
-                    triggerBackgroundHttpLogoutFallback("WEBVIEW_VERIFY_PENDING_BG")
-                } else if (logoutVerifyAttempts < 14) {
+                if (logoutVerifyAttempts < 14) {
                     handler.postDelayed(verifyLogoutRunnable, 550)
-                    handler.postDelayed(logoutJsWatchdogRunnable, LOGOUT_JS_WATCHDOG_MS)
-                } else if (!backgroundHttpFallbackUsed) {
-                    triggerBackgroundHttpLogoutFallback("LOGOUT_VERIFY_TIMEOUT")
                 } else {
-                    handleLogoutFinalFailure("LOGOUT VERIFICATION TIMEOUT")
+                    connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
+                    stage = Stage.IDLE
+                    statusText("● LOGOUT VERIFICATION TIMEOUT", red)
                 }
             }
         }
-    }
-}
-
-private fun triggerBackgroundHttpLogoutFallback(@Suppress("UNUSED_PARAMETER") reason: String) {
-    if (backgroundHttpFallbackUsed || isFinishing || isDestroyed) return
-    if (secondLoginTimerRunning) return
-
-    backgroundHttpFallbackUsed = true
-    handler.removeCallbacks(logoutJsWatchdogRunnable)
-    handler.removeCallbacks(logoutRetryRunnable)
-    handler.removeCallbacks(verifyLogoutRunnable)
-    logoutSearchRunning = false
-    logoutVerifyRunning = false
-    awaitingLogoutPageReload = false
-
-    val cm = connectivityManager
-        ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).also {
-            connectivityManager = it
-        }
-
-    // Release process-wide Wi-Fi binding immediately; BackgroundPortalLogoutRunner binds only its portal socket.
-    PortalNetworkHelper.clearProcessNetworkBinding(cm)
-
-    if (!isVpnConnected()) {
-        PortalWorkflowCoordinator.releaseLogoutClaimForRetry()
-        stage = Stage.WAIT_VPN
-        statusText("● VPN DISCONNECTED — RECONNECT THUNDER VPN", red)
-        if (isActivityInForeground) showVpnDialog()
-        return
-    }
-
-    val savedControl = detectedLogoutControl ?: PortalWorkflowCoordinator.getSavedControl(this)
-    if (savedControl == null) {
-        handleLogoutFinalFailure("SAVED_LOGOUT_CONTROL_MISSING")
-        return
-    }
-
-    workflowStatus("RUNNING BACKGROUND WIFI LOGOUT...")
-
-    executor.execute {
-        val wifiNet = preservedWifiNetwork
-            ?: PortalWorkflowCoordinator.getPreservedWifiNetwork()
-            ?: PortalNetworkHelper.findWifiNetwork(cm)
-
-        if (wifiNet == null) {
-            runOnUiThread {
-                if (!isFinishing && !isDestroyed) {
-                    handleLogoutFinalFailure("WIFI_NETWORK_NOT_AVAILABLE")
-                }
-            }
-            return@execute
-        }
-
-        val result = BackgroundPortalLogoutRunner.executeLogoutOverWifi(
-            wifiNetwork = wifiNet,
-            control = savedControl,
-            userAgent = PortalWorkflowCoordinator.getUserAgent()
-        )
-
-        if (result.success) {
-            BackgroundPortalLogoutRunner.followSecondLoginLinkIfPresent(
-                wifiNetwork = wifiNet,
-                html = result.finalHtml,
-                baseUrl = result.finalUrl.ifBlank { savedControl.pageUrl },
-                userAgent = PortalWorkflowCoordinator.getUserAgent()
-            )
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                handleLogoutVerifiedSuccess(result.diagnostic)
-                startInAppInternetRefreshCheck()
-            }
-        } else {
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                handleLogoutFinalFailure(result.diagnostic)
-            }
-        }
-    }
-}
-
-private fun handleLogoutVerifiedSuccess(diagnostic: String) {
-    handler.removeCallbacks(logoutJsWatchdogRunnable)
-    PortalWorkflowCoordinator.markLogoutOutcome(this, true, diagnostic)
-    statusText("● PORTAL LOGOUT SUCCESS", green)
-    notifyMonitorLogoutOutcome(true, diagnostic)
-}
-
-private fun handleLogoutFinalFailure(diagnostic: String) {
-    handler.removeCallbacks(logoutJsWatchdogRunnable)
-    connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
-    PortalWorkflowCoordinator.markLogoutOutcome(this, false, diagnostic)
-    stage = Stage.IDLE
-    statusText("● PORTAL LOGOUT FAILED: $diagnostic", red)
-    notifyMonitorLogoutOutcome(false, diagnostic)
-}
-
-private fun notifyMonitorLogoutOutcome(success: Boolean, diagnostic: String) {
-    try {
-        val i = Intent(this, PortalMonitorService::class.java).apply {
-            action = PortalMonitorService.ACTION_LOGOUT_STATUS_UPDATE
-            putExtra("logout_success", success)
-            putExtra("logout_diagnostic", diagnostic)
-        }
-        if (Build.VERSION.SDK_INT >= 26) {
-            startForegroundService(i)
-        } else {
-            startService(i)
-        }
-    } catch (_: Exception) {
     }
 }
 
@@ -3162,9 +2922,6 @@ private fun clickPortalLoginAgent() {
             secondLoginStageStatus.text = "LOGIN BUTTON CLICKED"
 
             handler.postDelayed(secondFormCheckRunnable, 800)
-        } else if (!isActivityInForeground && loginActionSearchAttempts >= 2) {
-            stopSecondLoginTimer()
-            startInAppInternetRefreshCheck()
         } else if (loginActionSearchAttempts < 60) {
             handler.postDelayed(secondLoginAgentRunnable, 1500)
         } else {
@@ -3738,6 +3495,8 @@ override fun onNewIntent(intent: Intent?) {
         handler.post {
             handleDetectedPortalLaunch(detectedUrl, detectionType, detectedAt, forceIfIdleOrFinished = true)
         }
+    } else if (intent.action == VpnAutomationBridge.ACTION_RETURN_FROM_VPN) {
+        intent.action = null
     }
 }
 
@@ -3760,8 +3519,7 @@ override fun onResume() {
     // so switching back from Thunder VPN never re-triggers "Connected / Tap to view website".
     if (isNotificationAccessEnabled() &&
         stage == Stage.IDLE &&
-        WifiNotificationListener.getSessionCapturedPortal(this) == null &&
-        !PortalWorkflowCoordinator.isLogoutCompleted()
+        WifiNotificationListener.getSessionCapturedPortal(this) == null
     ) {
         startMonitorService(refresh = true)
     }
@@ -3775,24 +3533,7 @@ override fun onResume() {
         return
     }
 
-    if (PortalWorkflowCoordinator.isLogoutCompleted() &&
-        (stage == Stage.WAIT_VPN || stage == Stage.LOGOUT || stage == Stage.VERIFY_LOGOUT || stage == Stage.IDLE)
-    ) {
-        val (bgSuccess, bgDiag) = PortalWorkflowCoordinator.getLastLogoutOutcome()
-        if (bgSuccess == true) {
-            if (netWorkingVerified || stage == Stage.FINISHED) {
-                statusText("● CONNECTED INTERNET", green)
-            } else {
-                statusText("● PORTAL LOGOUT SUCCESS", green)
-                if (stage == Stage.WAIT_VPN) {
-                    startInAppInternetRefreshCheck()
-                }
-            }
-        } else if (bgSuccess == false) {
-            stage = Stage.IDLE
-            statusText("● PORTAL LOGOUT FAILED: ${bgDiag.ifBlank { "UNCONFIRMED" }}", red)
-        }
-    } else if (stage == Stage.WAIT_VPN) {
+    if (stage == Stage.WAIT_VPN) {
         checkVpnStatus()
     }
 }
@@ -3804,7 +3545,6 @@ override fun onPause() {
 }
 
 override fun onDestroy() {
-    PortalWorkflowCoordinator.setDelegate(null)
     isActivityInForeground = false
     VpnAutomationBridge.appInForeground = false
     VpnAutomationBridge.disarm()
