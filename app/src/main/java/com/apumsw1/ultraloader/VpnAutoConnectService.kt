@@ -57,9 +57,24 @@ class VpnAutoConnectService : AccessibilityService() {
         inspectActiveWindowAndConnect()
     }
 
-    private val retryReturnRunnable = Runnable {
-        if (!VpnAutomationBridge.appInForeground && !VpnAutomationBridge.isArmed()) {
-            launchUltraLoaderForeground()
+    private var returnRetryCount = 0
+
+    private val retryReturnRunnable: Runnable = object : Runnable {
+        override fun run() {
+            val cm = connectivityManager
+                ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).also {
+                    connectivityManager = it
+                }
+            if (!VpnAutomationBridge.appInForeground &&
+                !VpnAutomationBridge.isArmed() &&
+                PortalNetworkHelper.isVpnConnected(cm)
+            ) {
+                launchUltraLoaderForeground()
+                if (returnRetryCount < 3) {
+                    returnRetryCount++
+                    handler.postDelayed(this, 650L)
+                }
+            }
         }
     }
 
@@ -304,6 +319,7 @@ class VpnAutoConnectService : AccessibilityService() {
             val combined = "$text $desc $viewId"
 
             if (isExcludedUiElement(combined)) continue
+            if (isAlreadyConnectedLabel(text) || isAlreadyConnectedLabel(desc)) continue
 
             var score = 0
             if (text == "connect" || desc == "connect" ||
@@ -321,13 +337,17 @@ class VpnAutoConnectService : AccessibilityService() {
                 viewId.contains("tv_connect") ||
                 viewId.contains("power_btn") ||
                 viewId.contains("start_btn") ||
-                (viewId.contains("connect") && !viewId.contains("disconnect"))
+                (viewId.contains("connect") &&
+                    !viewId.contains("disconnect") &&
+                    !viewId.contains("connected"))
             ) {
                 score += 95
             } else if (
                 (text.contains("connect") || desc.contains("connect")) &&
                 !text.contains("disconnect") &&
-                !desc.contains("disconnect")
+                !desc.contains("disconnect") &&
+                !isAlreadyConnectedLabel(text) &&
+                !isAlreadyConnectedLabel(desc)
             ) {
                 score += 75
             }
@@ -345,6 +365,13 @@ class VpnAutoConnectService : AccessibilityService() {
         }
 
         return if (bestScore >= 75) bestNode else null
+    }
+
+    private fun isAlreadyConnectedLabel(value: String): Boolean {
+        if (value.isBlank()) return false
+        return value.contains("connected") &&
+            !value.contains("not connected") &&
+            !value.contains("disconnected")
     }
 
     private fun isExcludedUiElement(combined: String): Boolean {
@@ -436,6 +463,7 @@ class VpnAutoConnectService : AccessibilityService() {
         VpnAutomationBridge.disarm()
         if (!VpnAutomationBridge.claimReturnToApp()) return
 
+        returnRetryCount = 0
         launchUltraLoaderForeground()
         handler.removeCallbacks(retryReturnRunnable)
         handler.postDelayed(retryReturnRunnable, 350L)

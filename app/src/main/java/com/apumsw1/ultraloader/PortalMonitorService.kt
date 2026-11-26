@@ -198,7 +198,6 @@ class PortalMonitorService : Service() {
 
                 override fun onAvailable(network: Network) {
                     wifiNetworks.add(network)
-                    showWifiNotification()
 
                     evaluateNetwork(
                         network,
@@ -309,8 +308,8 @@ class PortalMonitorService : Service() {
             }
             val notif = builder
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
-                .setContentTitle("Ultra Loader — VPN Connected")
-                .setContentText("Tap to return to Ultra Loader & complete Portal Logout")
+                .setContentTitle("VPN Connected")
+                .setContentText("Returning to Ultra Loader")
                 .setContentIntent(pi)
                 .setAutoCancel(true)
                 .setPriority(Notification.PRIORITY_HIGH)
@@ -500,16 +499,13 @@ class PortalMonitorService : Service() {
     private fun updateMonitorNotification() {
         val message = when {
             captiveNetworks.isNotEmpty() || lastDetectionType == WifiNotificationListener.TYPE_PORTAL_LOGIN ->
-                "Wi-Fi Login Portal detected"
+                "LOGIN DETECTED"
 
             websiteNetworks.isNotEmpty() || lastDetectionType == WifiNotificationListener.TYPE_VIEW_WEBSITE ->
-                "Connected / Tap to view website detected"
+                "CONNECTED / TAP TO VIEW WEBSITE DETECTED"
 
-            validatedNetworks.isNotEmpty() ->
-                "Wi-Fi connected — waiting for portal"
-
-            wifiNetworks.isNotEmpty() ->
-                "Wi-Fi connected — monitoring notifications"
+            wifiNetworks.isNotEmpty() || validatedNetworks.isNotEmpty() ->
+                "Monitoring Wi-Fi notifications"
 
             else ->
                 "Waiting for Wi-Fi connection"
@@ -534,21 +530,18 @@ class PortalMonitorService : Service() {
         forceRefresh: Boolean = false,
         websiteDetected: Boolean = false
     ) {
+        if (!captiveDetected && !websiteDetected) return
         if (wifiNotificationVisible && !forceRefresh) return
 
         wifiNotificationVisible = true
 
-        val title = when {
-            websiteDetected -> "Ultra Loader — Connected Website Detected"
-            captiveDetected -> "Ultra Loader — Wi-Fi Login Detected"
-            else -> "Ultra Loader — Wi-Fi Detected"
+        val title = if (websiteDetected) {
+            "CONNECTED / TAP TO VIEW WEBSITE DETECTED"
+        } else {
+            "LOGIN DETECTED"
         }
 
-        val message = when {
-            websiteDetected -> "Tap to view website detected. Opening Ultra Loader."
-            captiveDetected -> "Wi-Fi login detected. Tap to open Ultra Loader & run."
-            else -> "Wi-Fi connected. Tap to open Ultra Loader & run."
-        }
+        val message = "Tap to open Ultra Loader"
 
         notificationManager().notify(
             WIFI_NOTIFICATION_ID,

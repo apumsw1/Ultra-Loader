@@ -251,74 +251,25 @@ class WifiNotificationListener : NotificationListenerService() {
         collectBundleValues(extras, texts, extraUrls, depth = 0)
 
         val combinedText = texts.joinToString("\n")
-        val lowerText = combinedText.lowercase(Locale.ROOT)
 
         val textUrls = URL_PATTERN.findAll(combinedText)
             .map {
                 it.value.trimEnd('.', ',', ';', ')', ']', '}', '!', '?')
             }
-            .filter { isValidHttpUrl(it) }
+            .filter { isUsablePortalUrl(it) }
             .toList()
 
-        val urls = (textUrls + extraUrls.filter { isValidHttpUrl(it) })
+        val urls = (textUrls + extraUrls.filter { isUsablePortalUrl(it) })
             .distinct()
-
-        val systemWifiPkg = isWifiSystemPackage(sbn.packageName)
-        val hasWifiKeywords =
-            lowerText.contains("wi-fi") ||
-                lowerText.contains("wifi") ||
-                lowerText.contains("captive") ||
-                lowerText.contains("portal") ||
-                lowerText.contains("network") ||
-                lowerText.contains("connected")
 
         val venueUrlFromCapport = getCaptivePortalUrlFromNetwork(preferVenue = true)
         val userUrlFromCapport = getCaptivePortalUrlFromNetwork(preferVenue = false)
 
-        // Detection Type B: Connected / Tap to view website
-        val isViewWebsiteNotification =
-            lowerText.contains("tap to view website") ||
-                lowerText.contains("view website") ||
-                lowerText.contains("connected / tap to view") ||
-                ((systemWifiPkg || hasWifiKeywords) &&
-                    (lowerText.contains("tap to view") ||
-                        (lowerText.contains("connected") &&
-                            (lowerText.contains("website") ||
-                                lowerText.contains("view") ||
-                                !venueUrlFromCapport.isNullOrBlank()))))
-
-        // Detection Type A: Sign in to Wi-Fi / Captive Portal Login
-        val isLoginPortalNotification =
-            lowerText.contains("sign in to wi-fi") ||
-                lowerText.contains("sign in to wifi") ||
-                lowerText.contains("sign in to network") ||
-                lowerText.contains("sign in required") ||
-                lowerText.contains("wi-fi login") ||
-                lowerText.contains("wifi login") ||
-                lowerText.contains("login details") ||
-                lowerText.contains("captive portal") ||
-                lowerText.contains("network may require") ||
-                lowerText.contains("authorization required") ||
-                ((systemWifiPkg || hasWifiKeywords) &&
-                    (lowerText.contains("sign in") ||
-                        lowerText.contains("log in") ||
-                        lowerText.contains("login") ||
-                        lowerText.contains("portal") ||
-                        lowerText.contains("authenticate")))
-
-        if (!isViewWebsiteNotification && !isLoginPortalNotification && urls.isEmpty()) {
-            return null
-        }
-
-        if (!systemWifiPkg && !hasWifiKeywords && !isViewWebsiteNotification && !isLoginPortalNotification) {
-            return null
-        }
-
-        val detectionType = if (isViewWebsiteNotification && !isLoginPortalNotification) {
-            TYPE_VIEW_WEBSITE
-        } else {
-            TYPE_PORTAL_LOGIN
-        }
+        val detectionType = classifyWifiNotification(
+            pkg = sbn.packageName,
+            combinedText = combinedText,
+            hasCapportVenueUrl = !venueUrlFromCapport.isNullOrBlank()
+        ) ?: return null
 
         val capportUrl = if (detectionType == TYPE_VIEW_WEBSITE) {
             venueUrlFromCapport ?: userUrlFromCapport
@@ -326,7 +277,7 @@ class WifiNotificationListener : NotificationListenerService() {
             userUrlFromCapport ?: venueUrlFromCapport
         }
 
-        val resolvedUrl = urls.lastOrNull() ?: capportUrl
+        val resolvedUrl = urls.firstOrNull() ?: capportUrl
         val eventTime = if (sbn.postTime > 0L) sbn.postTime else System.currentTimeMillis()
 
         notification.contentIntent?.let { ci ->
@@ -352,9 +303,9 @@ class WifiNotificationListener : NotificationListenerService() {
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val editor = prefs.edit()
 
-        if (!resolvedUrl.isNullOrBlank() && isValidHttpUrl(resolvedUrl)) {
+        if (!resolvedUrl.isNullOrBlank() && isUsablePortalUrl(resolvedUrl)) {
             val allDetected = (urls + listOfNotNull(capportUrl))
-                .filter { isValidHttpUrl(it) }
+                .filter { isUsablePortalUrl(it) }
                 .distinct()
             val oldUrls = prefs.getString("url_history", "")
                 .orEmpty()
@@ -392,6 +343,78 @@ class WifiNotificationListener : NotificationListenerService() {
         }
 
         return Pair(resolvedUrl, detectionType)
+    }
+
+    internal fun classifyWifiNotification(
+        pkg: String?,
+        combinedText: String,
+        hasCapportVenueUrl: Boolean
+    ): String? {
+        if (pkg == packageName || pkg == VpnAutomationBridge.VPN_PACKAGE) return null
+
+        val lowerText = combinedText.lowercase(Locale.ROOT)
+        val systemWifiPkg = isWifiSystemPackage(pkg)
+        val hasStrongWifiContext =
+            lowerText.contains("wi-fi") ||
+                lowerText.contains("wifi") ||
+                lowerText.contains("captive") ||
+                lowerText.contains("portal") ||
+                lowerText.contains("tap to view website") ||
+                lowerText.contains("connected / tap to view") ||
+                lowerText.contains("sign in to network") ||
+                lowerText.contains("network may require")
+
+        if (!systemWifiPkg && !hasStrongWifiContext) {
+            return null
+        }
+
+        // Notification Type 2: CONNECTED / TAP TO VIEW WEBSITE
+        val isViewWebsiteNotification =
+            lowerText.contains("tap to view website") ||
+                lowerText.contains("connected / tap to view") ||
+                lowerText.contains("view website") ||
+                ((systemWifiPkg || lowerText.contains("wi-fi") || lowerText.contains("wifi")) &&
+                    (lowerText.contains("tap to view") ||
+                        (lowerText.contains("connected") &&
+                            (lowerText.contains("website") ||
+                                lowerText.contains("view") ||
+                                hasCapportVenueUrl))))
+
+        // Notification Type 1: LOGIN / SIGN IN
+        val isLoginPortalNotification =
+            lowerText.contains("sign in to wi-fi") ||
+                lowerText.contains("sign in to wifi") ||
+                lowerText.contains("sign in to network") ||
+                lowerText.contains("sign in required") ||
+                lowerText.contains("wi-fi login") ||
+                lowerText.contains("wifi login") ||
+                lowerText.contains("login / sign in") ||
+                lowerText.contains("login details") ||
+                lowerText.contains("captive portal") ||
+                lowerText.contains("network may require") ||
+                lowerText.contains("authorization required") ||
+                ((systemWifiPkg || hasStrongWifiContext) &&
+                    (lowerText.contains("sign in") ||
+                        lowerText.contains("log in") ||
+                        lowerText.contains("login") ||
+                        lowerText.contains("authenticate")))
+
+        return when {
+            isViewWebsiteNotification && !isLoginPortalNotification -> TYPE_VIEW_WEBSITE
+            isLoginPortalNotification && !isViewWebsiteNotification -> TYPE_PORTAL_LOGIN
+            isViewWebsiteNotification && lowerText.contains("tap to view website") -> TYPE_VIEW_WEBSITE
+            isLoginPortalNotification -> TYPE_PORTAL_LOGIN
+            isViewWebsiteNotification -> TYPE_VIEW_WEBSITE
+            else -> null
+        }
+    }
+
+    private fun isUsablePortalUrl(value: String): Boolean {
+        if (!isValidHttpUrl(value)) return false
+        val lower = value.lowercase(Locale.ROOT)
+        return !lower.contains("schemas.android.com") &&
+            !lower.contains("www.w3.org") &&
+            !lower.contains("ns.adobe.com")
     }
 
     private fun notifyMonitorService(resolvedUrl: String?, detectionType: String) {
