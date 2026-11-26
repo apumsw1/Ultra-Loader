@@ -101,6 +101,7 @@ private lateinit var notifAccessButton: Button
 private lateinit var vpnAutoAccessButton: Button
 private lateinit var webView: WebView
 private lateinit var webTitle: TextView
+private lateinit var webViewStatusText: TextView
 
 private lateinit var ipDetails: TextView
 private lateinit var licenseDetails: TextView
@@ -161,6 +162,7 @@ private var secondLoginElapsedSeconds = 0L
 private var secondLoginTimerRunning = false
 
 private var autoLoginAttempts = 0
+private var portalLoadRetries = 0
 private var loginVerifyAttempts = 0
 private var logoutDetectAttempts = 0
 private var logoutSearchAttempts = 0
@@ -643,11 +645,45 @@ private fun initializeApplication() {
     requestWifiNotificationAccess()
 
     NetworkStatusManager.captivePortalDetected.observe(this) { detected ->
+        updateWebViewStatusDisplay()
         if (detected && stage == Stage.IDLE) {
-            // Portal detected via LiveData
+            val url = NetworkStatusManager.detectedPortalUrl.value
+            val detType = NetworkStatusManager.latestDetectionType.value
+            handleDetectedPortalLaunch(
+                detectedUrl = url,
+                detectionType = detType,
+                detectedAt = System.currentTimeMillis(),
+                forceIfIdleOrFinished = false
+            )
         }
     }
+    NetworkStatusManager.portalLoginDetected.observe(this) { detected ->
+        updateWebViewStatusDisplay()
+        if (detected && stage == Stage.IDLE) {
+            handleDetectedPortalLaunch(
+                detectedUrl = NetworkStatusManager.detectedPortalUrl.value,
+                detectionType = WifiNotificationListener.TYPE_PORTAL_LOGIN,
+                detectedAt = System.currentTimeMillis(),
+                forceIfIdleOrFinished = false
+            )
+        }
+    }
+    NetworkStatusManager.viewWebsiteDetected.observe(this) { detected ->
+        updateWebViewStatusDisplay()
+        if (detected && stage == Stage.IDLE) {
+            handleDetectedPortalLaunch(
+                detectedUrl = NetworkStatusManager.detectedPortalUrl.value,
+                detectionType = WifiNotificationListener.TYPE_VIEW_WEBSITE,
+                detectedAt = System.currentTimeMillis(),
+                forceIfIdleOrFinished = false
+            )
+        }
+    }
+    NetworkStatusManager.detectedPortalUrl.observe(this) {
+        updateWebViewStatusDisplay()
+    }
     NetworkStatusManager.vpnConnected.observe(this) { vpnActive ->
+        updateWebViewStatusDisplay()
         if (vpnActive) {
             updateInternetStatus()
         }
@@ -688,6 +724,7 @@ private fun initializeApplication() {
     updateActivationStatus()
     updateDeviceDataUsage()
     updateClock()
+    updateWebViewStatusDisplay()
 
     verifyLicenseWhenOnline()
     checkForFlashPopup()
@@ -1157,12 +1194,17 @@ private fun createScreen() {
         isFocusableInTouchMode = true
         isClickable = true
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        setOnTouchListener { v, _ ->
+            v.parent?.requestDisallowInterceptTouchEvent(true)
+            false
+        }
 
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
         settings.loadsImagesAutomatically = true
         settings.javaScriptCanOpenWindowsAutomatically = false
         settings.setSupportMultipleWindows(false)
+        settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
 
         settings.userAgentString = WebSettings.getDefaultUserAgent(this@MainActivity)
             .replace("; wv", "")
@@ -1182,12 +1224,19 @@ private fun createScreen() {
                 view: WebView?,
                 request: WebResourceRequest?
             ): Boolean {
+                val targetUrl = request?.url?.toString().orEmpty()
+                if (request?.isForMainFrame == true &&
+                    targetUrl.isNotBlank() &&
+                    !targetUrl.startsWith("http://", ignoreCase = true) &&
+                    !targetUrl.startsWith("https://", ignoreCase = true)
+                ) {
+                    return true
+                }
                 if (
                     stage == Stage.CHECK_INTERNET &&
                     !netWorkingVerified &&
                     request?.isForMainFrame == true
                 ) {
-                    val targetUrl = request.url?.toString()
                     if (!isValidGoogleCheckUrl(targetUrl)) {
                         handler.removeCallbacks(netCheckPageTimeoutRunnable)
                         scheduleNextNetCheckRefresh(1500L)
@@ -1274,7 +1323,42 @@ private fun createScreen() {
                 when (stage) {
                     Stage.LOGIN -> {
                         handler.removeCallbacks(autoLoginRetryRunnable)
-                        tryAutoLogin()
+                        val isErrorOrBlank = netCheckPageHasError ||
+                            url.isNullOrBlank() ||
+                            url == "about:blank" ||
+                            url.startsWith("chrome-error:", ignoreCase = true)
+                        if (isErrorOrBlank && PortalNetworkHelper.isValidHttpUrl(portalUrl)) {
+                            if (portalLoadRetries < 4) {
+                                portalLoadRetries++
+                                workflowStatus("PORTAL LOAD RETRYING ($portalLoadRetries/4)...")
+                                handler.postDelayed({
+                                    if (stage == Stage.LOGIN && !isFinishing && !isDestroyed) {
+                                        connectivityManager?.let { cm ->
+                                            val boundNet = PortalNetworkHelper.bindToWifiNetwork(
+                                                cm,
+                                                preservedWifiNetwork ?: portalNetwork
+                                            )
+                                            if (boundNet != null) {
+                                                preservedWifiNetwork = boundNet
+                                                portalNetwork = boundNet
+                                            }
+                                        }
+                                        webView.loadUrl(portalUrl)
+                                    }
+                                }, 1400L)
+                            } else {
+                                portalLoadRetries = 0
+                                workflowStatus("RE-DETECTING PORTAL LINK...")
+                                handler.postDelayed({
+                                    if (stage == Stage.LOGIN && !isFinishing && !isDestroyed) {
+                                        discoverPortalUrl()
+                                    }
+                                }, 1500L)
+                            }
+                        } else {
+                            portalLoadRetries = 0
+                            tryAutoLogin()
+                        }
                     }
                     Stage.CHECK_LOGIN -> {
                         handler.removeCallbacks(checkLoginRunnable)
@@ -1343,18 +1427,20 @@ private fun createScreen() {
     content.addView(dashboardColumns, matchWrap())
     content.addView(clockTextView(), matchWrap())
     content.addView(loginPanel, matchWrap())
-    content.addView(webTitle, matchWrap())
 
     val webViewPanel = createPanel()
     webViewPanel.addView(panelHeading("🌐 LIVE PORTAL & AUTOMATION BROWSER"))
+    webViewStatusText = panelText("DETECTION: WAITING | STAGE: IDLE\nURL: NONE")
+    webViewPanel.addView(webViewStatusText)
     webView.layoutParams = LinearLayout.LayoutParams(
         LinearLayout.LayoutParams.MATCH_PARENT,
-        (260 * density).toInt()
+        (280 * density).toInt()
     )
     (webView.parent as? ViewGroup)?.removeView(webView)
     webViewPanel.addView(webView)
     content.addView(webViewPanel, matchWrap())
 
+    content.addView(webTitle, matchWrap())
     content.addView(trafficPanel, matchWrap())
 
     val footer = TextView(this).apply {
@@ -1762,13 +1848,28 @@ private fun statusText(message: String, color: Int) {
         status.text = message  
         status.setTextColor(color)  
     }
+    updateWebViewStatusDisplay(message)
 }
 
-private fun workflowStatus(@Suppress("UNUSED_PARAMETER") logDetail: String) {
+private fun workflowStatus(logDetail: String) {
+    val label = if (logDetail.startsWith("●")) logDetail else "● $logDetail"
     if (::status.isInitialized && !netWorkingVerified) {
-        status.text = "● WAIT TO CONNECT"
+        status.text = label
         status.setTextColor(cyan)
     }
+    updateWebViewStatusDisplay(logDetail)
+}
+
+private fun updateWebViewStatusDisplay(stageDetail: String? = null) {
+    if (!::webViewStatusText.isInitialized) return
+    val d1 = if (NetworkStatusManager.portalLoginDetected.value == true) "LOGIN:YES" else "LOGIN:NO"
+    val d2 = if (NetworkStatusManager.viewWebsiteDetected.value == true) "WEBSITE:YES" else "WEBSITE:NO"
+    val vpn = if (isVpnConnected() || NetworkStatusManager.vpnConnected.value == true) "VPN:ON" else "VPN:OFF"
+    val activeUrl = portalUrl.ifBlank { NetworkStatusManager.detectedPortalUrl.value.orEmpty() }
+        .ifBlank { "WAITING FOR PORTAL URL" }
+    val stepText = stageDetail?.removePrefix("● ")?.trim()
+        ?: stage.name
+    webViewStatusText.text = "$d1 • $d2 • $vpn\nSTAGE: $stepText\nURL: $activeUrl"
 }
 
 private fun toast(message: String) {  
@@ -2045,10 +2146,16 @@ private fun checkExistingWifiPortalOnStartup() {
         val sessionCaptured = WifiNotificationListener.getSessionCapturedPortal(this)
         val capPortalUrl = PortalNetworkHelper.getCaptivePortalUrl(cm, wifi, preferVenue = false)
         val capVenueUrl = PortalNetworkHelper.getCaptivePortalUrl(cm, wifi, preferVenue = true)
+        val probedPortalUrl = if (sessionCaptured == null && capVenueUrl == null && capPortalUrl == null) {
+            PortalNetworkHelper.probeCaptivePortalUrl(cm, wifi)
+        } else {
+            null
+        }
 
         val resolvedUrl = sessionCaptured?.first
             ?: capVenueUrl
             ?: capPortalUrl
+            ?: probedPortalUrl
 
         val resolvedType = sessionCaptured?.second
             ?: if (!capVenueUrl.isNullOrBlank()) {
@@ -2059,6 +2166,7 @@ private fun checkExistingWifiPortalOnStartup() {
 
         if (!resolvedUrl.isNullOrBlank() && PortalNetworkHelper.isValidHttpUrl(resolvedUrl)) {
             WifiNotificationListener.markSessionCaptured(this, resolvedUrl, resolvedType)
+            NetworkStatusManager.updateDetectionType(resolvedType, resolvedUrl)
             runOnUiThread {
                 if (!isFinishing && !isDestroyed && stage == Stage.IDLE) {
                     handleDetectedPortalLaunch(
@@ -2118,6 +2226,7 @@ private fun startPortalProcess(userInitiated: Boolean = false) {
     secondLoginStageStatus.text = "LOGIN STAGE: WAITING"
 
     autoLoginAttempts = 0
+    portalLoadRetries = 0
     loginVerifyAttempts = 0
     logoutDetectAttempts = 0
     logoutSearchAttempts = 0
@@ -2201,7 +2310,7 @@ private fun discoverPortalUrl() {
             }
         }
 
-        // 2. Check OS CaptivePortalData for this Wi-Fi network (Android 11+ Detection A & Detection B).
+        // 2. Check OS CaptivePortalData and LiveData for this Wi-Fi network (Android 11+ Detection A & Detection B).
         if (found == null && network != null) {
             val pendingType = activeDetectionType ?: prefs.getString("pending_detection_type", null)
             val preferVenue = pendingType == WifiNotificationListener.TYPE_VIEW_WEBSITE
@@ -2211,12 +2320,34 @@ private fun discoverPortalUrl() {
             }
         }
 
+        if (found == null) {
+            val liveUrl = NetworkStatusManager.detectedPortalUrl.value
+            if (PortalNetworkHelper.isValidHttpUrl(liveUrl)) {
+                found = liveUrl
+                if (activeDetectionType.isNullOrBlank()) {
+                    activeDetectionType = NetworkStatusManager.latestDetectionType.value
+                }
+            }
+        }
+
+        // 3. Probe Wi-Fi network directly for actual captive portal HTTP redirect (302 Location / meta-refresh).
+        if (found == null && wifi != null) {
+            val probedUrl = PortalNetworkHelper.probeCaptivePortalUrl(manager, wifi)
+            if (PortalNetworkHelper.isValidHttpUrl(probedUrl)) {
+                found = probedUrl
+                if (activeDetectionType.isNullOrBlank()) {
+                    activeDetectionType = WifiNotificationListener.TYPE_PORTAL_LOGIN
+                }
+            }
+        }
+
         if (!found.isNullOrBlank() && PortalNetworkHelper.isValidHttpUrl(found)) {
             activeSessionUrl = found
             val detType = activeDetectionType
                 ?: prefs.getString("pending_detection_type", null)
                 ?: WifiNotificationListener.TYPE_PORTAL_LOGIN
             WifiNotificationListener.markSessionCaptured(this, found, detType)
+            NetworkStatusManager.updateDetectionType(detType, found)
             saveCapturedUrlForCurrentNetwork(found)
         }
 
@@ -2232,16 +2363,15 @@ private fun discoverPortalUrl() {
             if (found.isNullOrBlank()) {
                 updateNotificationAccessButton()
                 if (!isNotificationAccessEnabled()) {
-                    stage = Stage.IDLE
-                    statusText("● ENABLE WIFI NOTIFICATION ACCESS", red)
+                    workflowStatus("WAITING FOR PORTAL (ENABLE NOTIF ACCESS)")
                 } else {
                     workflowStatus("WAITING FOR PORTAL LINK...")
-                    handler.postDelayed({
-                        if (stage == Stage.LOGIN && !isFinishing && !isDestroyed) {
-                            discoverPortalUrl()
-                        }
-                    }, 2000)
                 }
+                handler.postDelayed({
+                    if (stage == Stage.LOGIN && !isFinishing && !isDestroyed) {
+                        discoverPortalUrl()
+                    }
+                }, 2000)
                 return@runOnUiThread
             }
 
@@ -2254,6 +2384,7 @@ private fun discoverPortalUrl() {
             stepNotificationUrlDetected = true
             stepOriginalPortalOpened = false
             webViewPageProgress = 0
+            portalLoadRetries = 0
             portalUrl = found
 
             workflowStatus("ORIGINAL PORTAL URL DETECTED")
@@ -2270,7 +2401,15 @@ private fun tryAutoLogin() {
     handler.removeCallbacks(autoLoginRetryRunnable)
     autoLoginAttempts++
 
-    val credentials = readCredentials()
+    var credentials = readCredentials()
+    if (credentials == null && ::userInput.isInitialized && ::passwordInput.isInitialized) {
+        val typedUser = userInput.text.toString().trim()
+        val typedPass = passwordInput.text.toString()
+        if (typedUser.isNotBlank() && typedPass.isNotBlank()) {
+            saveCredentials(typedUser, typedPass)
+            credentials = Pair(typedUser, typedPass)
+        }
+    }
     val hasCredentials = credentials != null
     val user = if (credentials != null) {
         Base64.encodeToString(
@@ -2359,6 +2498,7 @@ private fun tryAutoLogin() {
                     workflowStatus("INSPECTING PORTAL PAGE... $autoLoginAttempts/6")
                     handler.postDelayed(autoLoginRetryRunnable, 450)
                 } else {
+                    workflowStatus("CHECKING PORTAL STATUS / LOGOUT...")
                     stage = Stage.DETECT_LOGOUT
                     logoutDetectAttempts = 0
                     logoutDetectRunning = false
@@ -3514,7 +3654,10 @@ private fun handleDetectedPortalLaunch(
         if (normalizedUrl != null && normalizedUrl == activeSessionUrl && stage == Stage.IDLE && completedSessionUrl == normalizedUrl) {
             return
         }
-        if (normalizedUrl == null && System.currentTimeMillis() - lastAutoTriggerAt < 30_000L) {
+        if (normalizedUrl == null &&
+            detectionType == activeDetectionType &&
+            System.currentTimeMillis() - lastAutoTriggerAt < 30_000L
+        ) {
             return
         }
         if (detectedAt > 0L && detectedAt <= lastAutoTriggerAt) {

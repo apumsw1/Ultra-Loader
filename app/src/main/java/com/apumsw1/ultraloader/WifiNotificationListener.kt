@@ -292,9 +292,9 @@ class WifiNotificationListener : NotificationListenerService() {
         }
 
         val alreadyCapturedUrl = sessionCapturedUrl
-        if (!alreadyCapturedUrl.isNullOrBlank()) {
-            // URL already captured for this Wi-Fi session.
-            // Ignore duplicate notification updates carrying the same URL or no URL.
+        val alreadyCapturedType = sessionCapturedType
+        if (!alreadyCapturedUrl.isNullOrBlank() && alreadyCapturedType == detectionType) {
+            // Same detection type and URL already captured for this Wi-Fi session.
             if (resolvedUrl.isNullOrBlank() || resolvedUrl.equals(alreadyCapturedUrl, ignoreCase = false)) {
                 return null
             }
@@ -326,6 +326,9 @@ class WifiNotificationListener : NotificationListenerService() {
                 .putString("latest_url", resolvedUrl)
                 .putLong("latest_url_time", System.currentTimeMillis())
                 .putString("url_history", history.joinToString("\n"))
+        } else {
+            sessionCapturedType = detectionType
+            editor.putString("session_captured_type", detectionType)
         }
 
         editor
@@ -337,6 +340,8 @@ class WifiNotificationListener : NotificationListenerService() {
             .putString("pending_detection_type", detectionType)
             .putLong("latest_notification_time", eventTime)
             .apply()
+
+        NetworkStatusManager.updateDetectionType(detectionType, resolvedUrl)
 
         if (notifyMonitorService) {
             notifyMonitorService(resolvedUrl, detectionType)
@@ -361,8 +366,12 @@ class WifiNotificationListener : NotificationListenerService() {
                 lowerText.contains("portal") ||
                 lowerText.contains("tap to view website") ||
                 lowerText.contains("connected / tap to view") ||
+                lowerText.contains("tap to sign in") ||
                 lowerText.contains("sign in to network") ||
-                lowerText.contains("network may require")
+                lowerText.contains("sign in required") ||
+                lowerText.contains("network may require") ||
+                lowerText.contains("internet may not be available") ||
+                lowerText.contains("limited connection")
 
         if (!systemWifiPkg && !hasStrongWifiContext) {
             return null

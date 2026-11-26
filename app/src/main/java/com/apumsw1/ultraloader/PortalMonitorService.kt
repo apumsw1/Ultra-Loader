@@ -405,9 +405,6 @@ class PortalMonitorService : Service() {
         val (capPortalUrl, capVenueUrl) =
             PortalNetworkHelper.getCaptivePortalUrls(connectivityManager, network)
 
-        val isCaptive = captive || captiveNetworks.isNotEmpty()
-        NetworkStatusManager.updateCaptivePortalState(isCaptive, capPortalUrl ?: capVenueUrl ?: lastDetectedUrl)
-
         if (captive) {
             val newlyCaptive = captiveNetworks.add(network)
             websiteNetworks.remove(network)
@@ -416,6 +413,10 @@ class PortalMonitorService : Service() {
             if (!resolved.isNullOrBlank()) {
                 saveLinkIfFresh(resolved, WifiNotificationListener.TYPE_PORTAL_LOGIN)
             }
+            NetworkStatusManager.updateDetectionType(
+                WifiNotificationListener.TYPE_PORTAL_LOGIN,
+                resolved ?: lastDetectedUrl
+            )
             if (newlyCaptive || !resolved.isNullOrBlank()) {
                 broadcastPortalOnce(resolved, WifiNotificationListener.TYPE_PORTAL_LOGIN)
             }
@@ -431,6 +432,10 @@ class PortalMonitorService : Service() {
             if (hasVenueWebsite) {
                 val newlyWebsite = websiteNetworks.add(network)
                 saveLinkIfFresh(capVenueUrl!!, WifiNotificationListener.TYPE_VIEW_WEBSITE)
+                NetworkStatusManager.updateDetectionType(
+                    WifiNotificationListener.TYPE_VIEW_WEBSITE,
+                    capVenueUrl
+                )
                 if (newlyWebsite || sessionBroadcastSignature == null) {
                     broadcastPortalOnce(capVenueUrl, WifiNotificationListener.TYPE_VIEW_WEBSITE)
                 }
@@ -441,6 +446,11 @@ class PortalMonitorService : Service() {
                 )
             } else {
                 websiteNetworks.remove(network)
+                val stillDetected = captiveNetworks.isNotEmpty() || websiteNetworks.isNotEmpty() ||
+                    lastDetectionType != null
+                if (!stillDetected) {
+                    NetworkStatusManager.updateCaptivePortalState(false, null)
+                }
             }
 
             if (validated) {
@@ -475,10 +485,15 @@ class PortalMonitorService : Service() {
         val normalizedUrl = url?.trim().orEmpty()
         val sig = "$type|$normalizedUrl"
 
-        // Do not rebroadcast if this exact URL or a valid URL for this type was already captured in this Wi-Fi session.
+        // Do not rebroadcast identical type+URL, or overwrite a non-empty URL of the SAME type with empty.
         if (sessionBroadcastSignature == sig) return
-        if (sessionBroadcastSignature != null && normalizedUrl.isEmpty()) return
-        if (sessionBroadcastSignature?.endsWith("|$normalizedUrl") == true && normalizedUrl.isNotEmpty()) return
+        val prevParts = sessionBroadcastSignature?.split("|", limit = 2)
+        if (prevParts != null && prevParts.size == 2) {
+            val prevType = prevParts[0]
+            val prevUrl = prevParts[1]
+            if (prevType == type && prevUrl.isNotEmpty() && normalizedUrl.isEmpty()) return
+            if (prevType == type && prevUrl == normalizedUrl && normalizedUrl.isNotEmpty()) return
+        }
 
         sessionBroadcastSignature = sig
         try {
@@ -506,6 +521,7 @@ class PortalMonitorService : Service() {
             lastDetectionType = null
             sessionBroadcastSignature = null
             WifiNotificationListener.clearSessionState(this)
+            NetworkStatusManager.updateCaptivePortalState(false, null)
             clearWifiNotification()
         }
 

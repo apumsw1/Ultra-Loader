@@ -300,6 +300,115 @@ object PortalNetworkHelper {
         }
         return null
     }
+
+    fun probeCaptivePortalUrl(
+        manager: ConnectivityManager,
+        network: Network?
+    ): String? {
+        val target = if (isWifiNetworkActive(manager, network)) {
+            network
+        } else {
+            findWifiNetwork(manager)
+        } ?: return null
+
+        val probeUrls = listOf(
+            "http://connectivitycheck.gstatic.com/generate_204",
+            "http://clients3.google.com/generate_204",
+            "http://captive.apple.com/hotspot-detect.html",
+            "http://detectportal.firefox.com/canonical.html",
+            "http://www.msftconnecttest.com/connecttest.txt"
+        )
+
+        for (probeUrl in probeUrls) {
+            var conn: java.net.HttpURLConnection? = null
+            try {
+                val url = java.net.URL(probeUrl)
+                conn = target.openConnection(url) as? java.net.HttpURLConnection ?: continue
+                conn.instanceFollowRedirects = false
+                conn.useCaches = false
+                conn.connectTimeout = 4000
+                conn.readTimeout = 4000
+                conn.requestMethod = "GET"
+
+                val code = conn.responseCode
+                if (code in 300..399) {
+                    val location = conn.getHeaderField("Location")?.trim()
+                    if (!location.isNullOrBlank()) {
+                        val resolved = try {
+                            java.net.URL(url, location).toString()
+                        } catch (_: Exception) {
+                            location
+                        }
+                        if (isValidHttpUrl(resolved)) {
+                            return resolved
+                        }
+                    }
+                } else if (code == 200) {
+                    val body = try {
+                        conn.inputStream.bufferedReader().use { reader ->
+                            val buf = CharArray(16384)
+                            val n = reader.read(buf)
+                            if (n > 0) String(buf, 0, n) else ""
+                        }
+                    } catch (_: Exception) {
+                        ""
+                    }
+                    val metaMatch = Regex(
+                        """<meta[^>]+http-equiv\s*=\s*["']?refresh["']?[^>]*content\s*=\s*["'][^"']*url\s*=\s*([^"'\s>]+)["']?""",
+                        RegexOption.IGNORE_CASE
+                    ).find(body)?.groupValues?.getOrNull(1)?.trim()
+                    if (!metaMatch.isNullOrBlank()) {
+                        val resolved = try {
+                            java.net.URL(url, metaMatch).toString()
+                        } catch (_: Exception) {
+                            metaMatch
+                        }
+                        if (isValidHttpUrl(resolved)) return resolved
+                    }
+
+                    val jsMatch = Regex(
+                        """(?:(?:window|top|self|document)\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']|(?:(?:window|top|self|document)\.)?location\.(?:replace|assign)\(\s*["']([^"']+)["']\s*\)""",
+                        RegexOption.IGNORE_CASE
+                    ).find(body)
+                    val jsTarget = (jsMatch?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+                        ?: jsMatch?.groupValues?.getOrNull(2))?.trim()
+                    if (!jsTarget.isNullOrBlank()) {
+                        val resolved = try {
+                            java.net.URL(url, jsTarget).toString()
+                        } catch (_: Exception) {
+                            jsTarget
+                        }
+                        if (isValidHttpUrl(resolved)) return resolved
+                    }
+
+                    val lower = body.lowercase(Locale.ROOT)
+                    val isKnownSuccess =
+                        (probeUrl.contains("apple.com") && lower.contains("<title>success</title>")) ||
+                            (probeUrl.contains("firefox.com") && lower.contains("detectportal.firefox.com/success.txt")) ||
+                            (probeUrl.contains("msftconnecttest.com") && lower.trim() == "microsoft connect test")
+                    if (!isKnownSuccess && (
+                        lower.contains("<form") ||
+                            lower.contains("type=\"password\"") ||
+                            lower.contains("type='password'") ||
+                            lower.contains("login") ||
+                            lower.contains("sign in") ||
+                            lower.contains("portal") ||
+                            lower.contains("wifi") ||
+                            lower.contains("wi-fi") ||
+                            lower.contains("accept") ||
+                            lower.contains("continue")
+                        )
+                    ) {
+                        return probeUrl
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                conn?.disconnect()
+            }
+        }
+        return null
+    }
 }
 
 object PortalJsScripts {
@@ -391,12 +500,25 @@ object PortalJsScripts {
           var dataHref = el.getAttribute ? (el.getAttribute('data-href') || el.getAttribute('data-url') || '') : '';
           var formAction = el.getAttribute ? (el.getAttribute('formaction') || '') : '';
 
-          var textVal = (rawText + ' ' + (el.title || '') + ' ' + altAttr + ' ' + ariaAttr).toLowerCase();
+          var imgHints = '';
+          try {
+            if (el.querySelectorAll) {
+              var imgs = el.querySelectorAll('img,svg');
+              for (var im = 0; im < imgs.length; im++) {
+                imgHints += ' ' + (imgs[im].getAttribute('alt') || '') + ' ' +
+                  (imgs[im].getAttribute('title') || '') + ' ' +
+                  (imgs[im].getAttribute('aria-label') || '') + ' ' +
+                  (imgs[im].getAttribute('src') || '');
+              }
+            }
+          } catch (e) {}
+
+          var textVal = (rawText + ' ' + (el.title || '') + ' ' + altAttr + ' ' + ariaAttr + ' ' + imgHints).toLowerCase();
           var attrVal = ((el.id || '') + ' ' + (el.name || '') + ' ' + getClassStr(el) + ' ' +
             hrefAttr + ' ' + onclickAttr + ' ' + dataAction + ' ' + dataHref + ' ' + formAction).toLowerCase();
           var combined = textVal + ' ' + attrVal;
 
-          var logoutRx = /\b(sign\s*[-_]?\s*out|log\s*[-_]?\s*out|log\s*[-_]?\s*off|disconnect)\b|signout|logout|logoff/i;
+          var logoutRx = /\b(sign\s*[-_]?\s*out|log\s*[-_]?\s*out|log\s*[-_]?\s*off|disconnect|end\s*session|close\s*session)\b|signout|logout|logoff/i;
           if (!logoutRx.test(combined)) return false;
 
           var loginOnlyRx = /\b(log\s*in|sign\s*in|sign\s*up|register)\b/i;
@@ -642,6 +764,23 @@ object PortalJsScripts {
                   }) || null;
                 }
                 if (nav && ${if (allowClickNav) "true" else "false"}) {
+                  var navDoc = nav.ownerDocument || document;
+                  Array.from(navDoc.querySelectorAll('input[type=checkbox]')).forEach(function(c) {
+                    if (c.checked || c.disabled || !isElemVisible(c)) return;
+                    var ctx = getCheckboxContext(navDoc, c);
+                    var isOptionalRemember = /remember|keep\s*me|stay\s*signed|show\s*pass|save\s*login/.test(ctx);
+                    var isConsent = /terms?|conditions?|agreement|accept|policy|agree|consent|confirm|rule|acceptable/.test(ctx) ||
+                      c.required ||
+                      c.getAttribute('aria-required') === 'true';
+                    if (isConsent && !isOptionalRemember) {
+                      try { c.click(); } catch (e) {}
+                      if (!c.checked) {
+                        c.checked = true;
+                        try { c.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+                        try { c.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+                      }
+                    }
+                  });
                   nav.click();
                   return 'NAVIGATED';
                 }
