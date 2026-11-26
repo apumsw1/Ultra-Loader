@@ -79,6 +79,8 @@ class PortalMonitorService : Service() {
             getSystemService(Context.CONNECTIVITY_SERVICE)
                 as ConnectivityManager
 
+        NetworkStatusManager.updateVpnConnectionState(PortalNetworkHelper.isVpnConnected(connectivityManager))
+
         startForeground(
             NOTIFICATION_ID,
             buildNotification(
@@ -242,6 +244,7 @@ class PortalMonitorService : Service() {
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                NetworkStatusManager.updateVpnConnectionState(true)
                 handleConfirmedVpnWhileArmed()
             }
 
@@ -249,9 +252,16 @@ class PortalMonitorService : Service() {
                 network: Network,
                 capabilities: NetworkCapabilities
             ) {
-                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                val isVpn = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                NetworkStatusManager.updateVpnConnectionState(isVpn)
+                if (isVpn) {
                     handleConfirmedVpnWhileArmed()
                 }
+            }
+
+            override fun onLost(network: Network) {
+                val connected = PortalNetworkHelper.isVpnConnected(connectivityManager)
+                NetworkStatusManager.updateVpnConnectionState(connected)
             }
         }
 
@@ -259,6 +269,7 @@ class PortalMonitorService : Service() {
             connectivityManager.registerNetworkCallback(request, callback)
             vpnCallback = callback
             vpnCallbackRegistered = true
+            NetworkStatusManager.updateVpnConnectionState(PortalNetworkHelper.isVpnConnected(connectivityManager))
         } catch (_: Exception) {
             vpnCallbackRegistered = false
         }
@@ -393,6 +404,9 @@ class PortalMonitorService : Service() {
 
         val (capPortalUrl, capVenueUrl) =
             PortalNetworkHelper.getCaptivePortalUrls(connectivityManager, network)
+
+        val isCaptive = captive || captiveNetworks.isNotEmpty()
+        NetworkStatusManager.updateCaptivePortalState(isCaptive, capPortalUrl ?: capVenueUrl ?: lastDetectedUrl)
 
         if (captive) {
             val newlyCaptive = captiveNetworks.add(network)

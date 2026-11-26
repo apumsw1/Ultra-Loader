@@ -18,6 +18,7 @@ import android.net.TrafficStats
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -41,7 +42,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val UPDATE_API =
@@ -637,6 +638,17 @@ private fun initializeApplication() {
     requestNotificationPermission()
     startMonitorService()
     requestWifiNotificationAccess()
+
+    NetworkStatusManager.captivePortalDetected.observe(this) { detected ->
+        if (detected && stage == Stage.IDLE) {
+            // Portal detected via LiveData
+        }
+    }
+    NetworkStatusManager.vpnConnected.observe(this) { vpnActive ->
+        if (vpnActive) {
+            updateInternetStatus()
+        }
+    }
 
     val incomingUrl = extractIncomingPortalUrl(intent)
     if (!incomingUrl.isNullOrBlank()) {
@@ -3694,13 +3706,13 @@ private inner class GlobeView(context: Context) : View(context) {
     private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val landFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = Color.rgb(42, 196, 114)
+        color = Color.rgb(68, 118, 82)
     }
     private val landStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 1.6f
         strokeJoin = Paint.Join.ROUND
-        color = Color.rgb(128, 250, 178)
+        color = Color.rgb(140, 225, 170)
     }
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -3913,13 +3925,13 @@ private inner class GlobeView(context: Context) : View(context) {
         // Earth Ocean Sphere
         oceanPaint.style = Paint.Style.FILL
         oceanPaint.shader = RadialGradient(
-            cx - radius * 0.32f,
-            cy - radius * 0.32f,
-            radius * 1.45f,
+            cx - radius * 0.35f,
+            cy - radius * 0.35f,
+            radius * 1.5f,
             intArrayOf(
-                Color.rgb(52, 175, 245),
-                Color.rgb(16, 102, 192),
-                Color.rgb(5, 34, 84)
+                Color.rgb(25, 115, 205),
+                Color.rgb(10, 52, 120),
+                Color.rgb(2, 14, 42)
             ),
             null,
             Shader.TileMode.CLAMP
@@ -4049,7 +4061,7 @@ private inner class GlobeView(context: Context) : View(context) {
         val vpnNow = isVpnConnected() || vpnActive
         if (hasLocation) {
             val (px, py, pz) = projectPoint(locationLon, locationLat, viewLon)
-            val pinColor = if (vpnNow) green else Color.rgb(255, 80, 95)
+            val pinColor = Color.rgb(255, 45, 65)
 
             if (pz >= 0f) {
                 val mx = cx + px * radius
