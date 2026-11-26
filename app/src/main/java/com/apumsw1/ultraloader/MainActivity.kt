@@ -95,6 +95,9 @@ private val handler = Handler(Looper.getMainLooper())
 private val executor = Executors.newSingleThreadExecutor()
 
 private lateinit var root: LinearLayout
+private lateinit var routerPanel: LinearLayout
+private lateinit var routerSsidText: TextView
+private lateinit var routerStatusText: TextView
 private lateinit var status: TextView
 private lateinit var internetStatus: TextView
 private lateinit var activationStatus: TextView
@@ -102,6 +105,9 @@ private lateinit var userInput: EditText
 private lateinit var passwordInput: EditText
 private lateinit var notifAccessButton: Button
 private lateinit var vpnAutoAccessButton: Button
+private lateinit var saveLoginButton: Button
+private lateinit var defaultAppButton: Button
+private lateinit var startLoaderButton: Button
 private lateinit var webView: WebView
 private lateinit var webTitle: TextView
 private lateinit var webViewStatusText: TextView
@@ -144,6 +150,7 @@ private var appInitialized = false
 private var isActivityInForeground = false
 private var vpnConnectedConfirmed = false
 private var startupPortalChecked = false
+private var openedDefaultAppSettings = false
 
 private var stepNotificationUrlDetected = false
 private var stepOriginalPortalOpened = false
@@ -240,6 +247,8 @@ private var networkCallbackRegistered = false
 private var wifiCallbackRegistered = false
 private var vpnCallbackRegistered = false
 private var wifiPortalReceiverRegistered = false
+private var wifiStateReceiverRegistered = false
+private var lastWifiCapabilities: NetworkCapabilities? = null
 private var lastAutoTriggerAt = 0L
 private var autoLoginLinkClicks = 0
 private var lastLicenseNetworkState = false
@@ -256,65 +265,98 @@ private val wifiPortalReceiver = object : BroadcastReceiver() {
     }
 }
 
-private val wifiNetworkCallback =
-    object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) {
-            val cm = connectivityManager ?: return
-            val caps = cm.getNetworkCapabilities(network)
-            if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
-                !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
-            ) {
-                handler.post {
-                    if (preservedWifiNetwork != null && preservedWifiNetwork != network) {
-                        autoLaunchConsumedForWifiSession = false
-                    }
-                    preservedWifiNetwork = network
-                    if (portalNetwork == null) {
-                        portalNetwork = network
-                    }
-                }
-            }
+private val wifiStateReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context?, intent: Intent?) {
+        handler.post {
+            lastWifiCapabilities = null
+            updateRouterInfo()
         }
+    }
+}
 
-        override fun onCapabilitiesChanged(
-            network: Network,
-            capabilities: NetworkCapabilities
-        ) {
-            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
-                !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
-            ) {
-                handler.post {
-                    preservedWifiNetwork = network
-                    if (portalNetwork == null) {
-                        portalNetwork = network
-                    }
-                }
+private fun handleWifiAvailable(network: Network) {
+    val cm = connectivityManager ?: return
+    val caps = cm.getNetworkCapabilities(network)
+    if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
+        !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+    ) {
+        handler.post {
+            val isNewNetwork = preservedWifiNetwork != null && preservedWifiNetwork != network
+            if (isNewNetwork) {
+                autoLaunchConsumedForWifiSession = false
             }
+            preservedWifiNetwork = network
+            if (portalNetwork == null) {
+                portalNetwork = network
+            }
+            lastWifiCapabilities = caps
+            updateRouterInfo(caps)
         }
+    }
+}
 
-        override fun onLost(network: Network) {
-            handler.post {
-                val cm = connectivityManager ?: return@post
-                val replacement = PortalNetworkHelper.findWifiNetwork(cm)
-                if (replacement != null) {
-                    if (preservedWifiNetwork != replacement) {
-                        autoLaunchConsumedForWifiSession = false
-                    }
-                    preservedWifiNetwork = replacement
-                    if (portalNetwork == network) {
-                        portalNetwork = replacement
-                    }
-                } else {
-                    preservedWifiNetwork = null
-                    portalNetwork = null
-                    activeSessionUrl = null
-                    activeDetectionType = null
-                    completedSessionUrl = null
-                    autoLaunchConsumedForWifiSession = false
-                    detectedLogoutControl = null
-                    clearPersistedLogoutControl()
-                }
+private fun handleWifiCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+    if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+        !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+    ) {
+        handler.post {
+            preservedWifiNetwork = network
+            if (portalNetwork == null) {
+                portalNetwork = network
             }
+            lastWifiCapabilities = capabilities
+            updateRouterInfo(capabilities)
+        }
+    }
+}
+
+private fun handleWifiLost(network: Network) {
+    handler.post {
+        lastWifiCapabilities = null
+        val cm = connectivityManager ?: return@post
+        val replacement = PortalNetworkHelper.findWifiNetwork(cm)
+        if (replacement != null) {
+            if (preservedWifiNetwork != replacement) {
+                autoLaunchConsumedForWifiSession = false
+            }
+            preservedWifiNetwork = replacement
+            if (portalNetwork == network) {
+                portalNetwork = replacement
+            }
+        } else {
+            preservedWifiNetwork = null
+            portalNetwork = null
+            activeSessionUrl = null
+            activeDetectionType = null
+            completedSessionUrl = null
+            autoLaunchConsumedForWifiSession = false
+            detectedLogoutControl = null
+            clearPersistedLogoutControl()
+        }
+        updateRouterInfo()
+    }
+}
+
+private val wifiNetworkCallback: ConnectivityManager.NetworkCallback =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
+            override fun onAvailable(network: Network) = handleWifiAvailable(network)
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) =
+                handleWifiCapabilitiesChanged(network, capabilities)
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: android.net.LinkProperties) {
+                handler.post { updateRouterInfo() }
+            }
+            override fun onLost(network: Network) = handleWifiLost(network)
+        }
+    } else {
+        object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = handleWifiAvailable(network)
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) =
+                handleWifiCapabilitiesChanged(network, capabilities)
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: android.net.LinkProperties) {
+                handler.post { updateRouterInfo() }
+            }
+            override fun onLost(network: Network) = handleWifiLost(network)
         }
     }
 
@@ -388,6 +430,7 @@ private val updater = object : Runnable {
     override fun run() {
         if (!appInitialized || isFinishing || isDestroyed) return
 
+        updateRouterInfo()
         updateDeviceDataUsage()
         updateActivationStatus()
         updateClock()
@@ -431,9 +474,10 @@ override fun onCreate(savedInstanceState: Bundle?) {
         restoreWorkflowInstanceState(savedInstanceState)
     }
 
+    val hasPortalLaunchIntent = hasIncomingPortalLaunchIntent(intent)
     window.decorView.post {
         if (isFinishing || isDestroyed) return@post
-        if (pendingWebViewState != null || stage != Stage.IDLE) {
+        if (pendingWebViewState != null || stage != Stage.IDLE || hasPortalLaunchIntent) {
             ActivationManager.requireActivation(this) {
                 initializeApplication()
             }
@@ -651,17 +695,19 @@ private fun initializeApplication() {
 
     registerLicenseNetworkCallback()
     registerWifiPortalReceiver()
+    registerWifiStateReceiver()
     restorePersistedLogoutControl()
 
     handler.post(updater)
     handler.post(globeUpdater)
 
-    requestNotificationPermission()
+    requestStartupPermissions()
     startMonitorService()
     requestWifiNotificationAccess()
 
     NetworkStatusManager.captivePortalDetected.observe(this) { detected ->
         updateWebViewStatusDisplay()
+        updateRouterInfo()
         if (detected && stage == Stage.IDLE) {
             val url = NetworkStatusManager.detectedPortalUrl.value
             val detType = NetworkStatusManager.latestDetectionType.value
@@ -705,36 +751,12 @@ private fun initializeApplication() {
         }
     }
 
-    val incomingUrl = extractIncomingPortalUrl(intent)
-    if (!incomingUrl.isNullOrBlank()) {
-        saveCapturedUrlForCurrentNetwork(incomingUrl)
-        WifiNotificationListener.markSessionCaptured(
-            this,
-            incomingUrl,
-            WifiNotificationListener.TYPE_VIEW_WEBSITE
-        )
-        intent?.action = null
-        intent?.data = null
-        handler.post {
-            handleDetectedPortalLaunch(
-                incomingUrl,
-                WifiNotificationListener.TYPE_VIEW_WEBSITE,
-                System.currentTimeMillis(),
-                forceIfIdleOrFinished = true
-            )
-        }
-    } else if (intent?.action == ACTION_OPEN_PORTAL) {
-        val detectedUrl = intent?.getStringExtra("detected_url")
-        val detectionType = intent?.getStringExtra("detection_type")
-        val detectedAt = intent?.getLongExtra("detected_at", System.currentTimeMillis()) ?: System.currentTimeMillis()
-        intent?.action = null
-        handler.post {
-            handleDetectedPortalLaunch(detectedUrl, detectionType, detectedAt, forceIfIdleOrFinished = true)
-        }
-    } else if (stage == Stage.IDLE) {
+    val handledIncoming = handleIncomingLaunchIntent(intent)
+    if (!handledIncoming && stage == Stage.IDLE) {
         checkExistingWifiPortalOnStartup()
     }
 
+    updateRouterInfo()
     updateIpDetails()
     updateInternetStatus()
     updateActivationStatus()
@@ -975,22 +997,24 @@ private fun verifyLicenseWhenOnline() {
     }  
 }  
 
-private fun createScreen() {  
-    root = LinearLayout(this).apply {  
-        orientation = LinearLayout.VERTICAL  
-        setPadding(12, 8, 12, 8)  
-        background = GradientDrawable(  
-            GradientDrawable.Orientation.TL_BR,  
-            intArrayOf(  
-                Color.rgb(3, 8, 22),  
-                Color.rgb(5, 20, 38),  
-                Color.rgb(2, 8, 20)  
-            )  
-        )  
-    }  
+private fun createScreen() {
+    val density = resources.displayMetrics.density
+    fun dp(v: Float): Int = (v * density).toInt().coerceAtLeast(1)
+    val screenHeightDp = (resources.displayMetrics.heightPixels / density.coerceAtLeast(1f))
+    val radarHeightDp = when {
+        screenHeightDp < 700f -> 56f
+        screenHeightDp < 800f -> 66f
+        else -> 80f
+    }
+    val globeHeightDp = when {
+        screenHeightDp < 700f -> 76f
+        screenHeightDp < 800f -> 88f
+        else -> 104f
+    }
 
-    val scroll = ScrollView(this).apply {  
-        isFillViewport = true  
+    root = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(10f), dp(4f), dp(10f), dp(4f))
         background = GradientDrawable(
             GradientDrawable.Orientation.TL_BR,
             intArrayOf(
@@ -999,41 +1023,103 @@ private fun createScreen() {
                 Color.rgb(2, 8, 20)
             )
         )
-    }  
+    }
 
-    val content = LinearLayout(this).apply {  
-        orientation = LinearLayout.VERTICAL  
-        gravity = Gravity.CENTER_HORIZONTAL  
-    }  
+    val scroll = ScrollView(this).apply {
+        isFillViewport = true
+        background = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(
+                Color.rgb(3, 8, 22),
+                Color.rgb(5, 20, 38),
+                Color.rgb(2, 8, 20)
+            )
+        )
+    }
 
-    scroll.addView(content)  
+    val content = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+    }
 
-    val title = TextView(this).apply {  
-        text = "⚡ ULTRA LOADER ⚡"  
-        textSize = 25f  
-        gravity = Gravity.CENTER  
-        typeface = Typeface.DEFAULT_BOLD  
-        letterSpacing = 0.08f  
-        setTextColor(cyan)  
-        setPadding(4, 12, 4, 2)  
-    }  
+    scroll.addView(content)
 
-    val subtitle = TextView(this).apply {  
-        text = "CYBER CONTROL CENTER  •  SECURE NETWORK"  
-        textSize = 9f  
-        gravity = Gravity.CENTER  
-        letterSpacing = 0.08f  
-        setTextColor(Color.LTGRAY)  
-        setPadding(4, 3, 4, 12)  
-    }  
+    val title = TextView(this).apply {
+        text = "⚡ ULTRA LOADER ⚡"
+        textSize = 18f
+        gravity = Gravity.CENTER
+        typeface = Typeface.DEFAULT_BOLD
+        letterSpacing = 0.07f
+        setTextColor(cyan)
+        setPadding(dp(4f), dp(2f), dp(4f), 0)
+    }
 
-    status = TextView(this).apply {
-        text = "● CONNECTING, PLEASE WAIT..."
+    val subtitle = TextView(this).apply {
+        text = "CYBER CONTROL CENTER  •  SECURE NETWORK"
+        textSize = 8.5f
+        gravity = Gravity.CENTER
+        letterSpacing = 0.08f
+        setTextColor(Color.LTGRAY)
+        setPadding(dp(4f), 0, dp(4f), dp(4f))
+    }
+
+    routerPanel = createPanel().apply {
+        tag = "router_info_panel"
+        setPadding(dp(8f), dp(4f), dp(8f), dp(4f))
+        setOnClickListener {
+            val cm = connectivityManager
+                ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)
+            val info = cm?.let {
+                PortalNetworkHelper.getWifiRouterInfo(
+                    this@MainActivity,
+                    it,
+                    preservedWifiNetwork ?: portalNetwork,
+                    lastWifiCapabilities
+                )
+            }
+            if (info?.locationPermissionMissing == true) {
+                requestStartupPermissions(forceLocationPrompt = true)
+            }
+        }
+    }
+    routerPanel.addView(panelHeading("📶 WI-FI ROUTER").apply {
+        setPadding(dp(2f), 0, dp(2f), dp(1f))
+    })
+
+    routerSsidText = TextView(this).apply {
+        tag = "router_ssid_text"
+        text = "ROUTER: CHECKING..."
         textSize = 12f
         gravity = Gravity.CENTER
         typeface = Typeface.DEFAULT_BOLD
+        setSingleLine(true)
+        ellipsize = android.text.TextUtils.TruncateAt.END
         setTextColor(cyan)
-        setPadding(8, 11, 8, 11)
+        setPadding(dp(4f), dp(1f), dp(4f), 0)
+    }
+    routerPanel.addView(routerSsidText)
+
+    routerStatusText = TextView(this).apply {
+        tag = "router_status_text"
+        text = "STATUS: CHECKING..."
+        textSize = 10f
+        gravity = Gravity.CENTER
+        typeface = Typeface.DEFAULT_BOLD
+        setSingleLine(true)
+        ellipsize = android.text.TextUtils.TruncateAt.END
+        setTextColor(cyan)
+        setPadding(dp(4f), 0, dp(4f), dp(1f))
+    }
+    routerPanel.addView(routerStatusText)
+
+    status = TextView(this).apply {
+        tag = "workflow_status_text"
+        text = "● CONNECTING, PLEASE WAIT..."
+        textSize = 11f
+        gravity = Gravity.CENTER
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(cyan)
+        setPadding(dp(8f), dp(5f), dp(8f), dp(5f))
         background = rounded(panel, cyan)
     }
 
@@ -1069,7 +1155,7 @@ private fun createScreen() {
     val radarPanel = createPanel()
     radarPanel.addView(panelHeading("🛰 NETWORK PULSE"))
 
-    val radarHeightPx = (145 * resources.displayMetrics.density).toInt()
+    val radarHeightPx = dp(radarHeightDp)
     cyberRadarView = CyberRadarView(this).apply {
         layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1081,31 +1167,39 @@ private fun createScreen() {
     radarStatusText = panelText("RADAR: SCANNING\nSIGNAL: ACTIVE")
     radarPanel.addView(radarStatusText)
 
-    val activationPanel = createPanel()  
-    activationPanel.addView(panelHeading("🔐 ACTIVATION KEY"))  
+    val activationPanel = createPanel()
+    activationPanel.addView(panelHeading("🔐 ACTIVATION KEY"))
 
-    licenseDetails = panelText(  
-        "ULTRA ACTIVATION\nCHECKING LICENSE..."  
-    )  
-    activationPanel.addView(licenseDetails)  
+    licenseDetails = panelText(
+        "ULTRA ACTIVATION\nCHECKING LICENSE..."
+    )
+    activationPanel.addView(licenseDetails)
 
-    val buyButton = makeButton("BUY NEW ACTIVATION KEY") {  
-        openTelegramContact()  
-    }  
-    activationPanel.addView(buyButton)  
+    val buyButton = makeButton("BUY NEW ACTIVATION KEY") {
+        openTelegramContact()
+    }.apply {
+        textSize = 9.5f
+        minHeight = dp(32f)
+        minimumHeight = dp(32f)
+        setPadding(dp(6f), dp(4f), dp(6f), dp(4f))
+        layoutParams = matchWrap().apply {
+            setMargins(0, dp(3f), 0, 0)
+        }
+    }
+    activationPanel.addView(buyButton)
 
-    val globePanel = createPanel()  
-    globePanel.addView(panelHeading("🌍 LIVE GLOBE"))  
+    val globePanel = createPanel()
+    globePanel.addView(panelHeading("🌍 LIVE GLOBE"))
 
-    val globeSizePx = (155 * resources.displayMetrics.density).toInt()
-    globeView = GlobeView(this).apply {  
-        layoutParams = LinearLayout.LayoutParams(  
-            LinearLayout.LayoutParams.MATCH_PARENT,  
+    val globeSizePx = dp(globeHeightDp)
+    globeView = GlobeView(this).apply {
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
             globeSizePx
-        )  
-    }  
+        )
+    }
 
-    globePanel.addView(globeView)  
+    globePanel.addView(globeView)
 
     globeLocationDetails = panelText(
         "📍 LOCATION: CHECKING...\nIP: --"
@@ -1115,13 +1209,13 @@ private fun createScreen() {
     leftColumn.addView(
         ipPanel,
         matchWrap().apply {
-            setMargins(0, 0, 0, 8)
+            setMargins(0, 0, 0, dp(4f))
         }
     )
     leftColumn.addView(
         dataPanel,
         matchWrap().apply {
-            setMargins(0, 0, 0, 8)
+            setMargins(0, 0, 0, dp(4f))
         }
     )
     leftColumn.addView(
@@ -1132,7 +1226,7 @@ private fun createScreen() {
     rightColumn.addView(
         activationPanel,
         matchWrap().apply {
-            setMargins(0, 0, 0, 8)
+            setMargins(0, 0, 0, dp(4f))
         }
     )
     rightColumn.addView(
@@ -1140,54 +1234,107 @@ private fun createScreen() {
         matchWrap()
     )
 
-    dashboardColumns.addView(  
-        leftColumn,  
-        LinearLayout.LayoutParams(0, -2, 1f).apply {  
-            setMargins(3, 4, 5, 3)  
-        }  
-    )  
-
-    dashboardColumns.addView(  
-        rightColumn,  
-        LinearLayout.LayoutParams(0, -2, 1f).apply {  
-            setMargins(5, 4, 3, 3)  
-        }  
-    )  
-
-    val loginPanel = createPanel()  
-    loginPanel.addView(panelHeading("🔑 PORTAL LOGIN"))  
-
-    userInput = makeEditText("Portal User ID", false)  
-    passwordInput = makeEditText("Portal Password", true)  
-
-    loginPanel.addView(userInput)  
-    loginPanel.addView(passwordInput)  
-
-    loginPanel.addView(  
-        makeButton("SAVE LOGIN DETAILS") {  
-            val user = userInput.text.toString().trim()  
-            val pass = passwordInput.text.toString()  
-
-            if (user.isBlank() || pass.isBlank()) {  
-                toast("Please enter User ID and Password")  
-            } else if (saveCredentials(user, pass)) {  
-                toast("Login details encrypted and saved")  
-                statusText("● LOGIN DETAILS SAVED", green)  
-            } else {  
-                statusText("● SAVE FAILED", red)  
-            }  
-        }  
-    )  
-
-    loginPanel.addView(
-        makeButton("▶ START ULTRA LOADER") {
-            if (!checkActivationBeforeAction()) return@makeButton
-            startPortalProcess(userInitiated = true)
-        }.apply {
-            textSize = 15f
-            background = rounded(Color.rgb(0, 90, 115), cyan)
+    dashboardColumns.addView(
+        leftColumn,
+        LinearLayout.LayoutParams(0, -2, 1f).apply {
+            setMargins(dp(2f), dp(2f), dp(4f), dp(2f))
         }
     )
+
+    dashboardColumns.addView(
+        rightColumn,
+        LinearLayout.LayoutParams(0, -2, 1f).apply {
+            setMargins(dp(4f), dp(2f), dp(2f), dp(2f))
+        }
+    )
+
+    val loginPanel = createPanel().apply {
+        tag = "saved_login_panel"
+        setPadding(dp(8f), dp(5f), dp(8f), dp(6f))
+    }
+    loginPanel.addView(panelHeading("🔑 SAVED LOGIN DETAILS").apply {
+        setPadding(dp(2f), 0, dp(2f), dp(3f))
+    })
+
+    userInput = makeEditText("Portal User ID", false)
+    passwordInput = makeEditText("Portal Password", true)
+
+    loginPanel.addView(userInput)
+    loginPanel.addView(passwordInput)
+
+    val loginActionRow = LinearLayout(this).apply {
+        tag = "login_action_row"
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        layoutParams = matchWrap().apply {
+            setMargins(0, dp(3f), 0, dp(3f))
+        }
+    }
+
+    val halfBtnHeight = dp(44f)
+    saveLoginButton = makeButton("SAVE LOGIN") {
+        val user = userInput.text.toString().trim()
+        val pass = passwordInput.text.toString()
+
+        if (user.isBlank() || pass.isBlank()) {
+            toast("Please enter User ID and Password")
+        } else if (saveCredentials(user, pass)) {
+            toast("Login details encrypted and saved")
+            statusText("● DETAILS SAVED", green)
+        } else {
+            statusText("● SAVE FAILED", red)
+        }
+    }.apply {
+        tag = "save_login_button"
+        textSize = 12f
+        minHeight = halfBtnHeight
+        minimumHeight = halfBtnHeight
+        setSingleLine(true)
+        setPadding(dp(6f), dp(6f), dp(6f), dp(6f))
+        background = rounded(Color.rgb(8, 56, 76), cyan)
+        layoutParams = LinearLayout.LayoutParams(0, halfBtnHeight, 1f).apply {
+            setMargins(0, 0, dp(4f), 0)
+        }
+    }
+
+    defaultAppButton = makeButton("DEFAULT APP") {
+        openDefaultBrowserSettings()
+    }.apply {
+        tag = "default_app_button"
+        textSize = 12f
+        minHeight = halfBtnHeight
+        minimumHeight = halfBtnHeight
+        setSingleLine(true)
+        setPadding(dp(6f), dp(6f), dp(6f), dp(6f))
+        background = rounded(Color.rgb(12, 46, 82), cyan)
+        layoutParams = LinearLayout.LayoutParams(0, halfBtnHeight, 1f).apply {
+            setMargins(dp(4f), 0, 0, 0)
+        }
+    }
+
+    loginActionRow.addView(saveLoginButton)
+    loginActionRow.addView(defaultAppButton)
+    loginPanel.addView(loginActionRow)
+
+    val startBtnHeight = dp(46f)
+    startLoaderButton = makeButton("▶ START ULTRA LOADER") {
+        if (!checkActivationBeforeAction()) return@makeButton
+        startPortalProcess(userInitiated = true)
+    }.apply {
+        tag = "start_loader_button"
+        textSize = 14.5f
+        minHeight = startBtnHeight
+        minimumHeight = startBtnHeight
+        setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
+        background = rounded(Color.rgb(0, 90, 115), cyan)
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            startBtnHeight
+        ).apply {
+            setMargins(0, dp(2f), 0, dp(2f))
+        }
+    }
+    loginPanel.addView(startLoaderButton)
 
     notifAccessButton = makeButton("⚠ ENABLE WIFI NOTIFICATION ACCESS") {
         try {
@@ -1198,7 +1345,10 @@ private fun createScreen() {
             toast("Unable to open Notification Access settings")
         }
     }.apply {
-        textSize = 11.5f
+        textSize = 10.5f
+        minHeight = dp(36f)
+        minimumHeight = dp(36f)
+        setPadding(dp(6f), dp(4f), dp(6f), dp(4f))
         background = rounded(Color.rgb(120, 35, 35), red)
         visibility = if (isNotificationAccessEnabled()) View.GONE else View.VISIBLE
     }
@@ -1207,7 +1357,10 @@ private fun createScreen() {
     vpnAutoAccessButton = makeButton("⚡ ENABLE AUTO VPN CONNECT (ACCESSIBILITY)") {
         openVpnAutoConnectSettings()
     }.apply {
-        textSize = 11.5f
+        textSize = 10.5f
+        minHeight = dp(36f)
+        minimumHeight = dp(36f)
+        setPadding(dp(6f), dp(4f), dp(6f), dp(4f))
         background = rounded(Color.rgb(0, 72, 102), cyan)
         visibility = if (isVpnAutoConnectEnabled()) View.GONE else View.VISIBLE
     }
@@ -1215,10 +1368,10 @@ private fun createScreen() {
 
     webTitle = TextView(this).apply {
         text = "📈 LIVE INTERNET USAGE GRAPH"
-        textSize = 12f
+        textSize = 11.5f
         typeface = Typeface.DEFAULT_BOLD
         setTextColor(cyan)
-        setPadding(5, 12, 5, 7)
+        setPadding(dp(5f), dp(8f), dp(5f), dp(4f))
     }
 
     webView = WebView(this).apply {
@@ -1438,23 +1591,27 @@ private fun createScreen() {
         }
     }
 
-    val density = resources.displayMetrics.density
+    val graphHeightDp = when {
+        screenHeightDp < 700f -> 125f
+        screenHeightDp < 800f -> 140f
+        else -> 160f
+    }
     val trafficPanel = createPanel()
 
     trafficSummaryText = TextView(this).apply {
         text = "↓ DL: 0 B/s  •  ↑ UL: 0 B/s  •  PEAK: 0 B/s"
-        textSize = 10.5f
+        textSize = 10f
         gravity = Gravity.CENTER
         typeface = Typeface.DEFAULT_BOLD
         setTextColor(green)
-        setPadding(4, 2, 4, 8)
+        setPadding(dp(4f), dp(2f), dp(4f), dp(6f))
     }
     trafficPanel.addView(trafficSummaryText, matchWrap())
 
     trafficGraphView = LiveTrafficGraphView(this).apply {
         layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
-            (165 * density).toInt()
+            dp(graphHeightDp)
         )
     }
     trafficPanel.addView(trafficGraphView)
@@ -1464,10 +1621,26 @@ private fun createScreen() {
 
     content.addView(title, matchWrap())
     content.addView(subtitle, matchWrap())
-    content.addView(status, matchWrap())
+    content.addView(
+        routerPanel,
+        matchWrap().apply {
+            setMargins(0, 0, 0, dp(4f))
+        }
+    )
+    content.addView(
+        status,
+        matchWrap().apply {
+            setMargins(0, 0, 0, dp(4f))
+        }
+    )
     content.addView(dashboardColumns, matchWrap())
     content.addView(clockTextView(), matchWrap())
-    content.addView(loginPanel, matchWrap())
+    content.addView(
+        loginPanel,
+        matchWrap().apply {
+            setMargins(0, dp(2f), 0, dp(2f))
+        }
+    )
 
     val webViewPanel = createPanel().apply {
         visibility = View.GONE
@@ -1483,9 +1656,9 @@ private fun createScreen() {
     val footer = TextView(this).apply {
         text = "Copy Right ULTRA"
         gravity = Gravity.CENTER
-        textSize = 11f
+        textSize = 10.5f
         setTextColor(cyan)
-        setPadding(5, 12, 5, 12)
+        setPadding(dp(5f), dp(8f), dp(5f), dp(8f))
     }
 
     content.addView(footer, matchWrap())
@@ -1590,47 +1763,55 @@ private fun createScreen() {
     }  
 }  
 
-private fun createPanel(): LinearLayout {  
-    return LinearLayout(this).apply {  
-        orientation = LinearLayout.VERTICAL  
-        gravity = Gravity.CENTER  
-        setPadding(9, 10, 9, 10)  
-        background = rounded(panel, cyan)  
-    }  
-}  
+private fun createPanel(): LinearLayout {
+    val d = resources.displayMetrics.density
+    fun dp(v: Float) = (v * d).toInt().coerceAtLeast(1)
+    return LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        setPadding(dp(7f), dp(5f), dp(7f), dp(5f))
+        background = rounded(panel, cyan)
+    }
+}
 
-private fun panelHeading(value: String): TextView {  
-    return TextView(this).apply {  
-        text = value  
-        textSize = 12f  
-        gravity = Gravity.CENTER  
-        typeface = Typeface.DEFAULT_BOLD  
-        setTextColor(cyan)  
-        setPadding(3, 3, 3, 9)  
-    }  
-}  
+private fun panelHeading(value: String): TextView {
+    val d = resources.displayMetrics.density
+    fun dp(v: Float) = (v * d).toInt().coerceAtLeast(1)
+    return TextView(this).apply {
+        text = value
+        textSize = 10.5f
+        gravity = Gravity.CENTER
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(cyan)
+        setPadding(dp(2f), 0, dp(2f), dp(2f))
+    }
+}
 
-private fun panelText(value: String): TextView {  
-    return TextView(this).apply {  
-        text = value  
-        textSize = 10f  
-        gravity = Gravity.CENTER  
-        typeface = Typeface.DEFAULT_BOLD  
-        setTextColor(green)  
-        setLineSpacing(5f, 1f)  
-        setPadding(4, 8, 4, 8)  
-    }  
-}  
+private fun panelText(value: String): TextView {
+    val d = resources.displayMetrics.density
+    fun dp(v: Float) = (v * d).toInt().coerceAtLeast(1)
+    return TextView(this).apply {
+        text = value
+        textSize = 9.5f
+        gravity = Gravity.CENTER
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(green)
+        setLineSpacing(dp(1.5f).toFloat(), 1f)
+        setPadding(dp(3f), dp(2f), dp(3f), dp(2f))
+    }
+}
 
-private fun clockTextView(): TextView {  
-    clockText = TextView(this).apply {  
-        text = "PHONE TIME: --"  
-        textSize = 11f  
-        gravity = Gravity.CENTER  
-        setTextColor(cyan)  
-        setPadding(6, 8, 6, 8)  
-    }  
-    return clockText  
+private fun clockTextView(): TextView {
+    val d = resources.displayMetrics.density
+    fun dp(v: Float) = (v * d).toInt().coerceAtLeast(1)
+    clockText = TextView(this).apply {
+        text = "PHONE TIME: --"
+        textSize = 9.5f
+        gravity = Gravity.CENTER
+        setTextColor(cyan)
+        setPadding(dp(4f), dp(2f), dp(4f), dp(2f))
+    }
+    return clockText
 }  
 
 private fun updateClock() {  
@@ -1928,59 +2109,106 @@ private fun matchWrap() =
         LinearLayout.LayoutParams.WRAP_CONTENT  
     )  
 
-private fun makeEditText(  
-    hintText: String,  
-    password: Boolean  
-): EditText {  
-    return EditText(this).apply {  
-        hint = hintText  
-        setSingleLine(true)  
-        setTextColor(Color.WHITE)  
-        setHintTextColor(Color.LTGRAY)  
-        textSize = 13f  
-        setPadding(13, 6, 13, 6)  
+private fun makeEditText(
+    hintText: String,
+    password: Boolean
+): EditText {
+    val d = resources.displayMetrics.density
+    fun dp(v: Float) = (v * d).toInt().coerceAtLeast(1)
+    return EditText(this).apply {
+        hint = hintText
+        setSingleLine(true)
+        setTextColor(Color.WHITE)
+        setHintTextColor(Color.LTGRAY)
+        textSize = 12f
+        minHeight = dp(36f)
+        minimumHeight = dp(36f)
+        setPadding(dp(10f), dp(5f), dp(10f), dp(5f))
 
-        if (password) inputType = 129  
+        if (password) inputType = 129
 
-        background = rounded(panel, cyan)  
+        background = rounded(panel, cyan)
 
-        layoutParams = matchWrap().apply {  
-            setMargins(0, 4, 0, 4)  
-        }  
-    }  
+        layoutParams = matchWrap().apply {
+            setMargins(0, dp(2f), 0, dp(2f))
+        }
+    }
+}
+
+private fun makeButton(
+    label: String,
+    action: () -> Unit
+): Button {
+    val d = resources.displayMetrics.density
+    fun dp(v: Float) = (v * d).toInt().coerceAtLeast(1)
+    return Button(this).apply {
+        text = label
+        isAllCaps = false
+        textSize = 11f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(Color.WHITE)
+        background = rounded(Color.rgb(8, 48, 68), cyan)
+        setPadding(dp(7f), dp(6f), dp(7f), dp(6f))
+
+        layoutParams = matchWrap().apply {
+            setMargins(0, dp(3f), 0, dp(3f))
+        }
+
+        setOnClickListener { action() }
+    }
+}
+
+private fun openDefaultBrowserSettings() {
+    openedDefaultAppSettings = true
+    try {
+        startActivity(PortalNetworkHelper.buildDefaultBrowserSettingsIntent(this))
+    } catch (_: Exception) {
+        openedDefaultAppSettings = false
+        toast("Unable to open Default Browser settings")
+    }
 }  
 
-private fun makeButton(  
-    label: String,  
-    action: () -> Unit  
-): Button {  
-    return Button(this).apply {  
-        text = label  
-        isAllCaps = false  
-        textSize = 11f  
-        typeface = Typeface.DEFAULT_BOLD  
-        setTextColor(Color.WHITE)  
-        background = rounded(Color.rgb(8, 48, 68), cyan)  
-        setPadding(7, 7, 7, 7)  
+private fun updateRouterInfo(latestCapabilities: NetworkCapabilities? = null) {
+    if (!::routerSsidText.isInitialized || !::routerStatusText.isInitialized) return
+    val cm = connectivityManager
+        ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)?.also {
+            connectivityManager = it
+        } ?: return
 
-        layoutParams = matchWrap().apply {  
-            setMargins(0, 4, 0, 4)  
-        }  
+    val info = PortalNetworkHelper.getWifiRouterInfo(
+        context = this,
+        manager = cm,
+        preferredWifi = preservedWifiNetwork ?: portalNetwork,
+        latestCapabilities = latestCapabilities ?: lastWifiCapabilities
+    )
 
-        setOnClickListener { action() }  
-    }  
-}  
+    if (!info.connected) {
+        routerSsidText.text = "ROUTER: NOT CONNECTED"
+        routerSsidText.setTextColor(red)
+        routerStatusText.text = "STATUS: DISCONNECTED"
+        routerStatusText.setTextColor(red)
+        return
+    }
+
+    if (!info.ssid.isNullOrBlank()) {
+        routerSsidText.text = "ROUTER: ${info.ssid}"
+        routerSsidText.setTextColor(green)
+    } else if (info.locationPermissionMissing) {
+        routerSsidText.text = "ROUTER: CONNECTED WI-FI (TAP TO SHOW SSID)"
+        routerSsidText.setTextColor(cyan)
+    } else {
+        routerSsidText.text = "ROUTER: WI-FI CONNECTED"
+        routerSsidText.setTextColor(cyan)
+    }
+
+    routerStatusText.text = "STATUS: ${info.statusLabel}"
+    routerStatusText.setTextColor(
+        if (info.statusLabel.contains("ONLINE", ignoreCase = true)) green else cyan
+    )
+}
 
 private fun isHiddenUiStatus(raw: String?): Boolean {
-    if (raw.isNullOrBlank()) return false
-    val normalized = raw
-        .removePrefix("●")
-        .trim()
-        .uppercase(Locale.ROOT)
-    return normalized == "LOGIN IN PROGRESS" ||
-        normalized == "LOGOUT IN PROGRESS" ||
-        normalized == "LOGIN PAGE OPENING" ||
-        normalized == "LOGOUT PAGE DETECTED"
+    return StatusDisplayFilter.isHiddenLoginLogoutStatus(raw)
 }
 
 private fun statusText(message: String, color: Int) {  
@@ -2004,14 +2232,14 @@ private fun workflowStatus(logDetail: String) {
 
 private fun updateWebViewStatusDisplay(stageDetail: String? = null) {
     if (!::webViewStatusText.isInitialized) return
-    val d1 = if (NetworkStatusManager.portalLoginDetected.value == true) "LOGIN:YES" else "LOGIN:NO"
+    val d1 = if (NetworkStatusManager.portalLoginDetected.value == true) "PORTAL:YES" else "PORTAL:NO"
     val d2 = if (NetworkStatusManager.viewWebsiteDetected.value == true) "WEBSITE:YES" else "WEBSITE:NO"
     val vpn = if (isVpnConnected() || NetworkStatusManager.vpnConnected.value == true) "VPN:ON" else "VPN:OFF"
     val activeUrl = portalUrl.ifBlank { NetworkStatusManager.detectedPortalUrl.value.orEmpty() }
         .ifBlank { "WAITING FOR PORTAL URL" }
     val rawStep = stageDetail?.removePrefix("● ")?.trim()
     val stepText = if (rawStep.isNullOrBlank() || isHiddenUiStatus(rawStep)) {
-        stage.name
+        if (isHiddenUiStatus(stage.name)) "PROCESSING" else stage.name
     } else {
         rawStep
     }
@@ -2106,17 +2334,27 @@ private fun checkActivationBeforeAction(): Boolean {
     return false  
 }  
 
-private fun requestNotificationPermission() {  
-    if (  
-        Build.VERSION.SDK_INT >= 33 &&  
-        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)  
-            != PackageManager.PERMISSION_GRANTED  
-    ) {  
-        requestPermissions(  
-            arrayOf(Manifest.permission.POST_NOTIFICATIONS),  
-            501  
-        )  
-    }  
+private fun requestStartupPermissions(forceLocationPrompt: Boolean = false) {  
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+    val toRequest = mutableListOf<String>()
+
+    if (
+        !forceLocationPrompt &&
+        Build.VERSION.SDK_INT >= 33 &&
+        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+    ) {
+        toRequest.add(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    if (
+        checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
+    ) {
+        toRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
+
+    if (toRequest.isNotEmpty()) {
+        requestPermissions(toRequest.toTypedArray(), 501)
+    }
 }  
 
 private fun isNotificationAccessEnabled(): Boolean {
@@ -2220,12 +2458,19 @@ override fun onRequestPermissionsResult(
 ) {
     super.onRequestPermissionsResult(requestCode, permissions, grantResults)
 
-    if (
-        requestCode == 501 &&
-        grantResults.isNotEmpty() &&
-        grantResults[0] == PackageManager.PERMISSION_GRANTED
-    ) {
-        startMonitorService(refresh = true)
+    if (requestCode == 501) {
+        for (i in permissions.indices) {
+            if (permissions[i] == Manifest.permission.POST_NOTIFICATIONS &&
+                grantResults.getOrNull(i) == PackageManager.PERMISSION_GRANTED
+            ) {
+                startMonitorService(refresh = true)
+            }
+            if (permissions[i] == Manifest.permission.ACCESS_FINE_LOCATION &&
+                grantResults.getOrNull(i) == PackageManager.PERMISSION_GRANTED
+            ) {
+                updateRouterInfo()
+            }
+        }
     }
 }  
 
@@ -2276,7 +2521,7 @@ private fun showCredentialDialog(resumeLoginAfterSave: Boolean = false) {
         .setNegativeButton("CANCEL") { _, _ ->
             if (resumeLoginAfterSave && stage == Stage.LOGIN) {
                 stage = Stage.IDLE
-                statusText("● LOGIN CREDENTIALS REQUIRED", red)
+                statusText("● PORTAL CREDENTIALS REQUIRED", red)
             }
         }
         .show()
@@ -2739,7 +2984,7 @@ private fun tryAutoLogin() {
                     handler.postDelayed(autoLoginRetryRunnable, 450)
                 } else {
                     stage = Stage.IDLE
-                    statusText("● PORTAL LOGIN FORM NOT FOUND", red)
+                    statusText("● PORTAL FORM NOT FOUND", red)
                 }
             }
         }
@@ -2775,7 +3020,7 @@ private fun checkPortalLogin() {
                     handler.postDelayed(checkLoginRunnable, 700)
                 } else {
                     stage = Stage.IDLE
-                    statusText("● LOGIN NOT CONFIRMED — CHECK DETAILS", red)
+                    statusText("● PORTAL VERIFICATION FAILED — CHECK DETAILS", red)
                 }
             }
 
@@ -2863,7 +3108,7 @@ private fun detectLogoutControl() {
             clearPersistedLogoutControl()
             connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
             stage = Stage.IDLE
-            statusText("● NO PORTAL LOGOUT CONTROL FOUND", red)
+            statusText("● PORTAL CONTROL NOT FOUND", red)
         }
     }
 }
@@ -2878,7 +3123,7 @@ private fun openThunderVpn() {
     PortalNetworkHelper.clearProcessNetworkBinding(cm)
 
     if (detectedLogoutControl == null) {
-        statusText("● LOGOUT CONTROL NOT DETECTED", red)
+        statusText("● PORTAL CONTROL NOT DETECTED", red)
         return
     }
 
@@ -3004,7 +3249,7 @@ private fun proceedToLogoutAfterVpnConfirmed() {
     updateInternetStatus()
 
     // Mandatory exact 3-second delay after returning to Ultra Loader's existing WebView.
-    workflowStatus("VPN CONNECTED — WAITING 3S FOR PORTAL LOGOUT")
+    workflowStatus("VPN CONNECTED")
     handler.removeCallbacks(vpnReturnLogoutDelayRunnable)
     handler.postDelayed(vpnReturnLogoutDelayRunnable, VPN_RETURN_LOGOUT_DELAY_MS)
 }
@@ -3135,7 +3380,7 @@ private fun scheduleLogoutRetryAfterNetworkError() {
     } else {
         connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
         stage = Stage.IDLE
-        statusText("● PORTAL LOGOUT FAILED OVER WIFI", red)
+        statusText("● PORTAL RESET FAILED OVER WIFI", red)
     }
 }
 
@@ -3153,7 +3398,7 @@ private fun clickPortalLogout() {
     if (logoutSearchAttempts >= 6) {
         connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
         stage = Stage.IDLE
-        statusText("● PORTAL LOGOUT BUTTON NOT FOUND", red)
+        statusText("● PORTAL ACTION NOT FOUND", red)
         return
     }
 
@@ -3203,7 +3448,7 @@ private fun clickPortalLogout() {
         } else {
             connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
             stage = Stage.IDLE
-            statusText("● PORTAL LOGOUT BUTTON NOT FOUND", red)
+            statusText("● PORTAL ACTION NOT FOUND", red)
         }
     }
 }
@@ -3254,7 +3499,7 @@ private fun verifyPortalLogout() {
                 } else {
                     connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
                     stage = Stage.IDLE
-                    statusText("● LOGOUT NOT CONFIRMED BY PORTAL", red)
+                    statusText("● PORTAL RESET NOT CONFIRMED", red)
                 }
             }
 
@@ -3264,7 +3509,7 @@ private fun verifyPortalLogout() {
                 } else {
                     connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
                     stage = Stage.IDLE
-                    statusText("● LOGOUT VERIFICATION TIMEOUT", red)
+                    statusText("● PORTAL VERIFICATION TIMEOUT", red)
                 }
             }
         }
@@ -3380,7 +3625,7 @@ private fun checkSecondLoginForm() {
             stage = Stage.IDLE
             secondLoginStageStatus.text = "SECOND LOGIN FORM NOT FOUND"
             secondLoginStageStatus.setTextColor(red)
-            statusText("● SECOND LOGIN FORM NOT FOUND", red)
+            statusText("● SECOND PORTAL FORM NOT FOUND", red)
         }
     }
 }  
@@ -3794,6 +4039,28 @@ private fun registerWifiPortalReceiver() {
     }
 }
 
+@Suppress("DEPRECATION")
+private fun registerWifiStateReceiver() {
+    if (wifiStateReceiverRegistered) return
+    try {
+        val filter = IntentFilter().apply {
+            addAction(android.net.wifi.WifiManager.NETWORK_STATE_CHANGED_ACTION)
+            addAction(android.net.wifi.WifiManager.WIFI_STATE_CHANGED_ACTION)
+        }
+        registerReceiver(wifiStateReceiver, filter)
+        wifiStateReceiverRegistered = true
+    } catch (_: Exception) {
+        wifiStateReceiverRegistered = false
+    }
+}
+
+private fun hasIncomingPortalLaunchIntent(launchIntent: Intent?): Boolean {
+    if (launchIntent == null) return false
+    return launchIntent.action == Intent.ACTION_VIEW ||
+        launchIntent.action == ACTION_OPEN_PORTAL ||
+        launchIntent.action == Intent.ACTION_SEND
+}
+
 private fun extractIncomingPortalUrl(intent: Intent?): String? {
     if (intent == null) return null
     when (intent.action) {
@@ -3801,6 +4068,17 @@ private fun extractIncomingPortalUrl(intent: Intent?): String? {
             val uriString = intent.dataString ?: intent.data?.toString()
             if (PortalNetworkHelper.isUsablePortalUrl(uriString)) {
                 return uriString
+            }
+            val extraUrl = intent.getStringExtra("detected_url")
+            if (PortalNetworkHelper.isUsablePortalUrl(extraUrl)) {
+                return extraUrl
+            }
+        }
+
+        ACTION_OPEN_PORTAL -> {
+            val extraUrl = intent.getStringExtra("detected_url")
+            if (PortalNetworkHelper.isUsablePortalUrl(extraUrl)) {
+                return extraUrl
             }
         }
 
@@ -3818,6 +4096,61 @@ private fun extractIncomingPortalUrl(intent: Intent?): String? {
         }
     }
     return null
+}
+
+private fun handleIncomingLaunchIntent(launchIntent: Intent?): Boolean {
+    if (launchIntent == null) return false
+    val action = launchIntent.action ?: return false
+
+    if (action == VpnAutomationBridge.ACTION_RETURN_FROM_VPN) {
+        launchIntent.action = null
+        return true
+    }
+
+    val incomingUrl = extractIncomingPortalUrl(launchIntent)
+    if (!incomingUrl.isNullOrBlank()) {
+        val detType = launchIntent.getStringExtra("detection_type")
+            ?.takeIf { it.isNotBlank() }
+            ?: WifiNotificationListener.TYPE_VIEW_WEBSITE
+        val detAt = launchIntent.getLongExtra("detected_at", System.currentTimeMillis())
+        saveCapturedUrlForCurrentNetwork(incomingUrl)
+        WifiNotificationListener.markSessionCaptured(this, incomingUrl, detType)
+        launchIntent.action = null
+        launchIntent.data = null
+        handler.post {
+            handleDetectedPortalLaunch(
+                detectedUrl = incomingUrl,
+                detectionType = detType,
+                detectedAt = detAt,
+                forceIfIdleOrFinished = true
+            )
+        }
+        return true
+    }
+
+    if (action == ACTION_OPEN_PORTAL || action == Intent.ACTION_VIEW) {
+        val rawExtraUrl = launchIntent.getStringExtra("detected_url")
+        val fallbackSession = WifiNotificationListener.getSessionCapturedPortal(this)
+        val resolvedUrl = rawExtraUrl?.takeIf { PortalNetworkHelper.isUsablePortalUrl(it) }
+            ?: fallbackSession?.first
+        val detectionType = launchIntent.getStringExtra("detection_type")
+            ?: fallbackSession?.second
+            ?: if (action == Intent.ACTION_VIEW) WifiNotificationListener.TYPE_VIEW_WEBSITE else null
+        val detectedAt = launchIntent.getLongExtra("detected_at", System.currentTimeMillis())
+        launchIntent.action = null
+        launchIntent.data = null
+        handler.post {
+            handleDetectedPortalLaunch(
+                detectedUrl = resolvedUrl,
+                detectionType = detectionType,
+                detectedAt = detectedAt,
+                forceIfIdleOrFinished = true
+            )
+        }
+        return true
+    }
+
+    return false
 }
 
 private fun saveCapturedUrlForCurrentNetwork(
@@ -3864,12 +4197,15 @@ private fun handleDetectedPortalLaunch(
     if (!appInitialized || isFinishing || isDestroyed) return
     if (!ActivationManager.hasAccess(this)) return
 
-    // Never interrupt an active mid-flow automation cycle.
-    if (stage != Stage.IDLE && stage != Stage.FINISHED) return
-
     val normalizedUrl = detectedUrl?.trim()?.takeIf { PortalNetworkHelper.isUsablePortalUrl(it) }
 
-    // Capture once per Wi-Fi session: auto-open detection link only one time unless user clicks Start.
+    // Never interrupt an active mid-flow automation cycle unless a new explicit notification URL arrived.
+    if (!forceIfIdleOrFinished && stage != Stage.IDLE && stage != Stage.FINISHED) return
+    if (forceIfIdleOrFinished && stage != Stage.IDLE && stage != Stage.FINISHED) {
+        if (normalizedUrl == null || normalizedUrl == portalUrl) return
+    }
+
+    // Capture once per Wi-Fi session: auto-open detection link only one time unless user taps Start/Notification.
     if (!forceIfIdleOrFinished) {
         if (autoLaunchConsumedForWifiSession) {
             return
@@ -3925,36 +4261,7 @@ override fun onNewIntent(intent: Intent?) {
     setIntent(intent)
 
     if (!appInitialized || intent == null) return
-
-    val incomingUrl = extractIncomingPortalUrl(intent)
-    if (!incomingUrl.isNullOrBlank()) {
-        saveCapturedUrlForCurrentNetwork(incomingUrl)
-        WifiNotificationListener.markSessionCaptured(
-            this,
-            incomingUrl,
-            WifiNotificationListener.TYPE_VIEW_WEBSITE
-        )
-        intent.action = null
-        intent.data = null
-        handler.post {
-            handleDetectedPortalLaunch(
-                incomingUrl,
-                WifiNotificationListener.TYPE_VIEW_WEBSITE,
-                System.currentTimeMillis(),
-                forceIfIdleOrFinished = true
-            )
-        }
-    } else if (intent.action == ACTION_OPEN_PORTAL) {
-        val detectedUrl = intent.getStringExtra("detected_url")
-        val detectionType = intent.getStringExtra("detection_type")
-        val detectedAt = intent.getLongExtra("detected_at", System.currentTimeMillis())
-        intent.action = null
-        handler.post {
-            handleDetectedPortalLaunch(detectedUrl, detectionType, detectedAt, forceIfIdleOrFinished = true)
-        }
-    } else if (intent.action == VpnAutomationBridge.ACTION_RETURN_FROM_VPN) {
-        intent.action = null
-    }
+    handleIncomingLaunchIntent(intent)
 }
 
 override fun onResume() {
@@ -3969,6 +4276,7 @@ override fun onResume() {
         webView.onResume()
     }
 
+    updateRouterInfo()
     updateActivationStatus()
     updateNotificationAccessButton()
     updateVpnAutoAccessButton()
@@ -3976,13 +4284,16 @@ override fun onResume() {
     updateDeviceDataUsage()
     verifyLicenseWhenOnline()
 
-    // Only refresh notifications when idle and no session URL has been captured yet,
-    // so switching back from Thunder VPN never re-triggers "Connected / Tap to view website".
-    if (isNotificationAccessEnabled() &&
+    if (openedDefaultAppSettings) {
+        openedDefaultAppSettings = false
+        startMonitorService(refresh = true)
+    } else if (isNotificationAccessEnabled() &&
         stage == Stage.IDLE &&
         !autoLaunchConsumedForWifiSession &&
         WifiNotificationListener.getSessionCapturedPortal(this) == null
     ) {
+        // Only refresh notifications when idle and no session URL has been captured yet,
+        // so switching back from Thunder VPN never re-triggers "Connected / Tap to view website".
         startMonitorService(refresh = true)
     }
 
@@ -4001,7 +4312,7 @@ override fun onResume() {
         if (isVpnConnected()) {
             stepVpnConnectedConfirmed = true
             vpnReturnDelayPending = true
-            workflowStatus("VPN CONNECTED — WAITING 3S FOR PORTAL LOGOUT")
+            workflowStatus("VPN CONNECTED")
             handler.removeCallbacks(vpnReturnLogoutDelayRunnable)
             handler.postDelayed(vpnReturnLogoutDelayRunnable, VPN_RETURN_LOGOUT_DELAY_MS)
         } else {
@@ -4039,6 +4350,14 @@ override fun onDestroy() {
         } catch (_: Exception) {
         }
         wifiPortalReceiverRegistered = false
+    }
+
+    if (wifiStateReceiverRegistered) {
+        try {
+            unregisterReceiver(wifiStateReceiver)
+        } catch (_: Exception) {
+        }
+        wifiStateReceiverRegistered = false
     }
 
     if (networkCallbackRegistered) {

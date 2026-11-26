@@ -132,21 +132,30 @@ class PortalMonitorService : Service() {
         ongoing: Boolean
     ): Notification {
 
-        val openIntent = Intent(
-            this,
-            MainActivity::class.java
-        ).apply {
-            action = ACTION_OPEN_PORTAL
-            if (!lastDetectedUrl.isNullOrBlank()) {
-                putExtra("detected_url", lastDetectedUrl)
+        val openIntent = if (ongoing) {
+            Intent(
+                this,
+                MainActivity::class.java
+            ).apply {
+                action = ACTION_OPEN_PORTAL
+                if (!lastDetectedUrl.isNullOrBlank()) {
+                    putExtra("detected_url", lastDetectedUrl)
+                }
+                if (!lastDetectionType.isNullOrBlank()) {
+                    putExtra("detection_type", lastDetectionType)
+                }
+                putExtra("detected_at", System.currentTimeMillis())
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
-            if (!lastDetectionType.isNullOrBlank()) {
-                putExtra("detection_type", lastDetectionType)
-            }
-            putExtra("detected_at", System.currentTimeMillis())
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP
+        } else {
+            PortalNetworkHelper.buildPortalNotificationLaunchIntent(
+                context = this,
+                portalUrl = lastDetectedUrl,
+                detectionType = lastDetectionType,
+                actionOpenPortal = ACTION_OPEN_PORTAL
+            )
         }
 
         val pendingFlags =
@@ -157,7 +166,12 @@ class PortalMonitorService : Service() {
                     0
                 }
 
-        val requestCode = if (ongoing) NOTIFICATION_ID else WIFI_NOTIFICATION_ID
+        val isInternalTarget = openIntent.component?.className == MainActivity::class.java.name
+        val requestCode = when {
+            ongoing -> NOTIFICATION_ID
+            isInternalTarget -> WIFI_NOTIFICATION_ID
+            else -> WIFI_NOTIFICATION_ID + 10
+        }
         val channelId = if (ongoing) CHANNEL_ID else WIFI_ALERT_CHANNEL_ID
 
         val pendingIntent = PendingIntent.getActivity(
@@ -528,7 +542,7 @@ class PortalMonitorService : Service() {
     private fun updateMonitorNotification() {
         val message = when {
             captiveNetworks.isNotEmpty() || lastDetectionType == WifiNotificationListener.TYPE_PORTAL_LOGIN ->
-                "LOGIN DETECTED"
+                "PORTAL DETECTED"
 
             websiteNetworks.isNotEmpty() || lastDetectionType == WifiNotificationListener.TYPE_VIEW_WEBSITE ->
                 "CONNECTED / TAP TO VIEW WEBSITE DETECTED"
@@ -560,9 +574,9 @@ class PortalMonitorService : Service() {
         websiteDetected: Boolean = false
     ) {
         if (!captiveDetected && !websiteDetected) return
-        val sig = "$websiteDetected|${lastDetectedUrl.orEmpty()}"
+        val defaultPkg = PortalNetworkHelper.resolveDefaultBrowserPackage(this).orEmpty()
+        val sig = "$websiteDetected|${lastDetectedUrl.orEmpty()}|$defaultPkg"
         if (wifiNotificationVisible && lastShownWifiNotifSignature == sig && !forceRefresh) return
-        if (wifiNotificationVisible && lastShownWifiNotifSignature == sig) return
 
         wifiNotificationVisible = true
         lastShownWifiNotifSignature = sig
@@ -570,10 +584,18 @@ class PortalMonitorService : Service() {
         val title = if (websiteDetected) {
             "CONNECTED / TAP TO VIEW WEBSITE DETECTED"
         } else {
-            "LOGIN DETECTED"
+            "PORTAL DETECTED"
         }
 
-        val message = "Tap to open Ultra Loader"
+        val externalBrowserSelected = defaultPkg.isNotBlank() &&
+            defaultPkg != packageName &&
+            PortalNetworkHelper.isUsablePortalUrl(lastDetectedUrl)
+
+        val message = if (externalBrowserSelected) {
+            "Tap to open portal link"
+        } else {
+            "Tap to open Ultra Loader"
+        }
 
         notificationManager().notify(
             WIFI_NOTIFICATION_ID,
@@ -608,6 +630,18 @@ class PortalMonitorService : Service() {
             ACTION_REFRESH_NOTIFICATIONS -> {
                 val alreadyCaptured = WifiNotificationListener.getSessionCapturedPortal(this) != null
                 refreshCurrentNetworks(scanNotifications = !alreadyCaptured)
+                if (wifiNotificationVisible) {
+                    val isWebsite = lastDetectionType == WifiNotificationListener.TYPE_VIEW_WEBSITE
+                    val isCaptive = lastDetectionType == WifiNotificationListener.TYPE_PORTAL_LOGIN ||
+                        captiveNetworks.isNotEmpty()
+                    if (isWebsite || isCaptive) {
+                        showWifiNotification(
+                            captiveDetected = isCaptive && !isWebsite,
+                            forceRefresh = true,
+                            websiteDetected = isWebsite
+                        )
+                    }
+                }
             }
 
             ACTION_PORTAL_NOTIFICATION_DETECTED -> {

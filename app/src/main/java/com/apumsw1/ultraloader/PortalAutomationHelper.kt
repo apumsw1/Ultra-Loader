@@ -1,14 +1,44 @@
 package com.apumsw1.ultraloader
 
+import android.Manifest
+import android.app.role.RoleManager
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.Uri
+import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.provider.Settings
 import org.json.JSONObject
 import java.net.URI
 import java.util.Locale
+
+data class WifiRouterInfo(
+    val connected: Boolean,
+    val ssid: String?,
+    val statusLabel: String,
+    val locationPermissionMissing: Boolean
+)
+
+object StatusDisplayFilter {
+    private val HIDDEN_LOGIN_LOGOUT_REGEX = Regex(
+        """\b(LOGIN|LOGOUT|LOGGED\s+IN|LOGGED\s+OUT|LOG\s+IN|LOG\s+OUT)\b""",
+        RegexOption.IGNORE_CASE
+    )
+
+    fun isHiddenLoginLogoutStatus(raw: String?): Boolean {
+        if (raw.isNullOrBlank()) return false
+        val normalized = raw
+            .removePrefix("●")
+            .trim()
+        if (normalized.isBlank()) return false
+        return HIDDEN_LOGIN_LOGOUT_REGEX.containsMatchIn(normalized)
+    }
+}
 
 data class DetectedLogoutControl(
     val pageUrl: String = "",
@@ -463,6 +493,209 @@ object PortalNetworkHelper {
             }
         }
         return null
+    }
+
+    fun cleanSsid(raw: String?): String? {
+        val trimmed = raw?.trim().orEmpty()
+        if (trimmed.isBlank()) return null
+        val unquoted = if (trimmed.length >= 2 && trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
+            trimmed.substring(1, trimmed.length - 1).trim()
+        } else {
+            trimmed
+        }
+        if (unquoted.isBlank()) return null
+        val lower = unquoted.lowercase(Locale.ROOT)
+        if (lower == "<unknown ssid>" || lower == "unknown ssid" || lower == "0x" || lower == "null") {
+            return null
+        }
+        return unquoted
+    }
+
+    @Suppress("DEPRECATION")
+    fun getWifiRouterInfo(
+        context: Context,
+        manager: ConnectivityManager,
+        preferredWifi: Network? = null,
+        latestCapabilities: NetworkCapabilities? = null
+    ): WifiRouterInfo {
+        val wifiNetwork = if (isWifiNetworkActive(manager, preferredWifi)) {
+            preferredWifi
+        } else {
+            findWifiNetwork(manager)
+        }
+
+        val activeCaps = try {
+            manager.activeNetwork?.let { manager.getNetworkCapabilities(it) }
+        } catch (_: Exception) {
+            null
+        }
+
+        val caps = when {
+            latestCapabilities != null &&
+                latestCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                !latestCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> latestCapabilities
+            wifiNetwork != null -> try {
+                manager.getNetworkCapabilities(wifiNetwork)
+            } catch (_: Exception) {
+                null
+            }
+            activeCaps != null &&
+                activeCaps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                !activeCaps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> activeCaps
+            else -> null
+        }
+
+        val wifiConnected = wifiNetwork != null ||
+            (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI))
+
+        if (!wifiConnected) {
+            return WifiRouterInfo(
+                connected = false,
+                ssid = null,
+                statusLabel = "DISCONNECTED",
+                locationPermissionMissing = false
+            )
+        }
+
+        var ssid: String? = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val transportWifi = try {
+                caps?.transportInfo as? WifiInfo
+            } catch (_: Exception) {
+                null
+            }
+            ssid = cleanSsid(transportWifi?.ssid)
+        }
+
+        if (ssid.isNullOrBlank()) {
+            try {
+                val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                ssid = cleanSsid(wm?.connectionInfo?.ssid)
+            } catch (_: Exception) {
+            }
+        }
+
+        val hasFineLocation = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+            context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val hasCoarseLocation = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+            context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val locationPermissionMissing = ssid.isNullOrBlank() && (!hasFineLocation && !hasCoarseLocation)
+
+        val isCaptive = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL) == true
+        val isValidated = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+        val hasPortalUrl = NetworkStatusManager.captivePortalDetected.value == true ||
+            !NetworkStatusManager.detectedPortalUrl.value.isNullOrBlank()
+
+        val statusLabel = when {
+            isCaptive -> "CONNECTED • PORTAL DETECTED"
+            isValidated -> "CONNECTED • ONLINE"
+            hasPortalUrl -> "CONNECTED • PORTAL READY"
+            else -> "CONNECTED"
+        }
+
+        return WifiRouterInfo(
+            connected = true,
+            ssid = ssid,
+            statusLabel = statusLabel,
+            locationPermissionMissing = locationPermissionMissing
+        )
+    }
+
+    fun resolveDefaultBrowserPackage(context: Context): String? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val roleManager = context.getSystemService(RoleManager::class.java)
+                if (roleManager != null && roleManager.isRoleHeld(RoleManager.ROLE_BROWSER)) {
+                    return context.packageName
+                }
+            } catch (_: Exception) {
+            }
+        }
+        return try {
+            val probeIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com")).apply {
+                addCategory(Intent.CATEGORY_BROWSABLE)
+            }
+            val resolved = context.packageManager.resolveActivity(
+                probeIntent,
+                PackageManager.MATCH_DEFAULT_ONLY
+            )
+            val pkg = resolved?.activityInfo?.packageName
+            if (pkg.isNullOrBlank() ||
+                pkg == "android" ||
+                pkg.contains("ResolverActivity", ignoreCase = true) ||
+                pkg.contains("intentresolver", ignoreCase = true)
+            ) {
+                null
+            } else {
+                pkg
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun isUltraLoaderDefaultBrowser(context: Context): Boolean {
+        return resolveDefaultBrowserPackage(context) == context.packageName
+    }
+
+    fun buildDefaultBrowserSettingsIntent(context: Context): Intent {
+        val pm = context.packageManager
+        val manageDefaults = Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)
+        if (manageDefaults.resolveActivity(pm) != null) {
+            return manageDefaults
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val roleManager = context.getSystemService(RoleManager::class.java)
+                if (roleManager != null && roleManager.isRoleAvailable(RoleManager.ROLE_BROWSER)) {
+                    return roleManager.createRequestRoleIntent(RoleManager.ROLE_BROWSER)
+                }
+            } catch (_: Exception) {
+            }
+        }
+        val appDetails = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:${context.packageName}")
+        )
+        if (appDetails.resolveActivity(pm) != null) {
+            return appDetails
+        }
+        return Intent(Settings.ACTION_SETTINGS)
+    }
+
+    fun buildPortalNotificationLaunchIntent(
+        context: Context,
+        portalUrl: String?,
+        detectionType: String?,
+        actionOpenPortal: String = "com.apumsw1.ultraloader.OPEN_PORTAL"
+    ): Intent {
+        val usableUrl = portalUrl?.trim()?.takeIf { isUsablePortalUrl(it) }
+        val defaultBrowserPkg = resolveDefaultBrowserPackage(context)
+
+        if (defaultBrowserPkg != null &&
+            defaultBrowserPkg != context.packageName &&
+            usableUrl != null
+        ) {
+            return Intent(Intent.ACTION_VIEW, Uri.parse(usableUrl)).apply {
+                setPackage(defaultBrowserPkg)
+                addCategory(Intent.CATEGORY_BROWSABLE)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        }
+
+        return Intent(context, MainActivity::class.java).apply {
+            action = actionOpenPortal
+            if (usableUrl != null) {
+                putExtra("detected_url", usableUrl)
+            }
+            if (!detectionType.isNullOrBlank()) {
+                putExtra("detection_type", detectionType)
+            }
+            putExtra("detected_at", System.currentTimeMillis())
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
     }
 }
 
