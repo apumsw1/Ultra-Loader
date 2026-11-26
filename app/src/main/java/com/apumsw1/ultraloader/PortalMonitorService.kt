@@ -265,6 +265,7 @@ class PortalMonitorService : Service() {
 
     private fun handleConfirmedVpnWhileArmed() {
         if (!VpnAutomationBridge.isArmed() || VpnAutomationBridge.appInForeground) return
+        if (!PortalNetworkHelper.isVpnConnected(connectivityManager)) return
 
         if (VpnAutoConnectService.requestReturnToUltraLoader(this)) {
             return

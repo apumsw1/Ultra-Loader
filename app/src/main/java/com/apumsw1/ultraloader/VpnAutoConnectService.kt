@@ -459,6 +459,12 @@ class VpnAutoConnectService : AccessibilityService() {
     }
 
     private fun returnToUltraLoader() {
+        val cm = connectivityManager
+            ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).also {
+                connectivityManager = it
+            }
+        if (!PortalNetworkHelper.isVpnConnected(cm)) return
+
         handler.removeCallbacks(inspectRunnable)
         VpnAutomationBridge.disarm()
         if (!VpnAutomationBridge.claimReturnToApp()) return
