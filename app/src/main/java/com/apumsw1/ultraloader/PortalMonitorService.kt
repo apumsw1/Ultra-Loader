@@ -13,6 +13,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
 class PortalMonitorService : Service() {
@@ -64,10 +65,10 @@ class PortalMonitorService : Service() {
     @Volatile
     private var sessionBroadcastSignature: String? = null
 
-    private val wifiNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
-    private val captiveNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
-    private val websiteNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
-    private val validatedNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
+    private val wifiNetworks: MutableSet<Network> = Collections.newSetFromMap(ConcurrentHashMap())
+    private val captiveNetworks: MutableSet<Network> = Collections.newSetFromMap(ConcurrentHashMap())
+    private val websiteNetworks: MutableSet<Network> = Collections.newSetFromMap(ConcurrentHashMap())
+    private val validatedNetworks: MutableSet<Network> = Collections.newSetFromMap(ConcurrentHashMap())
 
     override fun onCreate() {
         super.onCreate()

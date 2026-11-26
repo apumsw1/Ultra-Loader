@@ -1,0 +1,6 @@
+{
+  "name": "Ultra Loader",
+  "description": "Cyber Control Center and Secure Network Portal Loader",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
