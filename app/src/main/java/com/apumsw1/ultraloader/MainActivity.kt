@@ -2211,15 +2211,6 @@ private fun discoverPortalUrl() {
             }
         }
 
-        // 3. Fallback: Router Gateway IP URL if no notification or capport data found yet
-        if (found == null && network != null) {
-            val gwIp = PortalNetworkHelper.getWifiGatewayIp(this, manager, network)
-            if (!gwIp.isNullOrBlank()) {
-                found = "http://$gwIp/"
-                activeDetectionType = WifiNotificationListener.TYPE_PORTAL_LOGIN
-            }
-        }
-
         if (!found.isNullOrBlank() && PortalNetworkHelper.isValidHttpUrl(found)) {
             activeSessionUrl = found
             val detType = activeDetectionType
