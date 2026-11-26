@@ -415,18 +415,21 @@ override fun onCreate(savedInstanceState: Bundle?) {
         restoreWorkflowInstanceState(savedInstanceState)
     }
 
-    if (pendingWebViewState != null || stage != Stage.IDLE) {
-        ActivationManager.requireActivation(this) {
-            initializeApplication()
+    window.decorView.post {
+        if (isFinishing || isDestroyed) return@post
+        if (pendingWebViewState != null || stage != Stage.IDLE) {
+            ActivationManager.requireActivation(this) {
+                initializeApplication()
+            }
+            checkForForcedUpdate(backgroundOnly = true)
+        } else if (hasValidatedInternet()) {
+            checkForForcedUpdate(backgroundOnly = false)
+        } else {
+            ActivationManager.requireActivation(this) {
+                initializeApplication()
+            }
+            checkForForcedUpdate(backgroundOnly = true)
         }
-        checkForForcedUpdate(backgroundOnly = true)
-    } else if (hasValidatedInternet()) {
-        checkForForcedUpdate(backgroundOnly = false)
-    } else {
-        ActivationManager.requireActivation(this) {
-            initializeApplication()
-        }
-        checkForForcedUpdate(backgroundOnly = true)
     }
 }
 
