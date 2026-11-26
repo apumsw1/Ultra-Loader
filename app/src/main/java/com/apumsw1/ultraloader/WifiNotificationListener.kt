@@ -11,6 +11,8 @@ import android.os.Build
 import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import android.text.Spanned
+import android.text.style.URLSpan
 import java.net.URI
 import java.util.Collections
 import java.util.Locale
@@ -59,18 +61,24 @@ class WifiNotificationListener : NotificationListenerService() {
         fun getSessionCapturedPortal(context: Context): Pair<String, String>? {
             val memUrl = sessionCapturedUrl
             val memType = sessionCapturedType
-            if (!memUrl.isNullOrBlank() && isValidHttpUrlStatic(memUrl)) {
+            if (!memUrl.isNullOrBlank() && PortalNetworkHelper.isUsablePortalUrl(memUrl)) {
                 return Pair(memUrl, memType ?: TYPE_PORTAL_LOGIN)
+            }
+            if (!memUrl.isNullOrBlank() && !PortalNetworkHelper.isUsablePortalUrl(memUrl)) {
+                sessionCapturedUrl = null
             }
             return try {
                 val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 val savedUrl = prefs.getString("session_captured_url", null)
                 val savedType = prefs.getString("session_captured_type", null)
-                if (!savedUrl.isNullOrBlank() && isValidHttpUrlStatic(savedUrl)) {
+                if (!savedUrl.isNullOrBlank() && PortalNetworkHelper.isUsablePortalUrl(savedUrl)) {
                     sessionCapturedUrl = savedUrl
                     sessionCapturedType = savedType ?: TYPE_PORTAL_LOGIN
                     Pair(savedUrl, sessionCapturedType ?: TYPE_PORTAL_LOGIN)
                 } else {
+                    if (!savedUrl.isNullOrBlank()) {
+                        prefs.edit().remove("session_captured_url").remove("latest_url").apply()
+                    }
                     null
                 }
             } catch (_: Exception) {
@@ -79,7 +87,7 @@ class WifiNotificationListener : NotificationListenerService() {
         }
 
         fun markSessionCaptured(context: Context, url: String, type: String) {
-            if (!isValidHttpUrlStatic(url)) return
+            if (!PortalNetworkHelper.isUsablePortalUrl(url)) return
             sessionCapturedUrl = url
             sessionCapturedType = type
             try {
@@ -129,14 +137,7 @@ class WifiNotificationListener : NotificationListenerService() {
         }
 
         private fun isValidHttpUrlStatic(value: String): Boolean {
-            return try {
-                val uri = URI(value.trim())
-                (uri.scheme.equals("http", true) ||
-                    uri.scheme.equals("https", true)) &&
-                    !uri.host.isNullOrBlank()
-            } catch (_: Exception) {
-                false
-            }
+            return PortalNetworkHelper.isUsablePortalUrl(value)
         }
     }
 
@@ -222,6 +223,7 @@ class WifiNotificationListener : NotificationListenerService() {
                 val str = value.toString()
                 texts.add(str)
                 extractUrlsFromText(str, extraUrls)
+                extractSpannedUrls(value, extraUrls)
             }
         }
 
@@ -277,7 +279,8 @@ class WifiNotificationListener : NotificationListenerService() {
             userUrlFromCapport ?: venueUrlFromCapport
         }
 
-        val resolvedUrl = urls.firstOrNull() ?: capportUrl
+        val resolvedUrl = urls.firstOrNull { isUsablePortalUrl(it) }
+            ?: capportUrl?.takeIf { isUsablePortalUrl(it) }
         val eventTime = if (sbn.postTime > 0L) sbn.postTime else System.currentTimeMillis()
 
         notification.contentIntent?.let { ci ->
@@ -419,11 +422,7 @@ class WifiNotificationListener : NotificationListenerService() {
     }
 
     private fun isUsablePortalUrl(value: String): Boolean {
-        if (!isValidHttpUrl(value)) return false
-        val lower = value.lowercase(Locale.ROOT)
-        return !lower.contains("schemas.android.com") &&
-            !lower.contains("www.w3.org") &&
-            !lower.contains("ns.adobe.com")
+        return PortalNetworkHelper.isUsablePortalUrl(value)
     }
 
     private fun notifyMonitorService(resolvedUrl: String?, detectionType: String) {
@@ -508,6 +507,7 @@ class WifiNotificationListener : NotificationListenerService() {
                             val s = value.toString()
                             texts.add(s)
                             extractUrlsFromText(s, urls)
+                            extractSpannedUrls(value, urls)
                         }
                     }
                     is Array<*> -> {
@@ -518,6 +518,7 @@ class WifiNotificationListener : NotificationListenerService() {
                                     if (s.isNotBlank()) {
                                         texts.add(s)
                                         extractUrlsFromText(s, urls)
+                                        extractSpannedUrls(item, urls)
                                     }
                                 }
                                 is Bundle -> collectBundleValues(item, texts, urls, depth + 1)
@@ -536,6 +537,7 @@ class WifiNotificationListener : NotificationListenerService() {
                                     if (s.isNotBlank()) {
                                         texts.add(s)
                                         extractUrlsFromText(s, urls)
+                                        extractSpannedUrls(item, urls)
                                     }
                                 }
                                 is Bundle -> collectBundleValues(item, texts, urls, depth + 1)
@@ -549,6 +551,20 @@ class WifiNotificationListener : NotificationListenerService() {
                 }
             }
         } catch (_: Exception) {
+        }
+    }
+
+    private fun extractSpannedUrls(value: CharSequence, urls: MutableList<String>) {
+        if (value is Spanned) {
+            try {
+                value.getSpans(0, value.length, URLSpan::class.java).forEach { span ->
+                    val spanUrl = span?.url?.trim()
+                    if (!spanUrl.isNullOrBlank() && isUsablePortalUrl(spanUrl)) {
+                        urls.add(spanUrl)
+                    }
+                }
+            } catch (_: Exception) {
+            }
         }
     }
 

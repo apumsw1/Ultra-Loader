@@ -120,6 +120,64 @@ object VpnAutomationBridge {
 
 object PortalNetworkHelper {
 
+    fun isConnectivityCheckOrBrowserProbeUrl(value: String?): Boolean {
+        if (value.isNullOrBlank()) return false
+        return try {
+            val uri = URI(value.trim())
+            val host = uri.host?.lowercase(Locale.ROOT) ?: return false
+            val path = uri.path?.lowercase(Locale.ROOT).orEmpty()
+
+            if (host == "detectportal.firefox.com" ||
+                host.endsWith(".detectportal.firefox.com") ||
+                host == "mozilla.org" || host.endsWith(".mozilla.org") ||
+                host == "mozilla.com" || host.endsWith(".mozilla.com") ||
+                host == "firefox.com" || host.endsWith(".firefox.com")
+            ) {
+                return true
+            }
+
+            if (host == "connectivitycheck.gstatic.com" ||
+                host == "connectivitycheck.android.com" ||
+                host == "connectivitycheck.google.com" ||
+                host == "google.com" ||
+                host == "www.google.com" ||
+                host == "clients.l.google.com" ||
+                host.matches(Regex("^clients\\d*\\.google\\.com$")) ||
+                ((host == "google.com" || host.endsWith(".google.com") || host.endsWith(".gstatic.com")) &&
+                    (path == "/generate_24" || path == "/gen_204" || path.startsWith("/generate_24") || path.startsWith("/gen_204")))
+            ) {
+                return true
+            }
+
+            if (host == "captive.apple.com" ||
+                host.endsWith(".captive.apple.com") ||
+                ((host == "apple.com" || host.endsWith(".apple.com")) &&
+                    (path.contains("hotspot-detect") || path.contains("/library/test/")))
+            ) {
+                return true
+            }
+
+            if (host == "msftconnecttest.com" || host.endsWith(".msftconnecttest.com") ||
+                host == "msftncsi.com" || host.endsWith(".msftncsi.com")
+            ) {
+                return true
+            }
+
+            if (host == "schemas.android.com" || host == "www.w3.org" || host == "ns.adobe.com") {
+                return true
+            }
+
+            false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun isUsablePortalUrl(value: String?): Boolean {
+        if (!isValidHttpUrl(value)) return false
+        return !isConnectivityCheckOrBrowserProbeUrl(value)
+    }
+
     fun isValidHttpUrl(value: String?): Boolean {
         if (value.isNullOrBlank()) return false
         return try {
@@ -220,13 +278,13 @@ object PortalNetworkHelper {
                 capData.javaClass.getMethod("getUserPortalUrl").invoke(capData)?.toString()
             } catch (_: Exception) {
                 null
-            }?.takeIf { isValidHttpUrl(it) }
+            }?.takeIf { isUsablePortalUrl(it) }
 
             val venueUrl = try {
                 capData.javaClass.getMethod("getVenueInfoUrl").invoke(capData)?.toString()
             } catch (_: Exception) {
                 null
-            }?.takeIf { isValidHttpUrl(it) }
+            }?.takeIf { isUsablePortalUrl(it) }
 
             Pair(userUrl, venueUrl)
         } catch (_: Exception) {
@@ -256,7 +314,7 @@ object PortalNetworkHelper {
             } else {
                 userUrl ?: venueUrl
             }
-            if (isValidHttpUrl(picked)) {
+            if (isUsablePortalUrl(picked)) {
                 return picked
             }
         }
@@ -314,97 +372,94 @@ object PortalNetworkHelper {
         val probeUrls = listOf(
             "http://connectivitycheck.gstatic.com/generate_204",
             "http://clients3.google.com/generate_204",
-            "http://captive.apple.com/hotspot-detect.html",
-            "http://detectportal.firefox.com/canonical.html",
-            "http://www.msftconnecttest.com/connecttest.txt"
+            "http://captive.apple.com/hotspot-detect.html"
         )
 
         for (probeUrl in probeUrls) {
-            var conn: java.net.HttpURLConnection? = null
-            try {
-                val url = java.net.URL(probeUrl)
-                conn = target.openConnection(url) as? java.net.HttpURLConnection ?: continue
-                conn.instanceFollowRedirects = false
-                conn.useCaches = false
-                conn.connectTimeout = 4000
-                conn.readTimeout = 4000
-                conn.requestMethod = "GET"
+            var currentUrl = probeUrl
+            for (hop in 0..2) {
+                var conn: java.net.HttpURLConnection? = null
+                try {
+                    val url = java.net.URL(currentUrl)
+                    conn = target.openConnection(url) as? java.net.HttpURLConnection ?: break
+                    conn.instanceFollowRedirects = false
+                    conn.useCaches = false
+                    conn.connectTimeout = 4000
+                    conn.readTimeout = 4000
+                    conn.requestMethod = "GET"
 
-                val code = conn.responseCode
-                if (code in 300..399) {
-                    val location = conn.getHeaderField("Location")?.trim()
-                    if (!location.isNullOrBlank()) {
-                        val resolved = try {
-                            java.net.URL(url, location).toString()
+                    val code = conn.responseCode
+                    if (code in 300..399) {
+                        val location = conn.getHeaderField("Location")?.trim()
+                        if (!location.isNullOrBlank()) {
+                            val resolved = try {
+                                java.net.URL(url, location).toString()
+                            } catch (_: Exception) {
+                                location
+                            }
+                            if (isUsablePortalUrl(resolved)) {
+                                return resolved
+                            }
+                            if (isValidHttpUrl(resolved) && resolved != currentUrl) {
+                                currentUrl = resolved
+                                continue
+                            }
+                        }
+                        break
+                    } else if (code == 200) {
+                        val body = try {
+                            conn.inputStream.bufferedReader().use { reader ->
+                                val buf = CharArray(16384)
+                                val n = reader.read(buf)
+                                if (n > 0) String(buf, 0, n) else ""
+                            }
                         } catch (_: Exception) {
-                            location
+                            ""
                         }
-                        if (isValidHttpUrl(resolved)) {
-                            return resolved
+                        val metaMatch = Regex(
+                            """<meta[^>]+http-equiv\s*=\s*["']?refresh["']?[^>]*content\s*=\s*["'][^"']*url\s*=\s*([^"'\s>]+)["']?""",
+                            RegexOption.IGNORE_CASE
+                        ).find(body)?.groupValues?.getOrNull(1)?.trim()
+                        if (!metaMatch.isNullOrBlank()) {
+                            val resolved = try {
+                                java.net.URL(url, metaMatch).toString()
+                            } catch (_: Exception) {
+                                metaMatch
+                            }
+                            if (isUsablePortalUrl(resolved)) return resolved
                         }
-                    }
-                } else if (code == 200) {
-                    val body = try {
-                        conn.inputStream.bufferedReader().use { reader ->
-                            val buf = CharArray(16384)
-                            val n = reader.read(buf)
-                            if (n > 0) String(buf, 0, n) else ""
-                        }
-                    } catch (_: Exception) {
-                        ""
-                    }
-                    val metaMatch = Regex(
-                        """<meta[^>]+http-equiv\s*=\s*["']?refresh["']?[^>]*content\s*=\s*["'][^"']*url\s*=\s*([^"'\s>]+)["']?""",
-                        RegexOption.IGNORE_CASE
-                    ).find(body)?.groupValues?.getOrNull(1)?.trim()
-                    if (!metaMatch.isNullOrBlank()) {
-                        val resolved = try {
-                            java.net.URL(url, metaMatch).toString()
-                        } catch (_: Exception) {
-                            metaMatch
-                        }
-                        if (isValidHttpUrl(resolved)) return resolved
-                    }
 
-                    val jsMatch = Regex(
-                        """(?:(?:window|top|self|document)\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']|(?:(?:window|top|self|document)\.)?location\.(?:replace|assign)\(\s*["']([^"']+)["']\s*\)""",
-                        RegexOption.IGNORE_CASE
-                    ).find(body)
-                    val jsTarget = (jsMatch?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
-                        ?: jsMatch?.groupValues?.getOrNull(2))?.trim()
-                    if (!jsTarget.isNullOrBlank()) {
-                        val resolved = try {
-                            java.net.URL(url, jsTarget).toString()
-                        } catch (_: Exception) {
-                            jsTarget
+                        val jsMatch = Regex(
+                            """(?:(?:window|top|self|document)\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']|(?:(?:window|top|self|document)\.)?location\.(?:replace|assign)\(\s*["']([^"']+)["']\s*\)""",
+                            RegexOption.IGNORE_CASE
+                        ).find(body)
+                        val jsTarget = (jsMatch?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+                            ?: jsMatch?.groupValues?.getOrNull(2))?.trim()
+                        if (!jsTarget.isNullOrBlank()) {
+                            val resolved = try {
+                                java.net.URL(url, jsTarget).toString()
+                            } catch (_: Exception) {
+                                jsTarget
+                            }
+                            if (isUsablePortalUrl(resolved)) return resolved
                         }
-                        if (isValidHttpUrl(resolved)) return resolved
-                    }
 
-                    val lower = body.lowercase(Locale.ROOT)
-                    val isKnownSuccess =
-                        (probeUrl.contains("apple.com") && lower.contains("<title>success</title>")) ||
-                            (probeUrl.contains("firefox.com") && lower.contains("detectportal.firefox.com/success.txt")) ||
-                            (probeUrl.contains("msftconnecttest.com") && lower.trim() == "microsoft connect test")
-                    if (!isKnownSuccess && (
-                        lower.contains("<form") ||
-                            lower.contains("type=\"password\"") ||
-                            lower.contains("type='password'") ||
-                            lower.contains("login") ||
-                            lower.contains("sign in") ||
-                            lower.contains("portal") ||
-                            lower.contains("wifi") ||
-                            lower.contains("wi-fi") ||
-                            lower.contains("accept") ||
-                            lower.contains("continue")
-                        )
-                    ) {
-                        return probeUrl
+                        val formMatch = Regex(
+                            """<form[^>]+action\s*=\s*["']([^"']+)["']""",
+                            RegexOption.IGNORE_CASE
+                        ).find(body)?.groupValues?.getOrNull(1)?.trim()
+                        if (!formMatch.isNullOrBlank() && formMatch.startsWith("http", ignoreCase = true)) {
+                            if (isUsablePortalUrl(formMatch)) return formMatch
+                        }
+                        break
+                    } else {
+                        break
                     }
+                } catch (_: Exception) {
+                    break
+                } finally {
+                    conn?.disconnect()
                 }
-            } catch (_: Exception) {
-            } finally {
-                conn?.disconnect()
             }
         }
         return null

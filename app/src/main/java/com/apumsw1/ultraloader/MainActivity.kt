@@ -1,12 +1,15 @@
 package com.apumsw1.ultraloader
  
 import android.Manifest
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.view.animation.AccelerateDecelerateInterpolator
 import android.content.pm.PackageManager
 import android.graphics.*
 import android.graphics.drawable.GradientDrawable
@@ -102,6 +105,9 @@ private lateinit var vpnAutoAccessButton: Button
 private lateinit var webView: WebView
 private lateinit var webTitle: TextView
 private lateinit var webViewStatusText: TextView
+private lateinit var floatingConnectedBanner: LinearLayout
+private var floatingMoveAnimator: ObjectAnimator? = null
+private var floatingGlowAnimator: ValueAnimator? = null
 
 private lateinit var ipDetails: TextView
 private lateinit var licenseDetails: TextView
@@ -736,6 +742,15 @@ private fun initializeApplication() {
     updateClock()
     updateWebViewStatusDisplay()
 
+    handler.postDelayed({
+        if (appInitialized && !isFinishing && !isDestroyed && stage == Stage.IDLE && !netWorkingVerified) {
+            val cur = if (::status.isInitialized) status.text?.toString().orEmpty() else ""
+            if (cur.contains("CONNECTING, PLEASE WAIT", ignoreCase = true)) {
+                workflowStatus("SYSTEM READY")
+            }
+        }
+    }, 900L)
+
     verifyLicenseWhenOnline()
     checkForFlashPopup()
 }
@@ -946,8 +961,8 @@ private fun verifyLicenseWhenOnline() {
                 }  
 
                 "VALID" -> {
-                    if (!netWorkingVerified) {
-                        workflowStatus("LICENSE VERIFIED")
+                    if (stage == Stage.IDLE && !netWorkingVerified) {
+                        workflowStatus("ACTIVATION KEY VERIFIED")
                     }
                 }
 
@@ -976,6 +991,14 @@ private fun createScreen() {
 
     val scroll = ScrollView(this).apply {  
         isFillViewport = true  
+        background = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(
+                Color.rgb(3, 8, 22),
+                Color.rgb(5, 20, 38),
+                Color.rgb(2, 8, 20)
+            )
+        )
     }  
 
     val content = LinearLayout(this).apply {  
@@ -1005,7 +1028,7 @@ private fun createScreen() {
     }  
 
     status = TextView(this).apply {
-        text = "● WAIT TO CONNECT"
+        text = "● CONNECTING, PLEASE WAIT..."
         textSize = 12f
         gravity = Gravity.CENTER
         typeface = Typeface.DEFAULT_BOLD
@@ -1199,15 +1222,12 @@ private fun createScreen() {
     }
 
     webView = WebView(this).apply {
-        alpha = 1f
-        isFocusable = true
-        isFocusableInTouchMode = true
-        isClickable = true
-        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-        setOnTouchListener { v, _ ->
-            v.parent?.requestDisallowInterceptTouchEvent(true)
-            false
-        }
+        alpha = 0f
+        visibility = View.VISIBLE
+        isFocusable = false
+        isFocusableInTouchMode = false
+        isClickable = false
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
 
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
@@ -1398,8 +1418,19 @@ private fun createScreen() {
                     }
                     Stage.CHECK_INTERNET -> verifyCheckInternetPageLoaded(url)
                     else -> {
-                        if (stage == Stage.IDLE && !dashboardShown && !netWorkingVerified) {
-                            workflowStatus("WAIT TO CONNECT")
+                        if (stage == Stage.IDLE &&
+                            !dashboardShown &&
+                            !netWorkingVerified &&
+                            !url.isNullOrBlank() &&
+                            url != "about:blank"
+                        ) {
+                            val cur = if (::status.isInitialized) status.text?.toString().orEmpty() else ""
+                            if (!cur.contains("CONNECTING, PLEASE WAIT", ignoreCase = true) &&
+                                !cur.contains("SYSTEM READY", ignoreCase = true) &&
+                                !cur.contains("ACTIVATION KEY VERIFIED", ignoreCase = true)
+                            ) {
+                                workflowStatus("WAIT TO CONNECT")
+                            }
                         }
                     }
                 }
@@ -1438,16 +1469,12 @@ private fun createScreen() {
     content.addView(clockTextView(), matchWrap())
     content.addView(loginPanel, matchWrap())
 
-    val webViewPanel = createPanel()
+    val webViewPanel = createPanel().apply {
+        visibility = View.GONE
+    }
     webViewPanel.addView(panelHeading("🌐 LIVE PORTAL & AUTOMATION BROWSER"))
     webViewStatusText = panelText("DETECTION: WAITING | STAGE: IDLE\nURL: NONE")
     webViewPanel.addView(webViewStatusText)
-    webView.layoutParams = LinearLayout.LayoutParams(
-        LinearLayout.LayoutParams.MATCH_PARENT,
-        (280 * density).toInt()
-    )
-    (webView.parent as? ViewGroup)?.removeView(webView)
-    webViewPanel.addView(webView)
     content.addView(webViewPanel, matchWrap())
 
     content.addView(webTitle, matchWrap())
@@ -1463,8 +1490,91 @@ private fun createScreen() {
 
     content.addView(footer, matchWrap())
 
-    root.addView(
+    val floatingBg = GradientDrawable(
+        GradientDrawable.Orientation.TL_BR,
+        intArrayOf(
+            Color.argb(242, 4, 38, 28),
+            Color.argb(245, 7, 56, 39),
+            Color.argb(242, 4, 34, 24)
+        )
+    ).apply {
+        cornerRadius = 22f * density
+        setStroke((2f * density).toInt().coerceAtLeast(2), Color.rgb(0, 255, 155))
+    }
+
+    floatingConnectedBanner = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        background = floatingBg
+        setPadding(
+            (20 * density).toInt(),
+            (13 * density).toInt(),
+            (20 * density).toInt(),
+            (13 * density).toInt()
+        )
+        elevation = 14f * density
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            outlineAmbientShadowColor = Color.rgb(0, 235, 145)
+            outlineSpotShadowColor = Color.rgb(0, 255, 155)
+        }
+        visibility = View.GONE
+        alpha = 0f
+
+        addView(TextView(this@MainActivity).apply {
+            text = "✓ CONNECTED SUCCESSFULLY"
+            textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.06f
+            gravity = Gravity.CENTER
+            setTextColor(Color.rgb(0, 255, 158))
+            setShadowLayer(12f, 0f, 0f, Color.argb(190, 0, 255, 150))
+        })
+
+        addView(TextView(this@MainActivity).apply {
+            text = "INTERNET VERIFIED • VPN CONNECTED"
+            textSize = 10.5f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.08f
+            gravity = Gravity.CENTER
+            setTextColor(Color.rgb(185, 255, 228))
+            setPadding(0, (4 * density).toInt(), 0, 0)
+        })
+    }
+
+    val hostOverlay = FrameLayout(this)
+    (webView.parent as? ViewGroup)?.removeView(webView)
+    hostOverlay.addView(
+        webView,
+        FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        )
+    )
+    hostOverlay.addView(
         scroll,
+        FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        )
+    )
+    hostOverlay.addView(
+        floatingConnectedBanner,
+        FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            setMargins(
+                (14 * density).toInt(),
+                0,
+                (14 * density).toInt(),
+                (16 * density).toInt()
+            )
+        }
+    )
+
+    root.addView(
+        hostOverlay,
         LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             0,
@@ -1853,7 +1963,20 @@ private fun makeButton(
     }  
 }  
 
+private fun isHiddenUiStatus(raw: String?): Boolean {
+    if (raw.isNullOrBlank()) return false
+    val normalized = raw
+        .removePrefix("●")
+        .trim()
+        .uppercase(Locale.ROOT)
+    return normalized == "LOGIN IN PROGRESS" ||
+        normalized == "LOGOUT IN PROGRESS" ||
+        normalized == "LOGIN PAGE OPENING" ||
+        normalized == "LOGOUT PAGE DETECTED"
+}
+
 private fun statusText(message: String, color: Int) {  
+    if (isHiddenUiStatus(message)) return
     if (::status.isInitialized) {  
         status.text = message  
         status.setTextColor(color)  
@@ -1862,6 +1985,7 @@ private fun statusText(message: String, color: Int) {
 }
 
 private fun workflowStatus(logDetail: String) {
+    if (isHiddenUiStatus(logDetail)) return
     val label = if (logDetail.startsWith("●")) logDetail else "● $logDetail"
     if (::status.isInitialized && !netWorkingVerified) {
         status.text = label
@@ -1877,9 +2001,75 @@ private fun updateWebViewStatusDisplay(stageDetail: String? = null) {
     val vpn = if (isVpnConnected() || NetworkStatusManager.vpnConnected.value == true) "VPN:ON" else "VPN:OFF"
     val activeUrl = portalUrl.ifBlank { NetworkStatusManager.detectedPortalUrl.value.orEmpty() }
         .ifBlank { "WAITING FOR PORTAL URL" }
-    val stepText = stageDetail?.removePrefix("● ")?.trim()
-        ?: stage.name
+    val rawStep = stageDetail?.removePrefix("● ")?.trim()
+    val stepText = if (rawStep.isNullOrBlank() || isHiddenUiStatus(rawStep)) {
+        stage.name
+    } else {
+        rawStep
+    }
     webViewStatusText.text = "$d1 • $d2 • $vpn\nSTAGE: $stepText\nURL: $activeUrl"
+}
+
+private fun showFloatingConnectedStatus() {
+    if (!::floatingConnectedBanner.isInitialized || isFinishing || isDestroyed) return
+    if (floatingConnectedBanner.visibility == View.VISIBLE && floatingMoveAnimator?.isRunning == true) return
+
+    val density = resources.displayMetrics.density
+    floatingConnectedBanner.visibility = View.VISIBLE
+    floatingConnectedBanner.translationY = 20f * density
+    floatingConnectedBanner.animate()
+        .alpha(1f)
+        .translationY(0f)
+        .setDuration(420L)
+        .withEndAction {
+            if (isFinishing || isDestroyed || !netWorkingVerified) return@withEndAction
+            floatingMoveAnimator?.cancel()
+            floatingMoveAnimator = ObjectAnimator.ofFloat(
+                floatingConnectedBanner,
+                "translationY",
+                0f,
+                -7f * density
+            ).apply {
+                duration = 1700L
+                repeatCount = ValueAnimator.INFINITE
+                repeatMode = ValueAnimator.REVERSE
+                interpolator = AccelerateDecelerateInterpolator()
+                start()
+            }
+
+            floatingGlowAnimator?.cancel()
+            floatingGlowAnimator = ValueAnimator.ofFloat(0.92f, 1.0f).apply {
+                duration = 1400L
+                repeatCount = ValueAnimator.INFINITE
+                repeatMode = ValueAnimator.REVERSE
+                interpolator = AccelerateDecelerateInterpolator()
+                addUpdateListener { anim ->
+                    val v = anim.animatedValue as Float
+                    floatingConnectedBanner.alpha = v
+                    val bg = floatingConnectedBanner.background as? GradientDrawable
+                    val strokeAlpha = (165 + (90 * ((v - 0.92f) / 0.08f))).toInt().coerceIn(150, 255)
+                    bg?.setStroke(
+                        (2f * density).toInt().coerceAtLeast(2),
+                        Color.argb(strokeAlpha, 0, 255, 155)
+                    )
+                }
+                start()
+            }
+        }
+        .start()
+}
+
+private fun hideFloatingConnectedStatus() {
+    floatingMoveAnimator?.cancel()
+    floatingMoveAnimator = null
+    floatingGlowAnimator?.cancel()
+    floatingGlowAnimator = null
+    if (::floatingConnectedBanner.isInitialized) {
+        floatingConnectedBanner.animate().cancel()
+        floatingConnectedBanner.visibility = View.GONE
+        floatingConnectedBanner.alpha = 0f
+        floatingConnectedBanner.translationY = 0f
+    }
 }
 
 private fun toast(message: String) {  
@@ -2153,28 +2343,43 @@ private fun checkExistingWifiPortalOnStartup() {
         // Scan any active Wi-Fi notifications already present before Ultra Loader launched.
         WifiNotificationListener.scanActiveNotificationsNow(notifyService = false)
 
+        val prefs = getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
+        val pendingType = prefs.getString("pending_detection_type", null)
         val sessionCaptured = WifiNotificationListener.getSessionCapturedPortal(this)
         val capPortalUrl = PortalNetworkHelper.getCaptivePortalUrl(cm, wifi, preferVenue = false)
+            ?.takeIf { PortalNetworkHelper.isUsablePortalUrl(it) }
         val capVenueUrl = PortalNetworkHelper.getCaptivePortalUrl(cm, wifi, preferVenue = true)
-        val probedPortalUrl = if (sessionCaptured == null && capVenueUrl == null && capPortalUrl == null) {
+            ?.takeIf { PortalNetworkHelper.isUsablePortalUrl(it) }
+
+        val capPreferred = if (pendingType == WifiNotificationListener.TYPE_VIEW_WEBSITE) {
+            capVenueUrl ?: capPortalUrl
+        } else {
+            capPortalUrl ?: capVenueUrl
+        }
+
+        val sessionUsableUrl = sessionCaptured?.first
+            ?.takeIf { PortalNetworkHelper.isUsablePortalUrl(it) }
+
+        val probedPortalUrl = if (sessionUsableUrl == null && capPreferred == null) {
             PortalNetworkHelper.probeCaptivePortalUrl(cm, wifi)
+                ?.takeIf { PortalNetworkHelper.isUsablePortalUrl(it) }
         } else {
             null
         }
 
-        val resolvedUrl = sessionCaptured?.first
-            ?: capVenueUrl
-            ?: capPortalUrl
+        val resolvedUrl = sessionUsableUrl
+            ?: capPreferred
             ?: probedPortalUrl
 
         val resolvedType = sessionCaptured?.second
+            ?: pendingType
             ?: if (!capVenueUrl.isNullOrBlank()) {
                 WifiNotificationListener.TYPE_VIEW_WEBSITE
             } else {
                 WifiNotificationListener.TYPE_PORTAL_LOGIN
             }
 
-        if (!resolvedUrl.isNullOrBlank() && PortalNetworkHelper.isValidHttpUrl(resolvedUrl)) {
+        if (!resolvedUrl.isNullOrBlank() && PortalNetworkHelper.isUsablePortalUrl(resolvedUrl)) {
             WifiNotificationListener.markSessionCaptured(this, resolvedUrl, resolvedType)
             NetworkStatusManager.updateDetectionType(resolvedType, resolvedUrl)
             runOnUiThread {
@@ -2202,6 +2407,7 @@ private fun startPortalProcess(userInitiated: Boolean = false) {
     cancelWorkflowCallbacks()
     VpnAutomationBridge.disarm()
     PortalMonitorService.cancelVpnReturnNotification(this)
+    hideFloatingConnectedStatus()
 
     dashboardShown = false
     stage = Stage.LOGIN
@@ -2268,7 +2474,7 @@ private fun startPortalProcess(userInitiated: Boolean = false) {
     } catch (_: Exception) {
     }
 
-    workflowStatus("FINDING CURRENT PORTAL...")
+    workflowStatus("CONNECTING, PLEASE WAIT...")
 
     discoverPortalUrl()
 }  
@@ -2298,15 +2504,15 @@ private fun discoverPortalUrl() {
 
         var found: String? = null
 
-        // 1. Use ONLY the exact URL captured from the active Wi-Fi notification session.
+        // 1. Use ONLY the exact usable portal URL captured from the active Wi-Fi notification session.
         val activeUrl = activeSessionUrl
-        if (PortalNetworkHelper.isValidHttpUrl(activeUrl)) {
+        if (PortalNetworkHelper.isUsablePortalUrl(activeUrl)) {
             found = activeUrl
         }
 
         if (found == null) {
             val sessionPortal = WifiNotificationListener.getSessionCapturedPortal(this)
-            if (sessionPortal != null && PortalNetworkHelper.isValidHttpUrl(sessionPortal.first)) {
+            if (sessionPortal != null && PortalNetworkHelper.isUsablePortalUrl(sessionPortal.first)) {
                 found = sessionPortal.first
                 activeDetectionType = sessionPortal.second
             }
@@ -2315,7 +2521,7 @@ private fun discoverPortalUrl() {
         if (found == null) {
             WifiNotificationListener.scanActiveNotificationsNow(notifyService = false)
             val afterScan = WifiNotificationListener.getSessionCapturedPortal(this)
-            if (afterScan != null && PortalNetworkHelper.isValidHttpUrl(afterScan.first)) {
+            if (afterScan != null && PortalNetworkHelper.isUsablePortalUrl(afterScan.first)) {
                 found = afterScan.first
                 activeDetectionType = afterScan.second
             }
@@ -2326,14 +2532,14 @@ private fun discoverPortalUrl() {
             val pendingType = activeDetectionType ?: prefs.getString("pending_detection_type", null)
             val preferVenue = pendingType == WifiNotificationListener.TYPE_VIEW_WEBSITE
             val capUrl = PortalNetworkHelper.getCaptivePortalUrl(manager, network, preferVenue)
-            if (PortalNetworkHelper.isValidHttpUrl(capUrl)) {
+            if (PortalNetworkHelper.isUsablePortalUrl(capUrl)) {
                 found = capUrl
             }
         }
 
         if (found == null) {
             val liveUrl = NetworkStatusManager.detectedPortalUrl.value
-            if (PortalNetworkHelper.isValidHttpUrl(liveUrl)) {
+            if (PortalNetworkHelper.isUsablePortalUrl(liveUrl)) {
                 found = liveUrl
                 if (activeDetectionType.isNullOrBlank()) {
                     activeDetectionType = NetworkStatusManager.latestDetectionType.value
@@ -2341,10 +2547,10 @@ private fun discoverPortalUrl() {
             }
         }
 
-        // 3. Probe Wi-Fi network directly for actual captive portal HTTP redirect (302 Location / meta-refresh).
+        // 3. Probe Wi-Fi network directly for actual captive portal HTTP redirect (never return probe URL itself).
         if (found == null && wifi != null) {
             val probedUrl = PortalNetworkHelper.probeCaptivePortalUrl(manager, wifi)
-            if (PortalNetworkHelper.isValidHttpUrl(probedUrl)) {
+            if (PortalNetworkHelper.isUsablePortalUrl(probedUrl)) {
                 found = probedUrl
                 if (activeDetectionType.isNullOrBlank()) {
                     activeDetectionType = WifiNotificationListener.TYPE_PORTAL_LOGIN
@@ -2352,7 +2558,7 @@ private fun discoverPortalUrl() {
             }
         }
 
-        if (!found.isNullOrBlank() && PortalNetworkHelper.isValidHttpUrl(found)) {
+        if (!found.isNullOrBlank() && PortalNetworkHelper.isUsablePortalUrl(found)) {
             activeSessionUrl = found
             val detType = activeDetectionType
                 ?: prefs.getString("pending_detection_type", null)
@@ -2737,7 +2943,7 @@ private fun onVpnStateChanged(connected: Boolean) {
             } else {
                 VpnAutoConnectService.requestReturnToUltraLoader(this)
             }
-        } else if (stage == Stage.IDLE || stage == Stage.FINISHED) {
+        } else if (stage == Stage.IDLE || stage == Stage.FINISHED || stage == Stage.CHECK_INTERNET) {
             updateInternetStatus()
             refreshIpLocationIfNeeded()
         }
@@ -3202,7 +3408,6 @@ private fun startInAppInternetRefreshCheck() {
     }
 
     loadNextNetCheckPage()
-    startLiveNetWorkingCheck()
 }
 
 private fun scheduleNextNetCheckRefresh(delayMs: Long = 1500L) {
@@ -3238,7 +3443,7 @@ private fun loadNextNetCheckPage() {
 
     webView.stopLoading()
     webView.loadUrl(checkUrl)
-    handler.postDelayed(netCheckPageTimeoutRunnable, 5500L)
+    handler.postDelayed(netCheckPageTimeoutRunnable, 8000L)
 }
 
 private fun isValidGoogleCheckUrl(url: String?): Boolean {
@@ -3304,13 +3509,14 @@ private fun verifyCheckInternetPageLoaded(url: String?) {
         }
         if (result?.contains("PAGE_OPENED") == true) {
             googlePageLoadedInWebView = true
+            realInternetProbeVerified = true
             handler.removeCallbacks(netCheckRefreshRunnable)
             handler.removeCallbacks(netCheckPageTimeoutRunnable)
-            if (realInternetProbeVerified) {
+            handler.removeCallbacks(liveNetCheckRunnable)
+            if (isVpnConnected()) {
                 markInternetConnected()
             } else {
-                workflowStatus("GOOGLE LOADED — VERIFYING INTERNET...")
-                startLiveNetWorkingCheck()
+                workflowStatus("GOOGLE LOADED — WAITING FOR VPN...")
             }
         } else {
             scheduleNextNetCheckRefresh(1500L)
@@ -3338,6 +3544,7 @@ private fun markInternetConnected() {
 
     handler.removeCallbacks(netCheckRefreshRunnable)
     handler.removeCallbacks(netCheckPageTimeoutRunnable)
+    handler.removeCallbacks(liveNetCheckRunnable)
 
     netWorkingVerified = true
     netCheckRunning = false
@@ -3355,6 +3562,7 @@ private fun markInternetConnected() {
         secondLoginStageStatus.setTextColor(green)
     }
 
+    showFloatingConnectedStatus()
     loadIpDashboard()
     updateIpDetails()
     refreshIpLocationIfNeeded(force = true)
@@ -3364,6 +3572,7 @@ private fun startLiveNetWorkingCheck() {
     if (
         netCheckRunning ||
         netWorkingVerified ||
+        googlePageLoadedInWebView ||
         (stage != Stage.CHECK_INTERNET && stage != Stage.FINISHED) ||
         isFinishing ||
         isDestroyed
@@ -3448,8 +3657,9 @@ private fun updateInternetStatus() {
 
     internetStatus.setTextColor(if (validated) green else red)  
 
-    if ((stage == Stage.CHECK_INTERNET || stage == Stage.FINISHED) && !netWorkingVerified) {
-        startLiveNetWorkingCheck()
+    if (stage == Stage.CHECK_INTERNET && googlePageLoadedInWebView && !netWorkingVerified && isVpnConnected()) {
+        realInternetProbeVerified = true
+        markInternetConnected()
     }
 
     if (  
@@ -3581,11 +3791,7 @@ private fun extractIncomingPortalUrl(intent: Intent?): String? {
     when (intent.action) {
         Intent.ACTION_VIEW -> {
             val uriString = intent.dataString ?: intent.data?.toString()
-            if (
-                !uriString.isNullOrBlank() &&
-                (uriString.startsWith("http://", ignoreCase = true) ||
-                    uriString.startsWith("https://", ignoreCase = true))
-            ) {
+            if (PortalNetworkHelper.isUsablePortalUrl(uriString)) {
                 return uriString
             }
         }
@@ -3597,7 +3803,7 @@ private fun extractIncomingPortalUrl(intent: Intent?): String? {
                     .find(sharedText)
                     ?.value
                     ?.trimEnd('.', ',', ';', ')', ']', '}', '!', '?')
-                if (!match.isNullOrBlank()) {
+                if (PortalNetworkHelper.isUsablePortalUrl(match)) {
                     return match
                 }
             }
@@ -3610,9 +3816,7 @@ private fun saveCapturedUrlForCurrentNetwork(
     url: String,
     preResolvedGateway: String? = null
 ) {
-    if (!url.startsWith("http://", ignoreCase = true) &&
-        !url.startsWith("https://", ignoreCase = true)
-    ) {
+    if (!PortalNetworkHelper.isUsablePortalUrl(url)) {
         return
     }
     try {
@@ -3655,7 +3859,7 @@ private fun handleDetectedPortalLaunch(
     // Never interrupt an active mid-flow automation cycle.
     if (stage != Stage.IDLE && stage != Stage.FINISHED) return
 
-    val normalizedUrl = detectedUrl?.trim()?.takeIf { PortalNetworkHelper.isValidHttpUrl(it) }
+    val normalizedUrl = detectedUrl?.trim()?.takeIf { PortalNetworkHelper.isUsablePortalUrl(it) }
 
     // Capture once per Wi-Fi session: auto-open detection link only one time unless user clicks Start.
     if (!forceIfIdleOrFinished) {
@@ -3809,6 +4013,10 @@ override fun onDestroy() {
     VpnAutomationBridge.appInForeground = false
     VpnAutomationBridge.disarm()
     secondLoginTimerRunning = false
+    floatingMoveAnimator?.cancel()
+    floatingMoveAnimator = null
+    floatingGlowAnimator?.cancel()
+    floatingGlowAnimator = null
     handler.removeCallbacksAndMessages(null)
     executor.shutdownNow()
 
