@@ -971,41 +971,66 @@ object ActivationManager {
     }
 
     private fun getOrCreateSecretKey(): SecretKey {
-        val keyStore = java.security.KeyStore
-            .getInstance("AndroidKeyStore")
-            .apply {
-                load(null)
-            }
+        try {
+            val keyStore = java.security.KeyStore
+                .getInstance("AndroidKeyStore")
+                .apply {
+                    load(null)
+                }
 
-        val existing = keyStore.getKey(
-            KEY_ALIAS,
-            null
-        ) as? SecretKey
+            val existing = keyStore.getKey(
+                KEY_ALIAS,
+                null
+            ) as? SecretKey
 
-        if (existing != null) return existing
+            if (existing != null) return existing
 
-        val generator = KeyGenerator.getInstance(
-            KeyProperties.KEY_ALGORITHM_AES,
-            "AndroidKeyStore"
-        )
-
-        val spec = KeyGenParameterSpec.Builder(
-            KEY_ALIAS,
-            KeyProperties.PURPOSE_ENCRYPT or
-                KeyProperties.PURPOSE_DECRYPT
-        )
-            .setBlockModes(
-                KeyProperties.BLOCK_MODE_GCM
+            val generator = KeyGenerator.getInstance(
+                KeyProperties.KEY_ALGORITHM_AES,
+                "AndroidKeyStore"
             )
-            .setEncryptionPaddings(
-                KeyProperties.ENCRYPTION_PADDING_NONE
+
+            val spec = KeyGenParameterSpec.Builder(
+                KEY_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or
+                    KeyProperties.PURPOSE_DECRYPT
             )
-            .setRandomizedEncryptionRequired(true)
-            .build()
+                .setBlockModes(
+                    KeyProperties.BLOCK_MODE_GCM
+                )
+                .setEncryptionPaddings(
+                    KeyProperties.ENCRYPTION_PADDING_NONE
+                )
+                .setRandomizedEncryptionRequired(true)
+                .build()
 
-        generator.init(spec)
+            generator.init(spec)
 
-        return generator.generateKey()
+            return generator.generateKey()
+        } catch (e: Exception) {
+            try {
+                val keyStore = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+                keyStore.deleteEntry(KEY_ALIAS)
+            } catch (_: Exception) {}
+
+            val generator = KeyGenerator.getInstance(
+                KeyProperties.KEY_ALGORITHM_AES,
+                "AndroidKeyStore"
+            )
+
+            val spec = KeyGenParameterSpec.Builder(
+                KEY_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or
+                    KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setRandomizedEncryptionRequired(true)
+                .build()
+
+            generator.init(spec)
+            return generator.generateKey()
+        }
     }
 
     private fun encrypt(plain: ByteArray): ByteArray {

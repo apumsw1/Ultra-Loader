@@ -3277,12 +3277,13 @@ private fun isRealInternetResponding(): Boolean {
 }
 
 private fun hasValidatedInternet(): Boolean {  
-    val cm =  
-        getSystemService(Context.CONNECTIVITY_SERVICE)  
-            as ConnectivityManager  
-
-    return cm.getNetworkCapabilities(cm.activeNetwork)  
-        ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true  
+    return try {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+        val network = cm.activeNetwork ?: return false
+        cm.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+    } catch (_: Exception) {
+        false
+    }
 }  
 
 private fun updateInternetStatus() {  
