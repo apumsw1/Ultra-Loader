@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="vpn_auto_connect_service_label">Ultra Loader Auto VPN Connect</string>
+    <string name="vpn_auto_connect_service_description">Optional automation helper that taps Connect inside Thunder VPN when portal logout detection finishes and returns directly to Ultra Loader once the VPN tunnel is active.</string>
+</resources>

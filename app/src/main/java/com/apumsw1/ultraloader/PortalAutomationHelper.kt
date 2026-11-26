@@ -15,12 +15,18 @@ data class DetectedLogoutControl(
     val tagName: String = "",
     val id: String = "",
     val name: String = "",
+    val className: String = "",
     val href: String = "",
+    val resolvedUrl: String = "",
+    val formAction: String = "",
+    val formMethod: String = "",
+    val formParamsJson: String = "",
     val text: String = "",
     val title: String = "",
     val ariaLabel: String = "",
     val onclick: String = "",
     val selector: String = "",
+    val loggedInDetected: Boolean = false,
     val detectedAt: Long = System.currentTimeMillis()
 ) {
     fun toJson(): String {
@@ -29,12 +35,18 @@ data class DetectedLogoutControl(
             .put("tagName", tagName)
             .put("id", id)
             .put("name", name)
+            .put("className", className)
             .put("href", href)
+            .put("resolvedUrl", resolvedUrl)
+            .put("formAction", formAction)
+            .put("formMethod", formMethod)
+            .put("formParamsJson", formParamsJson)
             .put("text", text)
             .put("title", title)
             .put("ariaLabel", ariaLabel)
             .put("onclick", onclick)
             .put("selector", selector)
+            .put("loggedInDetected", loggedInDetected)
             .put("detectedAt", detectedAt)
             .toString()
     }
@@ -49,12 +61,18 @@ data class DetectedLogoutControl(
                     tagName = obj.optString("tagName", ""),
                     id = obj.optString("id", ""),
                     name = obj.optString("name", ""),
+                    className = obj.optString("className", ""),
                     href = obj.optString("href", ""),
+                    resolvedUrl = obj.optString("resolvedUrl", ""),
+                    formAction = obj.optString("formAction", ""),
+                    formMethod = obj.optString("formMethod", ""),
+                    formParamsJson = obj.optString("formParamsJson", ""),
                     text = obj.optString("text", ""),
                     title = obj.optString("title", ""),
                     ariaLabel = obj.optString("ariaLabel", ""),
                     onclick = obj.optString("onclick", ""),
                     selector = obj.optString("selector", ""),
+                    loggedInDetected = obj.optBoolean("loggedInDetected", false),
                     detectedAt = obj.optLong("detectedAt", System.currentTimeMillis())
                 )
             } catch (_: Exception) {
@@ -64,7 +82,243 @@ data class DetectedLogoutControl(
     }
 }
 
+object VpnAutomationBridge {
+    const val VPN_PACKAGE = "com.fast.free.unblock.thunder.vpn"
+    const val VPN_DIALOG_PACKAGE = "com.android.vpndialogs"
+
+    @Volatile
+    var appInForeground: Boolean = false
+
+    @Volatile
+    private var armedUntilMs: Long = 0L
+
+    @Volatile
+    private var clickAttempts: Int = 0
+
+    @Volatile
+    private var lastClickAtMs: Long = 0L
+
+    fun arm(timeoutMs: Long = 60_000L) {
+        armedUntilMs = System.currentTimeMillis() + timeoutMs
+        clickAttempts = 0
+        lastClickAtMs = 0L
+    }
+
+    fun disarm() {
+        armedUntilMs = 0L
+        clickAttempts = 0
+        lastClickAtMs = 0L
+    }
+
+    fun isArmed(): Boolean = System.currentTimeMillis() < armedUntilMs
+
+    fun canAttemptClick(minIntervalMs: Long = 1800L, maxAttempts: Int = 6): Boolean {
+        if (!isArmed()) return false
+        if (clickAttempts >= maxAttempts) return false
+        return System.currentTimeMillis() - lastClickAtMs >= minIntervalMs
+    }
+
+    fun recordClickAttempt() {
+        clickAttempts++
+        lastClickAtMs = System.currentTimeMillis()
+    }
+}
+
+object PortalWorkflowCoordinator {
+
+    interface BackgroundLogoutDelegate {
+        fun onBackgroundVpnConfirmed()
+    }
+
+    @Volatile
+    private var delegate: BackgroundLogoutDelegate? = null
+
+    @Volatile
+    private var waitingForVpn: Boolean = false
+
+    @Volatile
+    private var logoutClaimed: Boolean = false
+
+    @Volatile
+    private var logoutCompleted: Boolean = false
+
+    @Volatile
+    private var lastLogoutSuccess: Boolean? = null
+
+    @Volatile
+    private var lastLogoutDiagnostic: String = ""
+
+    @Volatile
+    private var savedUserAgent: String = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"
+
+    @Volatile
+    private var preservedWifiNetworkRef: Network? = null
+
+    fun setDelegate(value: BackgroundLogoutDelegate?) {
+        delegate = value
+    }
+
+    fun updateUserAgent(ua: String?) {
+        if (!ua.isNullOrBlank()) {
+            savedUserAgent = ua
+        }
+    }
+
+    fun getUserAgent(): String = savedUserAgent
+
+    fun updatePreservedWifiNetwork(network: Network?) {
+        if (network != null) {
+            preservedWifiNetworkRef = network
+        }
+    }
+
+    fun getPreservedWifiNetwork(): Network? = preservedWifiNetworkRef
+
+    fun clearPreservedWifiNetwork() {
+        preservedWifiNetworkRef = null
+    }
+
+    @Synchronized
+    fun resetForNewWorkflow(context: Context? = null) {
+        waitingForVpn = false
+        logoutClaimed = false
+        logoutCompleted = false
+        lastLogoutSuccess = null
+        lastLogoutDiagnostic = ""
+        if (context != null) {
+            try {
+                context.getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean("bg_waiting_vpn", false)
+                    .putBoolean("bg_logout_done", false)
+                    .remove("bg_logout_status")
+                    .remove("bg_logout_diagnostic")
+                    .apply()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    @Synchronized
+    fun markWaitingForVpn(context: Context, control: DetectedLogoutControl, portalUrl: String) {
+        waitingForVpn = true
+        logoutClaimed = false
+        logoutCompleted = false
+        lastLogoutSuccess = null
+        lastLogoutDiagnostic = ""
+        try {
+            context.getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("bg_waiting_vpn", true)
+                .putBoolean("bg_logout_done", false)
+                .putString("detected_logout_json", control.toJson())
+                .putString("bg_portal_url", portalUrl)
+                .remove("bg_logout_status")
+                .remove("bg_logout_diagnostic")
+                .apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    @Synchronized
+    fun isWaitingForVpn(context: Context? = null): Boolean {
+        if (waitingForVpn) return true
+        if (context == null) return false
+        return try {
+            val prefs = context.getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
+            val persisted = prefs.getBoolean("bg_waiting_vpn", false)
+            if (persisted) waitingForVpn = true
+            persisted
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    @Synchronized
+    fun tryClaimVpnLogoutExecution(): Boolean {
+        if (logoutClaimed || logoutCompleted) return false
+        logoutClaimed = true
+        waitingForVpn = false
+        return true
+    }
+
+    @Synchronized
+    fun releaseLogoutClaimForRetry() {
+        if (!logoutCompleted) {
+            logoutClaimed = false
+            waitingForVpn = true
+        }
+    }
+
+    @Synchronized
+    fun markLogoutOutcome(context: Context, success: Boolean, diagnostic: String) {
+        logoutCompleted = true
+        logoutClaimed = true
+        waitingForVpn = false
+        lastLogoutSuccess = success
+        lastLogoutDiagnostic = diagnostic
+        val statusLabel = if (success) "PORTAL LOGOUT SUCCESS" else "PORTAL LOGOUT FAILED"
+        try {
+            context.getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("bg_waiting_vpn", false)
+                .putBoolean("bg_logout_done", true)
+                .putString("bg_logout_status", statusLabel)
+                .putString("bg_logout_diagnostic", diagnostic)
+                .apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    fun isLogoutCompleted(): Boolean = logoutCompleted
+
+    fun getLastLogoutOutcome(): Pair<Boolean?, String> = Pair(lastLogoutSuccess, lastLogoutDiagnostic)
+
+    @Synchronized
+    fun syncOutcomeFromPrefs(context: Context): Pair<Boolean?, String> {
+        if (logoutCompleted) return Pair(lastLogoutSuccess, lastLogoutDiagnostic)
+        return try {
+            val prefs = context.getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
+            if (prefs.getBoolean("bg_logout_done", false)) {
+                val st = prefs.getString("bg_logout_status", "")
+                val diag = prefs.getString("bg_logout_diagnostic", "").orEmpty()
+                val ok = st == "PORTAL LOGOUT SUCCESS"
+                logoutCompleted = true
+                logoutClaimed = true
+                waitingForVpn = false
+                lastLogoutSuccess = ok
+                lastLogoutDiagnostic = diag
+                Pair(ok, diag)
+            } else {
+                Pair(null, "")
+            }
+        } catch (_: Exception) {
+            Pair(null, "")
+        }
+    }
+
+    fun notifyDelegateIfAlive(): Boolean {
+        val target = delegate ?: return false
+        target.onBackgroundVpnConfirmed()
+        return true
+    }
+
+    fun getSavedControl(context: Context): DetectedLogoutControl? {
+        return try {
+            val raw = context.getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
+                .getString("detected_logout_json", null)
+            DetectedLogoutControl.fromJson(raw)
+        } catch (_: Exception) {
+            null
+        }
+    }
+}
+
 object PortalNetworkHelper {
+
+    @Volatile
+    var isWifiProcessBound: Boolean = false
+        private set
 
     fun isValidHttpUrl(value: String?): Boolean {
         if (value.isNullOrBlank()) return false
@@ -108,8 +362,14 @@ object PortalNetworkHelper {
     fun isVpnConnected(manager: ConnectivityManager): Boolean {
         return try {
             manager.allNetworks.any { network ->
-                manager.getNetworkCapabilities(network)
-                    ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+                val caps = manager.getNetworkCapabilities(network) ?: return@any false
+                if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@any false
+                val lp = try {
+                    manager.getLinkProperties(network)
+                } catch (_: Exception) {
+                    null
+                }
+                lp == null || !lp.interfaceName.isNullOrBlank() || lp.linkAddresses.isNotEmpty()
             }
         } catch (_: Exception) {
             false
@@ -128,7 +388,13 @@ object PortalNetworkHelper {
 
         return try {
             val bound = manager.bindProcessToNetwork(target)
-            if (bound) target else null
+            if (bound) {
+                isWifiProcessBound = true
+                PortalWorkflowCoordinator.updatePreservedWifiNetwork(target)
+                target
+            } else {
+                null
+            }
         } catch (_: Exception) {
             null
         }
@@ -138,6 +404,8 @@ object PortalNetworkHelper {
         try {
             manager.bindProcessToNetwork(null)
         } catch (_: Exception) {
+        } finally {
+            isWifiProcessBound = false
         }
     }
 
@@ -246,7 +514,7 @@ object PortalJsScripts {
         function getAllDocs() {
           var docs = [document];
           try {
-            var frames = document.querySelectorAll('iframe');
+            var frames = document.querySelectorAll('iframe, frame');
             for (var i = 0; i < frames.length; i++) {
               try {
                 var fd = frames[i].contentDocument || (frames[i].contentWindow && frames[i].contentWindow.document);
@@ -257,18 +525,38 @@ object PortalJsScripts {
           return docs;
         }
 
+        function getClassStr(el) {
+          if (!el) return '';
+          try {
+            if (typeof el.className === 'string') return el.className;
+            return el.getAttribute ? (el.getAttribute('class') || '') : '';
+          } catch (e) {
+            return '';
+          }
+        }
+
         function isElemVisible(el) {
           if (!el) return false;
           try {
             if (el.disabled) return false;
-            var style = window.getComputedStyle ? window.getComputedStyle(el) : null;
-            if (style) {
-              if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') === 0) {
-                return false;
+            if ((el.type || '').toLowerCase() === 'hidden') return false;
+            var curr = el;
+            var depth = 0;
+            while (curr && curr.nodeType === 1 && depth < 10) {
+              if (curr.hidden === true) return false;
+              if (curr.getAttribute && curr.getAttribute('aria-hidden') === 'true') return false;
+              var st = window.getComputedStyle ? window.getComputedStyle(curr) : null;
+              if (st) {
+                if (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity || '1') === 0) {
+                  return false;
+                }
               }
+              curr = curr.parentElement;
+              depth++;
             }
             var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-            if (rect && rect.width === 0 && rect.height === 0 && el.offsetParent === null) {
+            var txt = (el.innerText || el.textContent || el.value || '').trim();
+            if (rect && rect.width === 0 && rect.height === 0 && !txt) {
               return false;
             }
             return true;
@@ -277,31 +565,45 @@ object PortalJsScripts {
           }
         }
 
-        function elemSig(el) {
-          return [
-            el.innerText || '',
-            el.textContent || '',
-            el.value || '',
-            el.id || '',
-            el.name || '',
-            el.title || '',
-            el.getAttribute ? (el.getAttribute('aria-label') || '') : '',
-            el.getAttribute ? (el.getAttribute('href') || '') : '',
-            el.getAttribute ? (el.getAttribute('onclick') || '') : ''
-          ].join(' ').replace(/\s+/g, ' ').trim();
+        function hasPeplinkLoggedInText(doc) {
+          try {
+            var d = doc || document;
+            var t = (d.body ? (d.body.innerText || d.body.textContent || '') : '').toLowerCase();
+            return /you\s+are\s+currently\s+logged\s+in|remaining\s+time|remaining\s+data\s+quota|successfully\s+connected|connected\s+successfully|internet\s+access\s+granted|authentication\s+successful/.test(t);
+          } catch (e) {
+            return false;
+          }
         }
 
         function isLogoutElement(el) {
           if (!el || !isElemVisible(el)) return false;
-          var textVal = ((el.innerText || el.textContent || el.value || '') + ' ' +
-            (el.title || '') + ' ' +
-            (el.getAttribute ? (el.getAttribute('aria-label') || '') : '')).toLowerCase();
-          var attrVal = ((el.id || '') + ' ' + (el.name || '') + ' ' +
-            (el.getAttribute ? (el.getAttribute('href') || '') : '') + ' ' +
-            (el.getAttribute ? (el.getAttribute('onclick') || '') : '')).toLowerCase();
+          var tag = (el.tagName || '').toLowerCase();
+          var inputType = (el.type || '').toLowerCase();
+          if (tag === 'input' && ['hidden', 'text', 'password', 'email', 'tel', 'checkbox', 'radio'].includes(inputType)) {
+            return false;
+          }
+
+          var rawText = (el.innerText || el.textContent || el.value || '').replace(/\s+/g, ' ').trim();
+          if ((tag === 'div' || tag === 'span' || tag === 'p' || tag === 'td' || tag === 'li' || tag === 'label') && rawText.length > 55) {
+            return false;
+          }
+
+          var altAttr = el.getAttribute ? (el.getAttribute('alt') || '') : '';
+          var ariaAttr = el.getAttribute ? (el.getAttribute('aria-label') || '') : '';
+          var hrefAttr = el.getAttribute ? (el.getAttribute('href') || '') : '';
+          var onclickAttr = el.getAttribute ? (el.getAttribute('onclick') || '') : '';
+          var dataAction = el.getAttribute ? (el.getAttribute('data-action') || '') : '';
+          var dataHref = el.getAttribute ? (el.getAttribute('data-href') || el.getAttribute('data-url') || '') : '';
+          var formAction = el.getAttribute ? (el.getAttribute('formaction') || '') : '';
+
+          var textVal = (rawText + ' ' + (el.title || '') + ' ' + altAttr + ' ' + ariaAttr).toLowerCase();
+          var attrVal = ((el.id || '') + ' ' + (el.name || '') + ' ' + getClassStr(el) + ' ' +
+            hrefAttr + ' ' + onclickAttr + ' ' + dataAction + ' ' + dataHref + ' ' + formAction).toLowerCase();
           var combined = textVal + ' ' + attrVal;
-          var logoutRx = /\b(log\s*[-_]?\s*out|sign\s*[-_]?\s*out|log\s*[-_]?\s*off|disconnect)\b|logout|signout|logoff/i;
+
+          var logoutRx = /\b(sign\s*[-_]?\s*out|log\s*[-_]?\s*out|log\s*[-_]?\s*off|disconnect)\b|signout|logout|logoff/i;
           if (!logoutRx.test(combined)) return false;
+
           var loginOnlyRx = /\b(log\s*in|sign\s*in|sign\s*up|register)\b/i;
           if (loginOnlyRx.test(textVal) && !logoutRx.test(textVal)) return false;
           return true;
@@ -335,20 +637,72 @@ object PortalJsScripts {
         function findLogoutCandidate() {
           var docs = getAllDocs();
           var candidates = [];
+          var seen = [];
+
+          function pushCandidate(el, doc, bonus) {
+            if (!el || seen.indexOf(el) !== -1) return;
+            if (!isLogoutElement(el)) return;
+            seen.push(el);
+
+            var tag = (el.tagName || '').toLowerCase();
+            var label = ((el.innerText || el.textContent || el.value || '') + ' ' +
+              (el.getAttribute ? (el.getAttribute('aria-label') || '') : '') + ' ' +
+              (el.title || '')).replace(/\s+/g, ' ').trim().toLowerCase();
+            var idNameClass = ((el.id || '') + ' ' + (el.name || '') + ' ' + getClassStr(el)).toLowerCase();
+            var href = (el.getAttribute ? (el.getAttribute('href') || '') : '').toLowerCase();
+            var onclickStr = (el.getAttribute ? (el.getAttribute('onclick') || '') : '').toLowerCase();
+
+            var score = bonus || 0;
+            if (/^(sign\s*out|signout|log\s*out|logout|log\s*off)$/i.test(label)) score += 25;
+            else if (/sign\s*[-_]?\s*out|log\s*[-_]?\s*out|signout|logout|log\s*[-_]?\s*off/i.test(label)) score += 15;
+            if (/logout|signout|sign-out|log-out|logoff/i.test(idNameClass)) score += 10;
+            if (/logout|signout|logoff/i.test(href) || /logout|signout|logoff/i.test(onclickStr)) score += 10;
+            if (tag === 'button' || tag === 'a' || tag === 'input') score += 12;
+            else if (el.getAttribute && (el.getAttribute('role') === 'button' || el.getAttribute('role') === 'link' || el.getAttribute('onclick'))) score += 8;
+
+            candidates.push({ el: el, doc: doc, score: score });
+          }
+
           for (var d = 0; d < docs.length; d++) {
-            var btns = Array.from(docs[d].querySelectorAll('a,button,input[type=button],input[type=submit],input[type=reset],[role=button],[onclick]'));
-            for (var i = 0; i < btns.length; i++) {
-              var el = btns[i];
-              if (isLogoutElement(el)) {
-                var score = 0;
-                var label = ((el.innerText || el.value || '') + '').toLowerCase();
-                var idName = ((el.id || '') + ' ' + (el.name || '')).toLowerCase();
-                var href = (el.getAttribute ? (el.getAttribute('href') || '') : '').toLowerCase();
-                if (/log\s*out|sign\s*out|log\s*off/i.test(label)) score += 10;
-                if (/logout|signout|logoff/i.test(idName)) score += 6;
-                if (/logout|signout|logoff/i.test(href)) score += 6;
-                if (el.tagName === 'BUTTON' || el.tagName === 'A' || el.tagName === 'INPUT') score += 3;
-                candidates.push({ el: el, doc: docs[d], score: score });
+            var doc = docs[d];
+            var primary = Array.from(doc.querySelectorAll(
+              'a,button,input[type=button],input[type=submit],input[type=reset],input[type=image],[role=button],[role=link],[onclick],[data-action],[data-href],[data-url]'
+            ));
+            for (var i = 0; i < primary.length; i++) {
+              pushCandidate(primary[i], doc, 10);
+            }
+
+            // Forms explicitly posting/submitting to a logout/signout action
+            var forms = Array.from(doc.querySelectorAll('form'));
+            for (var f = 0; f < forms.length; f++) {
+              var act = (forms[f].getAttribute('action') || '').toLowerCase();
+              if (/logout|signout|sign-out|logoff/i.test(act)) {
+                var fBtn = forms[f].querySelector('button,input[type=submit],input[type=button],a');
+                if (fBtn && isElemVisible(fBtn)) {
+                  seen.push(fBtn);
+                  candidates.push({ el: fBtn, doc: doc, score: 35 });
+                }
+              }
+            }
+
+            // Clickable or JS-generated div/span/li/label controls (e.g. Peplink custom widgets)
+            var secondary = Array.from(doc.querySelectorAll('div,span,li,td,p,label'));
+            for (var s = 0; s < secondary.length; s++) {
+              var sec = secondary[s];
+              var st = window.getComputedStyle ? window.getComputedStyle(sec) : null;
+              var cursorPointer = st && st.cursor === 'pointer';
+              var hasHandler = typeof sec.onclick === 'function' || (sec.getAttribute && (sec.getAttribute('tabindex') !== null));
+              var txt = (sec.innerText || sec.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+              var exactText = /^(sign\s*out|signout|log\s*out|logout|log\s*off)$/i.test(txt);
+              var classMatch = /logout|signout|sign-out|log-out/i.test((sec.id || '') + ' ' + getClassStr(sec));
+              if (cursorPointer || hasHandler || exactText || classMatch) {
+                // Prefer parent interactive element if nested inside <button> or <a>
+                var parentInteractive = sec.closest ? sec.closest('a,button,[role=button],[role=link],[onclick]') : null;
+                if (parentInteractive && isElemVisible(parentInteractive)) {
+                  pushCandidate(parentInteractive, doc, 12);
+                } else {
+                  pushCandidate(sec, doc, exactText ? 8 : 2);
+                }
               }
             }
           }
@@ -357,9 +711,29 @@ object PortalJsScripts {
           return candidates[0];
         }
 
+        function resolveUrlSafe(raw, baseHref) {
+          if (!raw) return '';
+          var trimmed = ('' + raw).trim();
+          if (!trimmed || trimmed === '#' || trimmed.indexOf('javascript:') === 0) return '';
+          try {
+            return new URL(trimmed, baseHref || window.location.href).href;
+          } catch (e) {
+            return '';
+          }
+        }
+
+        function extractOnclickUrl(onclickStr, baseHref) {
+          if (!onclickStr) return '';
+          var m = onclickStr.match(/(?:location(?:\.href)?\s*=\s*|location\.replace\(\s*|window\.open\(\s*)['"]([^'"]+)['"]/i);
+          if (m && m[1]) {
+            return resolveUrlSafe(m[1], baseHref);
+          }
+          return '';
+        }
+
         function buildCssSelector(el) {
           if (!el) return '';
-          if (el.id) return '#' + el.id.replace(/([^\w-])/g, '\\$1');
+          if (el.id) return '#' + el.id.replace(/([^\w-])/g, '\\${'$'}1');
           var parts = [];
           var curr = el;
           while (curr && curr.nodeType === 1 && parts.length < 5) {
@@ -399,18 +773,20 @@ object PortalJsScripts {
                 catch (e) { return atob(s); }
               }
 
+              var logoutCandFirst = findLogoutCandidate();
+              var loggedInBanner = hasPeplinkLoggedInText(document);
               var pfMatch = findVisiblePasswordField();
+
+              if (logoutCandFirst && (loggedInBanner || !pfMatch)) {
+                return 'ALREADY_LOGGED_IN';
+              }
+
               var pf = pfMatch ? pfMatch.field : null;
               var formDoc = pfMatch ? pfMatch.doc : document;
               var uf = pf ? findVisibleUsernameField(formDoc, pf) : null;
 
               if (!pf) {
-                var logoutCand = findLogoutCandidate();
-                var bodyTxt = (document.body ? (document.body.innerText || '') : '').toLowerCase();
-                if (logoutCand) {
-                  return 'ALREADY_LOGGED_IN';
-                }
-                if (/successfully connected|connected successfully|you are now connected|internet access granted|already logged in/.test(bodyTxt)) {
+                if (logoutCandFirst || loggedInBanner) {
                   return 'ALREADY_LOGGED_IN';
                 }
 
@@ -495,14 +871,17 @@ object PortalJsScripts {
             (function() {
               $SHARED_DOM_HELPERS
 
-              var pfMatch = findVisiblePasswordField();
-              if (pfMatch) return 'LOGIN_FORM_STILL_HERE';
-
               var logoutCand = findLogoutCandidate();
+              var loggedInText = hasPeplinkLoggedInText(document);
               if (logoutCand) return 'LOGIN_OK_LOGOUT_PRESENT';
 
+              var pfMatch = findVisiblePasswordField();
+              if (pfMatch && !loggedInText) return 'LOGIN_FORM_STILL_HERE';
+
+              if (loggedInText) return 'LOGIN_OK_SUCCESS_TEXT';
+
               var t = (document.body ? (document.body.innerText || '') : '').toLowerCase();
-              if (/welcome|successfully connected|connected successfully|you are now connected|internet access granted|authentication successful|logged in/.test(t)) {
+              if (/\bwelcome\b/.test(t) && !pfMatch) {
                 return 'LOGIN_OK_SUCCESS_TEXT';
               }
               return 'WAITING';
@@ -515,28 +894,67 @@ object PortalJsScripts {
             (function() {
               $SHARED_DOM_HELPERS
 
-              var pfMatch = findVisiblePasswordField();
-              if (pfMatch) {
-                return JSON.stringify({ found: false, reason: 'LOGIN_FORM_PRESENT' });
-              }
-
               var cand = findLogoutCandidate();
+              var pfMatch = findVisiblePasswordField();
+              var loggedInText = hasPeplinkLoggedInText(document);
+              var curUrl = window.location ? (window.location.href || '') : '';
+
               if (!cand) {
-                return JSON.stringify({ found: false, reason: 'NOT_FOUND' });
+                return JSON.stringify({
+                  found: false,
+                  reason: pfMatch && !loggedInText ? 'LOGIN_FORM_PRESENT' : 'NOT_FOUND',
+                  pageUrl: curUrl,
+                  loggedInText: loggedInText
+                });
               }
 
               var el = cand.el;
+              var doc = cand.doc || document;
+              var baseHref = (doc.location && doc.location.href) ? doc.location.href : curUrl;
+              var rawHref = el.getAttribute ? (el.getAttribute('href') || '') : '';
+              var dataHref = el.getAttribute ? (el.getAttribute('data-href') || el.getAttribute('data-url') || '') : '';
+              var onclickStr = el.getAttribute ? (el.getAttribute('onclick') || '') : '';
+              var resolved = resolveUrlSafe(el.href || rawHref || dataHref, baseHref) ||
+                             extractOnclickUrl(onclickStr, baseHref);
+
+              var form = el.closest ? el.closest('form') : null;
+              var formAction = '';
+              var formMethod = '';
+              var formParams = {};
+              if (form) {
+                formAction = resolveUrlSafe(form.getAttribute('action') || el.getAttribute('formaction') || baseHref, baseHref);
+                formMethod = ((form.getAttribute('method') || 'GET') + '').toUpperCase();
+                var fInputs = Array.from(form.querySelectorAll('input,select,textarea'));
+                for (var fi = 0; fi < fInputs.length; fi++) {
+                  var inp = fInputs[fi];
+                  if (!inp.name || inp.disabled) continue;
+                  var t = (inp.type || '').toLowerCase();
+                  if ((t === 'checkbox' || t === 'radio') && !inp.checked) continue;
+                  if ((t === 'submit' || t === 'button') && inp !== el) continue;
+                  formParams[inp.name] = inp.value || '';
+                }
+                if (el.name && !formParams[el.name]) {
+                  formParams[el.name] = el.value || '1';
+                }
+              }
+
               var control = {
-                pageUrl: window.location ? (window.location.href || '') : '',
+                pageUrl: baseHref,
                 tagName: (el.tagName || '').toLowerCase(),
                 id: el.id || '',
                 name: el.name || '',
-                href: (el.href || (el.getAttribute ? el.getAttribute('href') : '') || ''),
+                className: getClassStr(el),
+                href: rawHref || (el.href || ''),
+                resolvedUrl: resolved,
+                formAction: formAction,
+                formMethod: formMethod,
+                formParamsJson: form ? JSON.stringify(formParams) : '',
                 text: (el.innerText || el.textContent || el.value || '').replace(/\s+/g, ' ').trim(),
                 title: el.title || '',
                 ariaLabel: el.getAttribute ? (el.getAttribute('aria-label') || '') : '',
-                onclick: el.getAttribute ? (el.getAttribute('onclick') || '') : '',
-                selector: buildCssSelector(el)
+                onclick: onclickStr,
+                selector: buildCssSelector(el),
+                loggedInDetected: loggedInText
               };
 
               return JSON.stringify({ found: true, control: control });
@@ -567,14 +985,14 @@ object PortalJsScripts {
                       if (bySel && isElemVisible(bySel) && isLogoutElement(bySel)) return bySel;
                     } catch (e) {}
                   }
-                  var all = Array.from(doc.querySelectorAll('a,button,input[type=button],input[type=submit],input[type=reset],[role=button],[onclick]'));
+                  var all = Array.from(doc.querySelectorAll('a,button,input[type=button],input[type=submit],input[type=reset],input[type=image],[role=button],[role=link],[onclick],div,span'));
                   if (saved.name) {
                     var byName = all.find(function(n) { return n.name === saved.name && isElemVisible(n) && isLogoutElement(n); });
                     if (byName) return byName;
                   }
                   if (saved.href) {
                     var byHref = all.find(function(n) {
-                      var h = n.href || (n.getAttribute ? n.getAttribute('href') : '') || '';
+                      var h = (n.getAttribute ? n.getAttribute('href') : '') || n.href || '';
                       return h === saved.href && isElemVisible(n);
                     });
                     if (byHref) return byHref;
@@ -602,7 +1020,9 @@ object PortalJsScripts {
               }
 
               try { target.scrollIntoView({ block: 'center' }); } catch (e) {}
-              target.click();
+              try { target.click(); } catch (e) {
+                target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+              }
               return 'LOGOUT_CLICKED';
             })();
         """.trimIndent()
@@ -619,36 +1039,38 @@ object PortalJsScripts {
                 return 'LOGOUT_ERROR_PAGE';
               }
 
+              var logoutStillThere = findLogoutCandidate();
+              var loggedInTextStillThere = hasPeplinkLoggedInText(document);
+
               var pfMatch = findVisiblePasswordField();
-              if (pfMatch) {
+              if (pfMatch && !logoutStillThere) {
                 return 'LOGOUT_VERIFIED_LOGIN_FORM';
               }
 
               var docs = getAllDocs();
               for (var d = 0; d < docs.length; d++) {
-                var btns = Array.from(docs[d].querySelectorAll('a,button,input[type=button],input[type=submit],[role=button]'));
+                var btns = Array.from(docs[d].querySelectorAll('a,button,input[type=button],input[type=submit],[role=button],[role=link]'));
                 var loginBtn = btns.find(function(b) {
                   if (!isElemVisible(b) || isLogoutElement(b)) return false;
                   var sig = (b.innerText || '') + ' ' + (b.value || '') + ' ' + (b.id || '') + ' ' + (b.name || '') + ' ' + (b.title || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('href') || '');
                   return /\b(log\s*in|sign\s*in)\b|login|signin/i.test(sig);
                 });
-                if (loginBtn) {
+                if (loginBtn && !logoutStillThere && !loggedInTextStillThere) {
                   return 'LOGOUT_VERIFIED_LOGIN_BUTTON';
                 }
               }
 
               var bodyTxt = (document.body ? (document.body.innerText || '') : '').toLowerCase();
-              if (/logged\s*out|signed\s*out|session\s*(closed|ended|terminated|expired)|successfully\s*disconnected|you\s*have\s*been\s*logged\s*out|please\s*log\s*in|login\s*again/.test(bodyTxt)) {
+              if (/logged\s*out|signed\s*out|session\s*(closed|ended|terminated|expired)|successfully\s*disconnected|you\s*have\s*been\s*(logged|signed)\s*out|please\s*(log|sign)\s*in|login\s*again/.test(bodyTxt) && !logoutStillThere) {
                 return 'LOGOUT_VERIFIED_MESSAGE';
               }
 
-              var logoutStillThere = findLogoutCandidate();
               if (logoutStillThere) {
                 return 'LOGOUT_STILL_PRESENT';
               }
 
               var prevUrl = $prevQuoted || '';
-              if (href !== prevUrl && /logout|logoff|signout|login|signin|portal|status/i.test(href)) {
+              if (href !== prevUrl && !loggedInTextStillThere && /logout|logoff|signout|login|signin|portal|status/i.test(href)) {
                 return 'LOGOUT_VERIFIED_NAVIGATED';
               }
 
@@ -670,7 +1092,7 @@ object PortalJsScripts {
 
               var docs = getAllDocs();
               for (var d = 0; d < docs.length; d++) {
-                var a = Array.from(docs[d].querySelectorAll('a,button,input[type=button],input[type=submit],[role=button]'));
+                var a = Array.from(docs[d].querySelectorAll('a,button,input[type=button],input[type=submit],[role=button],[role=link]'));
                 var x = a.find(function(n) {
                   if (!isElemVisible(n) || isLogoutElement(n)) return false;
                   var sig = (n.innerText || '') + ' ' + (n.value || '') + ' ' + (n.id || '') + ' ' + (n.name || '') + ' ' + (n.title || '') + ' ' + (n.getAttribute('aria-label') || '') + ' ' + (n.getAttribute('href') || '');

@@ -72,6 +72,22 @@
 
         </service>
 
+        <service
+            android:name=".VpnAutoConnectService"
+            android:label="@string/vpn_auto_connect_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/vpn_auto_connect_service" />
+
+        </service>
+
     </application>
 
 </manifest>
