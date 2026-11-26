@@ -150,7 +150,6 @@ private var appInitialized = false
 private var isActivityInForeground = false
 private var vpnConnectedConfirmed = false
 private var startupPortalChecked = false
-private var openedDefaultAppSettings = false
 
 private var stepNotificationUrlDetected = false
 private var stepOriginalPortalOpened = false
@@ -1063,55 +1062,6 @@ private fun createScreen() {
         setPadding(dp(4f), 0, dp(4f), dp(4f))
     }
 
-    routerPanel = createPanel().apply {
-        tag = "router_info_panel"
-        setPadding(dp(8f), dp(4f), dp(8f), dp(4f))
-        setOnClickListener {
-            val cm = connectivityManager
-                ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)
-            val info = cm?.let {
-                PortalNetworkHelper.getWifiRouterInfo(
-                    this@MainActivity,
-                    it,
-                    preservedWifiNetwork ?: portalNetwork,
-                    lastWifiCapabilities
-                )
-            }
-            if (info?.locationPermissionMissing == true) {
-                requestStartupPermissions(forceLocationPrompt = true)
-            }
-        }
-    }
-    routerPanel.addView(panelHeading("📶 WI-FI ROUTER").apply {
-        setPadding(dp(2f), 0, dp(2f), dp(1f))
-    })
-
-    routerSsidText = TextView(this).apply {
-        tag = "router_ssid_text"
-        text = "ROUTER: CHECKING..."
-        textSize = 12f
-        gravity = Gravity.CENTER
-        typeface = Typeface.DEFAULT_BOLD
-        setSingleLine(true)
-        ellipsize = android.text.TextUtils.TruncateAt.END
-        setTextColor(cyan)
-        setPadding(dp(4f), dp(1f), dp(4f), 0)
-    }
-    routerPanel.addView(routerSsidText)
-
-    routerStatusText = TextView(this).apply {
-        tag = "router_status_text"
-        text = "STATUS: CHECKING..."
-        textSize = 10f
-        gravity = Gravity.CENTER
-        typeface = Typeface.DEFAULT_BOLD
-        setSingleLine(true)
-        ellipsize = android.text.TextUtils.TruncateAt.END
-        setTextColor(cyan)
-        setPadding(dp(4f), 0, dp(4f), dp(1f))
-    }
-    routerPanel.addView(routerStatusText)
-
     status = TextView(this).apply {
         tag = "workflow_status_text"
         text = "● CONNECTING, PLEASE WAIT..."
@@ -1262,17 +1212,8 @@ private fun createScreen() {
     loginPanel.addView(userInput)
     loginPanel.addView(passwordInput)
 
-    val loginActionRow = LinearLayout(this).apply {
-        tag = "login_action_row"
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        layoutParams = matchWrap().apply {
-            setMargins(0, dp(3f), 0, dp(3f))
-        }
-    }
-
-    val halfBtnHeight = dp(44f)
-    saveLoginButton = makeButton("SAVE LOGIN") {
+    val btnHeight = dp(44f)
+    saveLoginButton = makeButton("SAVE LOGIN DETAILS") {
         val user = userInput.text.toString().trim()
         val pass = passwordInput.text.toString()
 
@@ -1287,34 +1228,17 @@ private fun createScreen() {
     }.apply {
         tag = "save_login_button"
         textSize = 12f
-        minHeight = halfBtnHeight
-        minimumHeight = halfBtnHeight
+        minHeight = btnHeight
+        minimumHeight = btnHeight
         setSingleLine(true)
         setPadding(dp(6f), dp(6f), dp(6f), dp(6f))
         background = rounded(Color.rgb(8, 56, 76), cyan)
-        layoutParams = LinearLayout.LayoutParams(0, halfBtnHeight, 1f).apply {
-            setMargins(0, 0, dp(4f), 0)
+        layoutParams = matchWrap().apply {
+            setMargins(0, dp(3f), 0, dp(3f))
         }
     }
-
-    defaultAppButton = makeButton("DEFAULT APP") {
-        openDefaultBrowserSettings()
-    }.apply {
-        tag = "default_app_button"
-        textSize = 12f
-        minHeight = halfBtnHeight
-        minimumHeight = halfBtnHeight
-        setSingleLine(true)
-        setPadding(dp(6f), dp(6f), dp(6f), dp(6f))
-        background = rounded(Color.rgb(12, 46, 82), cyan)
-        layoutParams = LinearLayout.LayoutParams(0, halfBtnHeight, 1f).apply {
-            setMargins(dp(4f), 0, 0, 0)
-        }
-    }
-
-    loginActionRow.addView(saveLoginButton)
-    loginActionRow.addView(defaultAppButton)
-    loginPanel.addView(loginActionRow)
+    defaultAppButton = Button(this)
+    loginPanel.addView(saveLoginButton)
 
     val startBtnHeight = dp(46f)
     startLoaderButton = makeButton("▶ START ULTRA LOADER") {
@@ -1619,14 +1543,12 @@ private fun createScreen() {
     secondLoginTimerStatus = panelText("LOGIN TIMER: NOT STARTED")
     secondLoginStageStatus = panelText("FREE DATA CANECTION: WAITING")
 
+    routerPanel = LinearLayout(this)
+    routerSsidText = TextView(this)
+    routerStatusText = TextView(this)
+
     content.addView(title, matchWrap())
     content.addView(subtitle, matchWrap())
-    content.addView(
-        routerPanel,
-        matchWrap().apply {
-            setMargins(0, 0, 0, dp(4f))
-        }
-    )
     content.addView(
         status,
         matchWrap().apply {
@@ -2158,53 +2080,8 @@ private fun makeButton(
     }
 }
 
-private fun openDefaultBrowserSettings() {
-    openedDefaultAppSettings = true
-    try {
-        startActivity(PortalNetworkHelper.buildDefaultBrowserSettingsIntent(this))
-    } catch (_: Exception) {
-        openedDefaultAppSettings = false
-        toast("Unable to open Default Browser settings")
-    }
-}  
-
 private fun updateRouterInfo(latestCapabilities: NetworkCapabilities? = null) {
-    if (!::routerSsidText.isInitialized || !::routerStatusText.isInitialized) return
-    val cm = connectivityManager
-        ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)?.also {
-            connectivityManager = it
-        } ?: return
-
-    val info = PortalNetworkHelper.getWifiRouterInfo(
-        context = this,
-        manager = cm,
-        preferredWifi = preservedWifiNetwork ?: portalNetwork,
-        latestCapabilities = latestCapabilities ?: lastWifiCapabilities
-    )
-
-    if (!info.connected) {
-        routerSsidText.text = "ROUTER: NOT CONNECTED"
-        routerSsidText.setTextColor(red)
-        routerStatusText.text = "STATUS: DISCONNECTED"
-        routerStatusText.setTextColor(red)
-        return
-    }
-
-    if (!info.ssid.isNullOrBlank()) {
-        routerSsidText.text = "ROUTER: ${info.ssid}"
-        routerSsidText.setTextColor(green)
-    } else if (info.locationPermissionMissing) {
-        routerSsidText.text = "ROUTER: CONNECTED WI-FI (TAP TO SHOW SSID)"
-        routerSsidText.setTextColor(cyan)
-    } else {
-        routerSsidText.text = "ROUTER: WI-FI CONNECTED"
-        routerSsidText.setTextColor(cyan)
-    }
-
-    routerStatusText.text = "STATUS: ${info.statusLabel}"
-    routerStatusText.setTextColor(
-        if (info.statusLabel.contains("ONLINE", ignoreCase = true)) green else cyan
-    )
+    // Router information UI removed per user request
 }
 
 private fun isHiddenUiStatus(raw: String?): Boolean {
@@ -2213,21 +2090,63 @@ private fun isHiddenUiStatus(raw: String?): Boolean {
 
 private fun statusText(message: String, color: Int) {  
     if (isHiddenUiStatus(message)) return
-    if (::status.isInitialized) {  
-        status.text = message  
-        status.setTextColor(color)  
+    if (!::status.isInitialized) return
+
+    if (netWorkingVerified) {
+        status.text = "● CONNECTED"
+        status.setTextColor(green)
+        updateWebViewStatusDisplay(message)
+        return
     }
+
+    if (stage != Stage.IDLE) {
+        if (color == red) {
+            status.text = message
+            status.setTextColor(red)
+        } else if (message.contains("CONNECTED", ignoreCase = true)) {
+            status.text = "● CONNECTED"
+            status.setTextColor(green)
+        } else {
+            status.text = "● PLEASE WAIT TO CONNECT"
+            status.setTextColor(cyan)
+        }
+        updateWebViewStatusDisplay(message)
+        return
+    }
+
+    status.text = message  
+    status.setTextColor(color)  
     updateWebViewStatusDisplay(message)
 }
 
 private fun workflowStatus(logDetail: String) {
     if (isHiddenUiStatus(logDetail)) return
-    val label = if (logDetail.startsWith("●")) logDetail else "● $logDetail"
-    if (::status.isInitialized && !netWorkingVerified) {
+    updateWebViewStatusDisplay(logDetail)
+    if (!::status.isInitialized) return
+
+    if (netWorkingVerified) {
+        status.text = "● CONNECTED"
+        status.setTextColor(green)
+        return
+    }
+
+    if (stage != Stage.IDLE) {
+        status.text = "● PLEASE WAIT TO CONNECT"
+        status.setTextColor(cyan)
+        return
+    }
+
+    if (logDetail.contains("SYSTEM READY", ignoreCase = true)) {
+        status.text = "● SYSTEM READY"
+        status.setTextColor(cyan)
+    } else if (logDetail.contains("KEY VERIFIED", ignoreCase = true)) {
+        status.text = "● ACTIVATION KEY VERIFIED"
+        status.setTextColor(green)
+    } else {
+        val label = if (logDetail.startsWith("●")) logDetail else "● $logDetail"
         status.text = label
         status.setTextColor(cyan)
     }
-    updateWebViewStatusDisplay(logDetail)
 }
 
 private fun updateWebViewStatusDisplay(stageDetail: String? = null) {
@@ -4284,10 +4203,7 @@ override fun onResume() {
     updateDeviceDataUsage()
     verifyLicenseWhenOnline()
 
-    if (openedDefaultAppSettings) {
-        openedDefaultAppSettings = false
-        startMonitorService(refresh = true)
-    } else if (isNotificationAccessEnabled() &&
+    if (isNotificationAccessEnabled() &&
         stage == Stage.IDLE &&
         !autoLaunchConsumedForWifiSession &&
         WifiNotificationListener.getSessionCapturedPortal(this) == null

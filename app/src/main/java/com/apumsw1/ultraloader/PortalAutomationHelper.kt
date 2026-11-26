@@ -1,18 +1,14 @@
 package com.apumsw1.ultraloader
 
 import android.Manifest
-import android.app.role.RoleManager
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.Uri
 import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.Build
-import android.provider.Settings
 import org.json.JSONObject
 import java.net.URI
 import java.util.Locale
@@ -599,103 +595,6 @@ object PortalNetworkHelper {
             statusLabel = statusLabel,
             locationPermissionMissing = locationPermissionMissing
         )
-    }
-
-    fun resolveDefaultBrowserPackage(context: Context): String? {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            try {
-                val roleManager = context.getSystemService(RoleManager::class.java)
-                if (roleManager != null && roleManager.isRoleHeld(RoleManager.ROLE_BROWSER)) {
-                    return context.packageName
-                }
-            } catch (_: Exception) {
-            }
-        }
-        return try {
-            val probeIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com")).apply {
-                addCategory(Intent.CATEGORY_BROWSABLE)
-            }
-            val resolved = context.packageManager.resolveActivity(
-                probeIntent,
-                PackageManager.MATCH_DEFAULT_ONLY
-            )
-            val pkg = resolved?.activityInfo?.packageName
-            if (pkg.isNullOrBlank() ||
-                pkg == "android" ||
-                pkg.contains("ResolverActivity", ignoreCase = true) ||
-                pkg.contains("intentresolver", ignoreCase = true)
-            ) {
-                null
-            } else {
-                pkg
-            }
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    fun isUltraLoaderDefaultBrowser(context: Context): Boolean {
-        return resolveDefaultBrowserPackage(context) == context.packageName
-    }
-
-    fun buildDefaultBrowserSettingsIntent(context: Context): Intent {
-        val pm = context.packageManager
-        val manageDefaults = Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)
-        if (manageDefaults.resolveActivity(pm) != null) {
-            return manageDefaults
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            try {
-                val roleManager = context.getSystemService(RoleManager::class.java)
-                if (roleManager != null && roleManager.isRoleAvailable(RoleManager.ROLE_BROWSER)) {
-                    return roleManager.createRequestRoleIntent(RoleManager.ROLE_BROWSER)
-                }
-            } catch (_: Exception) {
-            }
-        }
-        val appDetails = Intent(
-            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-            Uri.parse("package:${context.packageName}")
-        )
-        if (appDetails.resolveActivity(pm) != null) {
-            return appDetails
-        }
-        return Intent(Settings.ACTION_SETTINGS)
-    }
-
-    fun buildPortalNotificationLaunchIntent(
-        context: Context,
-        portalUrl: String?,
-        detectionType: String?,
-        actionOpenPortal: String = "com.apumsw1.ultraloader.OPEN_PORTAL"
-    ): Intent {
-        val usableUrl = portalUrl?.trim()?.takeIf { isUsablePortalUrl(it) }
-        val defaultBrowserPkg = resolveDefaultBrowserPackage(context)
-
-        if (defaultBrowserPkg != null &&
-            defaultBrowserPkg != context.packageName &&
-            usableUrl != null
-        ) {
-            return Intent(Intent.ACTION_VIEW, Uri.parse(usableUrl)).apply {
-                setPackage(defaultBrowserPkg)
-                addCategory(Intent.CATEGORY_BROWSABLE)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-        }
-
-        return Intent(context, MainActivity::class.java).apply {
-            action = actionOpenPortal
-            if (usableUrl != null) {
-                putExtra("detected_url", usableUrl)
-            }
-            if (!detectionType.isNullOrBlank()) {
-                putExtra("detection_type", detectionType)
-            }
-            putExtra("detected_at", System.currentTimeMillis())
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP
-        }
     }
 }
 

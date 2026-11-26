@@ -259,12 +259,9 @@ class PortalAutomationTest {
             assertEquals("● $visible", statusView.text.toString())
         }
 
-        // Router panel must appear at the very top of the dashboard (before status and dashboard columns)
+        // Router panel option removed from Home Page per user request
         val routerPanel = getPrivateField<LinearLayout>(activity, "routerPanel")
-        val statusParent = statusView.parent as ViewGroup
-        val routerIndex = statusParent.indexOfChild(routerPanel)
-        val statusIndex = statusParent.indexOfChild(statusView)
-        assertTrue("Router panel must be placed above status banner", routerIndex in 0 until statusIndex)
+        assertNull("Router panel must not be attached to home screen view hierarchy", routerPanel.parent)
 
         // Requirement 6: Lower LIVE PORTAL & AUTOMATION BROWSER panel hidden, internal WebView stays alive & full size
         val rootView = getPrivateField<LinearLayout>(activity, "root")
@@ -478,7 +475,6 @@ class PortalAutomationTest {
             callPrivateMethod(activity, "createScreen")
 
             val saveBtn = getPrivateField<Button>(activity, "saveLoginButton")
-            val defaultBtn = getPrivateField<Button>(activity, "defaultAppButton")
             val startBtn = getPrivateField<Button>(activity, "startLoaderButton")
             val rootView = getPrivateField<LinearLayout>(activity, "root")
 
@@ -486,22 +482,8 @@ class PortalAutomationTest {
             getPrivateField<Button>(activity, "notifAccessButton").visibility = View.GONE
             getPrivateField<Button>(activity, "vpnAutoAccessButton").visibility = View.GONE
 
-            assertEquals("SAVE LOGIN", saveBtn.text.toString())
-            assertEquals("DEFAULT APP", defaultBtn.text.toString())
+            assertEquals("SAVE LOGIN DETAILS", saveBtn.text.toString())
             assertEquals("▶ START ULTRA LOADER", startBtn.text.toString())
-
-            // Must be side-by-side in the same horizontal row with 50% / 50% equal weight
-            val actionRow = saveBtn.parent as LinearLayout
-            assertEquals(LinearLayout.HORIZONTAL, actionRow.orientation)
-            assertEquals(defaultBtn.parent, actionRow)
-            assertEquals(0, actionRow.indexOfChild(saveBtn))
-            assertEquals(1, actionRow.indexOfChild(defaultBtn))
-            val saveLp = saveBtn.layoutParams as LinearLayout.LayoutParams
-            val defaultLp = defaultBtn.layoutParams as LinearLayout.LayoutParams
-            assertEquals(0, saveLp.width)
-            assertEquals(0, defaultLp.width)
-            assertEquals(1f, saveLp.weight, 0.001f)
-            assertEquals(1f, defaultLp.weight, 0.001f)
 
             // Measure and layout at 1080x1920 (minus ~150px status/nav inset => 1770px app viewport)
             val viewportHeightPx = 1770
@@ -511,9 +493,7 @@ class PortalAutomationTest {
             )
             rootView.layout(0, 0, 1080, viewportHeightPx)
 
-            // Equal measured width on both side-by-side buttons
-            assertEquals(saveBtn.measuredWidth, defaultBtn.measuredWidth)
-            assertTrue("Side-by-side buttons must occupy usable width", saveBtn.measuredWidth > 350)
+            assertTrue("Save button must occupy usable width", saveBtn.measuredWidth > 350)
 
             // Locate startBtn bottom relative to the ScrollView viewport to verify no scrolling needed
             val startCoords = IntArray(2)
@@ -534,68 +514,6 @@ class PortalAutomationTest {
         }
     }
 
-    @Test
-    fun defaultBrowserSettingsAndPortalNotificationRedirectionWorkCorrectly() {
-        val shadowPm = shadowOf(context.packageManager)
-
-        // Ensure Manage Default Apps Settings resolves
-        val settingsResolve = ResolveInfo().apply {
-            activityInfo = ActivityInfo().apply {
-                packageName = "com.android.settings"
-                name = "com.android.settings.DefaultAppsActivity"
-            }
-        }
-        shadowPm.addResolveInfoForIntent(
-            Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS),
-            settingsResolve
-        )
-        val settingsIntent = PortalNetworkHelper.buildDefaultBrowserSettingsIntent(context)
-        assertEquals(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS, settingsIntent.action)
-
-        val portalUrl = "https://wifi.airport-portal.example/login"
-        val probeIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com")).apply {
-            addCategory(Intent.CATEGORY_BROWSABLE)
-        }
-
-        // Case 1: ULTRA LOADER is selected as the default browser
-        val ultraResolve = ResolveInfo().apply {
-            activityInfo = ActivityInfo().apply {
-                packageName = context.packageName
-                name = MainActivity::class.java.name
-            }
-        }
-        shadowPm.addResolveInfoForIntent(probeIntent, ultraResolve)
-        assertTrue(PortalNetworkHelper.isUltraLoaderDefaultBrowser(context))
-
-        val ultraLaunchIntent = PortalNetworkHelper.buildPortalNotificationLaunchIntent(
-            context = context,
-            portalUrl = portalUrl,
-            detectionType = WifiNotificationListener.TYPE_VIEW_WEBSITE
-        )
-        assertEquals(MainActivity::class.java.name, ultraLaunchIntent.component?.className)
-        assertEquals("com.apumsw1.ultraloader.OPEN_PORTAL", ultraLaunchIntent.action)
-        assertEquals(portalUrl, ultraLaunchIntent.getStringExtra("detected_url"))
-
-        // Case 2: Google Chrome is selected as the default browser
-        val chromeResolve = ResolveInfo().apply {
-            activityInfo = ActivityInfo().apply {
-                packageName = "com.android.chrome"
-                name = "com.google.android.apps.chrome.Main"
-            }
-        }
-        shadowPm.removeResolveInfosForIntent(probeIntent, context.packageName)
-        shadowPm.addResolveInfoForIntent(probeIntent, chromeResolve)
-        assertFalse(PortalNetworkHelper.isUltraLoaderDefaultBrowser(context))
-
-        val chromeLaunchIntent = PortalNetworkHelper.buildPortalNotificationLaunchIntent(
-            context = context,
-            portalUrl = portalUrl,
-            detectionType = WifiNotificationListener.TYPE_VIEW_WEBSITE
-        )
-        assertEquals(Intent.ACTION_VIEW, chromeLaunchIntent.action)
-        assertEquals(portalUrl, chromeLaunchIntent.dataString)
-        assertEquals("com.android.chrome", chromeLaunchIntent.`package`)
-    }
 
     @Test
     fun incomingNotificationUrlLaunchesWhetherNotLoggedInOrAlreadyLoggedIn() {
