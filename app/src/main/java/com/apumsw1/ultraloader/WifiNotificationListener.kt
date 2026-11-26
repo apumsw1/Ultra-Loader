@@ -12,12 +12,15 @@ import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import java.net.URI
+import java.util.Collections
 import java.util.Locale
 
 class WifiNotificationListener : NotificationListenerService() {
 
     companion object {
-        private const val PREFS = "wifi_notification_links"
+        const val PREFS = "wifi_notification_links"
+        const val TYPE_PORTAL_LOGIN = "PORTAL_LOGIN"
+        const val TYPE_VIEW_WEBSITE = "VIEW_WEBSITE"
 
         private val URL_PATTERN = Regex(
             """https?://[^\s<>"']+""",
@@ -29,6 +32,15 @@ class WifiNotificationListener : NotificationListenerService() {
 
         @Volatile
         private var latestPortalContentIntent: PendingIntent? = null
+
+        @Volatile
+        private var sessionCapturedUrl: String? = null
+
+        @Volatile
+        private var sessionCapturedType: String? = null
+
+        private val processedSignatures: MutableSet<String> =
+            Collections.synchronizedSet(mutableSetOf())
 
         fun isConnected(): Boolean = activeInstance != null
 
@@ -44,6 +56,68 @@ class WifiNotificationListener : NotificationListenerService() {
             }
         }
 
+        fun getSessionCapturedPortal(context: Context): Pair<String, String>? {
+            val memUrl = sessionCapturedUrl
+            val memType = sessionCapturedType
+            if (!memUrl.isNullOrBlank() && isValidHttpUrlStatic(memUrl)) {
+                return Pair(memUrl, memType ?: TYPE_PORTAL_LOGIN)
+            }
+            return try {
+                val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                val savedUrl = prefs.getString("session_captured_url", null)
+                val savedType = prefs.getString("session_captured_type", null)
+                if (!savedUrl.isNullOrBlank() && isValidHttpUrlStatic(savedUrl)) {
+                    sessionCapturedUrl = savedUrl
+                    sessionCapturedType = savedType ?: TYPE_PORTAL_LOGIN
+                    Pair(savedUrl, sessionCapturedType ?: TYPE_PORTAL_LOGIN)
+                } else {
+                    null
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        fun markSessionCaptured(context: Context, url: String, type: String) {
+            if (!isValidHttpUrlStatic(url)) return
+            sessionCapturedUrl = url
+            sessionCapturedType = type
+            try {
+                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("session_captured_url", url)
+                    .putString("session_captured_type", type)
+                    .putLong("session_captured_at", System.currentTimeMillis())
+                    .putString("latest_url", url)
+                    .putLong("latest_url_time", System.currentTimeMillis())
+                    .putString("pending_detection_type", type)
+                    .apply()
+            } catch (_: Exception) {
+            }
+        }
+
+        fun clearSessionState(context: Context? = null) {
+            sessionCapturedUrl = null
+            sessionCapturedType = null
+            latestPortalContentIntent = null
+            processedSignatures.clear()
+            activeInstance?.resetBroadcastDedup()
+            if (context != null) {
+                try {
+                    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                        .edit()
+                        .remove("session_captured_url")
+                        .remove("session_captured_type")
+                        .remove("session_captured_at")
+                        .remove("latest_url")
+                        .remove("latest_url_time")
+                        .remove("pending_detection_type")
+                        .apply()
+                } catch (_: Exception) {
+                }
+            }
+        }
+
         fun scanActiveNotificationsNow(notifyService: Boolean = false): Boolean {
             val instance = activeInstance ?: return false
             return try {
@@ -53,10 +127,29 @@ class WifiNotificationListener : NotificationListenerService() {
                 false
             }
         }
+
+        private fun isValidHttpUrlStatic(value: String): Boolean {
+            return try {
+                val uri = URI(value.trim())
+                (uri.scheme.equals("http", true) ||
+                    uri.scheme.equals("https", true)) &&
+                    !uri.host.isNullOrBlank()
+            } catch (_: Exception) {
+                false
+            }
+        }
     }
 
+    @Volatile
     private var lastServiceUpdateSignature: String = ""
+
+    @Volatile
     private var lastServiceUpdateAt: Long = 0L
+
+    private fun resetBroadcastDedup() {
+        lastServiceUpdateSignature = ""
+        lastServiceUpdateAt = 0L
+    }
 
     override fun onListenerConnected() {
         super.onListenerConnected()
@@ -90,7 +183,7 @@ class WifiNotificationListener : NotificationListenerService() {
         } ?: return
 
         var latestDetection: Pair<String?, String>? = null
-        // Process oldest to newest so the newest notification becomes latest_url
+        // Process oldest to newest so the newest relevant notification wins.
         active.sortedBy { it.postTime }.forEach { sbn ->
             val matched = processStatusBarNotification(sbn, notifyMonitorService = false)
             if (matched != null) {
@@ -108,13 +201,14 @@ class WifiNotificationListener : NotificationListenerService() {
         processStatusBarNotification(sbn, notifyMonitorService = true)
     }
 
+    @Synchronized
     private fun processStatusBarNotification(
         sbn: StatusBarNotification,
         notifyMonitorService: Boolean
     ): Pair<String?, String>? {
         if (sbn.packageName == packageName) return null
         if (!isWifiConnected()) {
-            latestPortalContentIntent = null
+            clearSessionState(this)
             return null
         }
 
@@ -125,7 +219,9 @@ class WifiNotificationListener : NotificationListenerService() {
 
         fun addText(value: CharSequence?) {
             if (!value.isNullOrBlank()) {
-                texts.add(value.toString())
+                val str = value.toString()
+                texts.add(str)
+                extractUrlsFromText(str, extraUrls)
             }
         }
 
@@ -173,20 +269,33 @@ class WifiNotificationListener : NotificationListenerService() {
                 lowerText.contains("wifi") ||
                 lowerText.contains("captive") ||
                 lowerText.contains("portal") ||
-                lowerText.contains("network")
+                lowerText.contains("network") ||
+                lowerText.contains("connected")
 
+        val venueUrlFromCapport = getCaptivePortalUrlFromNetwork(preferVenue = true)
+        val userUrlFromCapport = getCaptivePortalUrlFromNetwork(preferVenue = false)
+
+        // Detection Type B: Connected / Tap to view website
         val isViewWebsiteNotification =
             lowerText.contains("tap to view website") ||
                 lowerText.contains("view website") ||
                 lowerText.contains("connected / tap to view") ||
                 ((systemWifiPkg || hasWifiKeywords) &&
                     (lowerText.contains("tap to view") ||
-                        (lowerText.contains("connected") && lowerText.contains("website"))))
+                        (lowerText.contains("connected") &&
+                            (lowerText.contains("website") ||
+                                lowerText.contains("view") ||
+                                !venueUrlFromCapport.isNullOrBlank()))))
 
+        // Detection Type A: Sign in to Wi-Fi / Captive Portal Login
         val isLoginPortalNotification =
             lowerText.contains("sign in to wi-fi") ||
                 lowerText.contains("sign in to wifi") ||
                 lowerText.contains("sign in to network") ||
+                lowerText.contains("sign in required") ||
+                lowerText.contains("wi-fi login") ||
+                lowerText.contains("wifi login") ||
+                lowerText.contains("login details") ||
                 lowerText.contains("captive portal") ||
                 lowerText.contains("network may require") ||
                 lowerText.contains("authorization required") ||
@@ -194,7 +303,8 @@ class WifiNotificationListener : NotificationListenerService() {
                     (lowerText.contains("sign in") ||
                         lowerText.contains("log in") ||
                         lowerText.contains("login") ||
-                        lowerText.contains("portal")))
+                        lowerText.contains("portal") ||
+                        lowerText.contains("authenticate")))
 
         if (!isViewWebsiteNotification && !isLoginPortalNotification && urls.isEmpty()) {
             return null
@@ -204,16 +314,48 @@ class WifiNotificationListener : NotificationListenerService() {
             return null
         }
 
-        val detectionType = if (isViewWebsiteNotification) "VIEW_WEBSITE" else "PORTAL_LOGIN"
-        val capportUrl = getCaptivePortalUrlFromNetwork(preferVenue = (detectionType == "VIEW_WEBSITE"))
+        val detectionType = if (isViewWebsiteNotification && !isLoginPortalNotification) {
+            TYPE_VIEW_WEBSITE
+        } else {
+            TYPE_PORTAL_LOGIN
+        }
+
+        val capportUrl = if (detectionType == TYPE_VIEW_WEBSITE) {
+            venueUrlFromCapport ?: userUrlFromCapport
+        } else {
+            userUrlFromCapport ?: venueUrlFromCapport
+        }
+
         val resolvedUrl = urls.lastOrNull() ?: capportUrl
         val eventTime = if (sbn.postTime > 0L) sbn.postTime else System.currentTimeMillis()
+
+        notification.contentIntent?.let { ci ->
+            latestPortalContentIntent = ci
+        }
+
+        // Deduplicate exact notification updates so "Connected / Tap to view website"
+        // is never captured or re-triggered repeatedly for the same notification/URL.
+        val notificationSignature = "${sbn.key}|${sbn.postTime}|$detectionType|${resolvedUrl.orEmpty()}"
+        if (!processedSignatures.add(notificationSignature)) {
+            return null
+        }
+
+        val alreadyCapturedUrl = sessionCapturedUrl
+        if (!alreadyCapturedUrl.isNullOrBlank()) {
+            // URL already captured for this Wi-Fi session.
+            // Ignore duplicate notification updates carrying the same URL or no URL.
+            if (resolvedUrl.isNullOrBlank() || resolvedUrl.equals(alreadyCapturedUrl, ignoreCase = false)) {
+                return null
+            }
+        }
 
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val editor = prefs.edit()
 
-        if (!resolvedUrl.isNullOrBlank()) {
-            val allDetected = (urls + listOfNotNull(capportUrl)).distinct()
+        if (!resolvedUrl.isNullOrBlank() && isValidHttpUrl(resolvedUrl)) {
+            val allDetected = (urls + listOfNotNull(capportUrl))
+                .filter { isValidHttpUrl(it) }
+                .distinct()
             val oldUrls = prefs.getString("url_history", "")
                 .orEmpty()
                 .split("\n")
@@ -223,7 +365,13 @@ class WifiNotificationListener : NotificationListenerService() {
                 .distinct()
                 .take(30)
 
+            sessionCapturedUrl = resolvedUrl
+            sessionCapturedType = detectionType
+
             editor
+                .putString("session_captured_url", resolvedUrl)
+                .putString("session_captured_type", detectionType)
+                .putLong("session_captured_at", System.currentTimeMillis())
                 .putString("latest_url", resolvedUrl)
                 .putLong("latest_url_time", System.currentTimeMillis())
                 .putString("url_history", history.joinToString("\n"))
@@ -239,10 +387,6 @@ class WifiNotificationListener : NotificationListenerService() {
             .putLong("latest_notification_time", eventTime)
             .apply()
 
-        notification.contentIntent?.let { ci ->
-            latestPortalContentIntent = ci
-        }
-
         if (notifyMonitorService) {
             notifyMonitorService(resolvedUrl, detectionType)
         }
@@ -253,7 +397,7 @@ class WifiNotificationListener : NotificationListenerService() {
     private fun notifyMonitorService(resolvedUrl: String?, detectionType: String) {
         val now = System.currentTimeMillis()
         val signature = "$detectionType|${resolvedUrl.orEmpty()}"
-        if (signature == lastServiceUpdateSignature && now - lastServiceUpdateAt < 10_000L) {
+        if (signature == lastServiceUpdateSignature && now - lastServiceUpdateAt < 30_000L) {
             return
         }
         lastServiceUpdateSignature = signature
@@ -287,6 +431,15 @@ class WifiNotificationListener : NotificationListenerService() {
         }
     }
 
+    private fun extractUrlsFromText(text: String, urls: MutableList<String>) {
+        URL_PATTERN.findAll(text).forEach { match ->
+            val candidate = match.value.trimEnd('.', ',', ';', ')', ']', '}', '!', '?')
+            if (isValidHttpUrl(candidate)) {
+                urls.add(candidate)
+            }
+        }
+    }
+
     @Suppress("DEPRECATION")
     private fun collectBundleValues(
         bundle: Bundle,
@@ -294,23 +447,72 @@ class WifiNotificationListener : NotificationListenerService() {
         urls: MutableList<String>,
         depth: Int
     ) {
-        if (depth > 3) return
+        if (depth > 4) return
         try {
             for (key in bundle.keySet()) {
                 val value = bundle.get(key) ?: continue
                 when (value) {
                     is String -> {
+                        if (value.isNotBlank()) texts.add(value)
                         if (isValidHttpUrl(value)) urls.add(value)
+                        extractUrlsFromText(value, urls)
                     }
                     is Uri -> {
                         val s = value.toString()
                         if (isValidHttpUrl(s)) urls.add(s)
                     }
+                    is Intent -> {
+                        val data = value.dataString ?: value.data?.toString()
+                        if (!data.isNullOrBlank() && isValidHttpUrl(data)) {
+                            urls.add(data)
+                        }
+                        value.extras?.let { collectBundleValues(it, texts, urls, depth + 1) }
+                    }
                     is Bundle -> {
                         collectBundleValues(value, texts, urls, depth + 1)
                     }
                     is CharSequence -> {
-                        if (value.isNotBlank()) texts.add(value.toString())
+                        if (value.isNotBlank()) {
+                            val s = value.toString()
+                            texts.add(s)
+                            extractUrlsFromText(s, urls)
+                        }
+                    }
+                    is Array<*> -> {
+                        for (item in value) {
+                            when (item) {
+                                is CharSequence -> {
+                                    val s = item.toString()
+                                    if (s.isNotBlank()) {
+                                        texts.add(s)
+                                        extractUrlsFromText(s, urls)
+                                    }
+                                }
+                                is Bundle -> collectBundleValues(item, texts, urls, depth + 1)
+                                is Uri -> {
+                                    val s = item.toString()
+                                    if (isValidHttpUrl(s)) urls.add(s)
+                                }
+                            }
+                        }
+                    }
+                    is Collection<*> -> {
+                        for (item in value) {
+                            when (item) {
+                                is CharSequence -> {
+                                    val s = item.toString()
+                                    if (s.isNotBlank()) {
+                                        texts.add(s)
+                                        extractUrlsFromText(s, urls)
+                                    }
+                                }
+                                is Bundle -> collectBundleValues(item, texts, urls, depth + 1)
+                                is Uri -> {
+                                    val s = item.toString()
+                                    if (isValidHttpUrl(s)) urls.add(s)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -318,29 +520,11 @@ class WifiNotificationListener : NotificationListenerService() {
         }
     }
 
-    @Suppress("DEPRECATION")
     private fun getCaptivePortalUrlFromNetwork(preferVenue: Boolean): String? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         return try {
             val manager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-            val wifi = manager.allNetworks.firstOrNull { network ->
-                manager.getNetworkCapabilities(network)
-                    ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-            } ?: return null
-
-            val linkProps = manager.getLinkProperties(wifi) ?: return null
-            val capData = linkProps.javaClass.getMethod("getCaptivePortalData").invoke(linkProps)
-                ?: return null
-            val userUrl = capData.javaClass.getMethod("getUserPortalUrl").invoke(capData)?.toString()
-            val venueUrl = capData.javaClass.getMethod("getVenueInfoUrl").invoke(capData)?.toString()
-
-            val candidate = if (preferVenue) {
-                venueUrl ?: userUrl
-            } else {
-                userUrl ?: venueUrl
-            }
-
-            if (!candidate.isNullOrBlank() && isValidHttpUrl(candidate)) candidate else null
+            PortalNetworkHelper.getCaptivePortalUrl(manager, null, preferVenue)
         } catch (_: Exception) {
             null
         }
@@ -373,14 +557,6 @@ class WifiNotificationListener : NotificationListenerService() {
     }
 
     private fun isValidHttpUrl(value: String): Boolean {
-        return try {
-            val uri = URI(value)
-
-            (uri.scheme.equals("http", true) ||
-                uri.scheme.equals("https", true)) &&
-                !uri.host.isNullOrBlank()
-        } catch (_: Exception) {
-            false
-        }
+        return isValidHttpUrlStatic(value)
     }
 }

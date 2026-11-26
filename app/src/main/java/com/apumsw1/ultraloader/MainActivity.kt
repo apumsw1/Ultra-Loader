@@ -35,7 +35,9 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.util.Locale
+import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -69,78 +71,111 @@ class MainActivity : Activity() {
         "https://t.me/ultraloader"  
 }  
 
-private enum class Stage {  
-    IDLE, LOGIN, CHECK_LOGIN, WAIT_VPN,  
-    LOGOUT, WAIT_SECOND_LOGIN, CHECK_INTERNET, FINISHED  
-}  
+private enum class Stage {
+    IDLE,
+    LOGIN,
+    CHECK_LOGIN,
+    DETECT_LOGOUT,
+    WAIT_VPN,
+    LOGOUT,
+    VERIFY_LOGOUT,
+    WAIT_SECOND_LOGIN,
+    CHECK_INTERNET,
+    FINISHED
+}
 
-private val cyan = Color.rgb(0, 225, 255)  
-private val green = Color.rgb(0, 235, 145)  
-private val red = Color.rgb(255, 65, 85)  
-private val dark = Color.rgb(4, 10, 25)  
-private val panel = Color.rgb(10, 24, 43)  
+private val cyan = Color.rgb(0, 225, 255)
+private val green = Color.rgb(0, 235, 145)
+private val red = Color.rgb(255, 65, 85)
+private val dark = Color.rgb(4, 10, 25)
+private val panel = Color.rgb(10, 24, 43)
 
-private val handler = Handler(Looper.getMainLooper())  
-private val executor = Executors.newSingleThreadExecutor()  
+private val handler = Handler(Looper.getMainLooper())
+private val executor = Executors.newSingleThreadExecutor()
 
-private lateinit var root: LinearLayout  
-private lateinit var status: TextView  
-private lateinit var internetStatus: TextView  
-private lateinit var activationStatus: TextView  
-private lateinit var userInput: EditText  
-private lateinit var passwordInput: EditText  
+private lateinit var root: LinearLayout
+private lateinit var status: TextView
+private lateinit var internetStatus: TextView
+private lateinit var activationStatus: TextView
+private lateinit var userInput: EditText
+private lateinit var passwordInput: EditText
 private lateinit var notifAccessButton: Button
-private lateinit var webView: WebView  
-private lateinit var webTitle: TextView  
+private lateinit var webView: WebView
+private lateinit var webTitle: TextView
 
-private lateinit var ipDetails: TextView  
-private lateinit var licenseDetails: TextView  
-private lateinit var dataDetails: TextView  
-private lateinit var globeView: GlobeView  
+private lateinit var ipDetails: TextView
+private lateinit var licenseDetails: TextView
+private lateinit var dataDetails: TextView
+private lateinit var globeView: GlobeView
 private lateinit var globeLocationDetails: TextView
 private lateinit var cyberRadarView: CyberRadarView
 private lateinit var radarStatusText: TextView
 private lateinit var trafficGraphView: LiveTrafficGraphView
 private lateinit var trafficSummaryText: TextView
-private lateinit var clockText: TextView  
-private lateinit var secondLoginTimerStatus: TextView  
-private lateinit var secondLoginStageStatus: TextView  
+private lateinit var clockText: TextView
+private lateinit var secondLoginTimerStatus: TextView
+private lateinit var secondLoginStageStatus: TextView
 
 private var peakSpeedBps = 0L
 
-private var dataBaselineRx = 0L  
-private var dataBaselineTx = 0L  
-private var lastRx = 0L  
-private var lastTx = 0L  
-private var dataUsageSupported = false  
+private var dataBaselineRx = 0L
+private var dataBaselineTx = 0L
+private var lastRx = 0L
+private var lastTx = 0L
+private var dataUsageSupported = false
 
-private var stage = Stage.IDLE  
-private var vpnOpened = false  
+private var stage = Stage.IDLE
+private var vpnOpened = false
 private var vpnDialogShown = false
-private var loginSubmitted = false  
-private var portalUrl = FALLBACK_PORTAL  
-private var portalNetwork: Network? = null  
-private var dashboardShown = false  
-private var appInitialized = false  
+private var loginSubmitted = false
+private var portalUrl = FALLBACK_PORTAL
+private var portalNetwork: Network? = null
+private var preservedWifiNetwork: Network? = null
+private var detectedLogoutControl: DetectedLogoutControl? = null
+private var awaitingLogoutPageReload = false
+private var dashboardShown = false
+private var appInitialized = false
+private var isActivityInForeground = false
+private var vpnConnectedConfirmed = false
+private var startupPortalChecked = false
 
-private var secondLoginTimerStartedAt = 0L  
-private var secondLoginElapsedSeconds = 0L  
-private var secondLoginTimerRunning = false  
+private var activeSessionUrl: String? = null
+private var activeDetectionType: String? = null
+private var completedSessionUrl: String? = null
 
-private var logoutSearchAttempts = 0  
-private var loginActionSearchAttempts = 0  
+private var secondLoginTimerStartedAt = 0L
+private var secondLoginElapsedSeconds = 0L
+private var secondLoginTimerRunning = false
+
+private var autoLoginAttempts = 0
+private var loginVerifyAttempts = 0
+private var logoutDetectAttempts = 0
+private var logoutSearchAttempts = 0
+private var logoutVerifyAttempts = 0
+private var loginActionSearchAttempts = 0
 private var secondFormSearchAttempts = 0
-private var secondLoginButtonFound = false  
+private var secondLoginButtonFound = false
 
-private var logoutSearchRunning = false  
-private var loginActionSearchRunning = false  
-private var secondFormCheckRunning = false  
+private var logoutDetectRunning = false
+private var logoutSearchRunning = false
+private var logoutVerifyRunning = false
+private var loginActionSearchRunning = false
+private var secondFormCheckRunning = false
 private var netCheckRunning = false
 private var netWorkingVerified = false
 private var netCheckPageHasError = false
 private var netCheckRefreshAttempt = 0
 
 private val googleCheckUrl = "https://www.google.com/"
+
+private val autoLoginRetryRunnable = Runnable { tryAutoLogin() }
+private val checkLoginRunnable = Runnable { checkPortalLogin() }
+private val detectLogoutRunnable = Runnable { detectLogoutControl() }
+private val logoutRetryRunnable = Runnable { clickPortalLogout() }
+private val verifyLogoutRunnable = Runnable { verifyPortalLogout() }
+private val secondLoginAgentRunnable = Runnable { clickPortalLoginAgent() }
+private val secondFormCheckRunnable = Runnable { checkSecondLoginForm() }
+private val liveNetCheckRunnable = Runnable { startLiveNetWorkingCheck() }
 
 private val netCheckRefreshRunnable = Runnable {
     loadNextNetCheckPage()
@@ -155,18 +190,20 @@ private val netCheckPageTimeoutRunnable = Runnable {
     }
 }
 
-private var activationPopup: AlertDialog? = null  
+private var activationPopup: AlertDialog? = null
 private var flashDialog: AlertDialog? = null
 private var vpnDialog: AlertDialog? = null
 private var portalLinkDialog: AlertDialog? = null
 private var flashPopupChecked = false
 
-private var connectivityManager: ConnectivityManager? = null  
-private var networkCallbackRegistered = false  
+private var connectivityManager: ConnectivityManager? = null
+private var networkCallbackRegistered = false
+private var wifiCallbackRegistered = false
+private var vpnCallbackRegistered = false
 private var wifiPortalReceiverRegistered = false
 private var lastAutoTriggerAt = 0L
 private var autoLoginLinkClicks = 0
-private var lastLicenseNetworkState = false  
+private var lastLicenseNetworkState = false
 private var lastIpFetchAt = 0L
 private var lastKnownVpnForIp = false
 
@@ -180,63 +217,137 @@ private val wifiPortalReceiver = object : BroadcastReceiver() {
     }
 }
 
-/*  
- * Network callback:  
- * Internet ফিরে এলে saved license server-এ verify হবে।  
- * এখানে কোনো timer বা repeated polling নেই।  
- */  
-private val licenseNetworkCallback =  
-    object : ConnectivityManager.NetworkCallback() {  
+private val wifiNetworkCallback =
+    object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            val cm = connectivityManager ?: return
+            val caps = cm.getNetworkCapabilities(network)
+            if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
+                !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            ) {
+                handler.post {
+                    preservedWifiNetwork = network
+                    if (portalNetwork == null) {
+                        portalNetwork = network
+                    }
+                }
+            }
+        }
 
-        override fun onAvailable(network: Network) {  
-            handler.post {  
-                updateInternetStatus()  
-                verifyLicenseWhenOnline()  
+        override fun onCapabilitiesChanged(
+            network: Network,
+            capabilities: NetworkCapabilities
+        ) {
+            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            ) {
+                handler.post {
+                    preservedWifiNetwork = network
+                    if (portalNetwork == null) {
+                        portalNetwork = network
+                    }
+                }
+            }
+        }
+
+        override fun onLost(network: Network) {
+            handler.post {
+                val cm = connectivityManager ?: return@post
+                val replacement = PortalNetworkHelper.findWifiNetwork(cm)
+                if (replacement != null) {
+                    preservedWifiNetwork = replacement
+                    if (portalNetwork == network) {
+                        portalNetwork = replacement
+                    }
+                } else {
+                    preservedWifiNetwork = null
+                    portalNetwork = null
+                    activeSessionUrl = null
+                    activeDetectionType = null
+                    completedSessionUrl = null
+                    detectedLogoutControl = null
+                    clearPersistedLogoutControl()
+                }
+            }
+        }
+    }
+
+private val vpnNetworkCallback =
+    object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            handler.post {
+                if (isVpnConnected()) {
+                    onVpnStateChanged(true)
+                }
+            }
+        }
+
+        override fun onCapabilitiesChanged(
+            network: Network,
+            capabilities: NetworkCapabilities
+        ) {
+            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                handler.post {
+                    onVpnStateChanged(true)
+                }
+            }
+        }
+
+        override fun onLost(network: Network) {
+            handler.post {
+                onVpnStateChanged(isVpnConnected())
+            }
+        }
+    }
+
+private val licenseNetworkCallback =
+    object : ConnectivityManager.NetworkCallback() {
+
+        override fun onAvailable(network: Network) {
+            handler.post {
+                updateInternetStatus()
+                verifyLicenseWhenOnline()
                 refreshIpLocationIfNeeded()
-            }  
-        }  
+            }
+        }
 
-        override fun onCapabilitiesChanged(  
-            network: Network,  
-            capabilities: NetworkCapabilities  
-        ) {  
-            val validated = capabilities.hasCapability(  
-                NetworkCapabilities.NET_CAPABILITY_VALIDATED  
-            )  
+        override fun onCapabilitiesChanged(
+            network: Network,
+            capabilities: NetworkCapabilities
+        ) {
+            val validated = capabilities.hasCapability(
+                NetworkCapabilities.NET_CAPABILITY_VALIDATED
+            )
 
-            handler.post {  
-                updateInternetStatus()  
+            handler.post {
+                updateInternetStatus()
 
-                if (validated) {  
-                    verifyLicenseWhenOnline()  
+                if (validated) {
+                    verifyLicenseWhenOnline()
                     refreshIpLocationIfNeeded()
-                }  
-            }  
-        }  
+                }
+            }
+        }
 
-        override fun onLost(network: Network) {  
-            handler.post {  
-                lastLicenseNetworkState = false  
-                updateInternetStatus()  
+        override fun onLost(network: Network) {
+            handler.post {
+                lastLicenseNetworkState = false
+                updateInternetStatus()
                 refreshIpLocationIfNeeded(force = true)
-            }  
-        }  
-    }  
+            }
+        }
+    }
 
-private val updater = object : Runnable {  
-    override fun run() {  
-        if (!appInitialized || isFinishing || isDestroyed) return  
+private val updater = object : Runnable {
+    override fun run() {
+        if (!appInitialized || isFinishing || isDestroyed) return
 
-        updateDeviceDataUsage()  
-        updateActivationStatus()  
-        updateClock()  
+        updateDeviceDataUsage()
+        updateActivationStatus()
+        updateClock()
 
-        if (stage == Stage.WAIT_VPN) {  
-            checkVpnStatus()  
-        }  
-
-        handler.postDelayed(this, 1000)  
-    }  
+        handler.postDelayed(this, 1000)
+    }
 }  
 
 private val timerUpdater = object : Runnable {  
@@ -414,48 +525,56 @@ private fun initializeApplication() {
         dataBaselineRx != TrafficStats.UNSUPPORTED.toLong() &&  
         dataBaselineTx != TrafficStats.UNSUPPORTED.toLong()  
 
-    createScreen()  
+    createScreen()
 
-    registerLicenseNetworkCallback()  
+    registerLicenseNetworkCallback()
     registerWifiPortalReceiver()
+    restorePersistedLogoutControl()
 
-    handler.post(updater)  
-    handler.post(globeUpdater)  
+    handler.post(updater)
+    handler.post(globeUpdater)
 
-    requestNotificationPermission()  
-    startMonitorService()  
+    requestNotificationPermission()
+    startMonitorService()
     requestWifiNotificationAccess()
 
     val incomingUrl = extractIncomingPortalUrl(intent)
     if (!incomingUrl.isNullOrBlank()) {
         saveCapturedUrlForCurrentNetwork(incomingUrl)
+        WifiNotificationListener.markSessionCaptured(
+            this,
+            incomingUrl,
+            WifiNotificationListener.TYPE_VIEW_WEBSITE
+        )
         intent?.action = null
         intent?.data = null
-        handler.postDelayed({
+        handler.post {
             handleDetectedPortalLaunch(
                 incomingUrl,
-                "VIEW_WEBSITE",
+                WifiNotificationListener.TYPE_VIEW_WEBSITE,
                 System.currentTimeMillis(),
                 forceIfIdleOrFinished = true
             )
-        }, 350)
+        }
     } else if (intent?.action == ACTION_OPEN_PORTAL) {
         val detectedUrl = intent?.getStringExtra("detected_url")
         val detectionType = intent?.getStringExtra("detection_type")
         val detectedAt = intent?.getLongExtra("detected_at", System.currentTimeMillis()) ?: System.currentTimeMillis()
         intent?.action = null
-        handler.postDelayed({
+        handler.post {
             handleDetectedPortalLaunch(detectedUrl, detectionType, detectedAt, forceIfIdleOrFinished = true)
-        }, 350)
+        }
+    } else {
+        checkExistingWifiPortalOnStartup()
     }
 
-    updateIpDetails()  
-    updateInternetStatus()  
-    updateActivationStatus()  
-    updateDeviceDataUsage()  
-    updateClock()  
+    updateIpDetails()
+    updateInternetStatus()
+    updateActivationStatus()
+    updateDeviceDataUsage()
+    updateClock()
 
-    verifyLicenseWhenOnline()  
+    verifyLicenseWhenOnline()
     checkForFlashPopup()
 }
 
@@ -593,30 +712,49 @@ private fun showFlashPopupDialog(
     dialog.show()
 }
 
-private fun registerLicenseNetworkCallback() {  
-    if (networkCallbackRegistered) return  
+private fun registerLicenseNetworkCallback() {
+    val cm = connectivityManager ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).also {
+        connectivityManager = it
+    }
 
-    try {  
-        connectivityManager =  
-            getSystemService(Context.CONNECTIVITY_SERVICE)  
-                as ConnectivityManager  
+    if (!networkCallbackRegistered) {
+        try {
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            cm.registerNetworkCallback(request, licenseNetworkCallback)
+            networkCallbackRegistered = true
+        } catch (_: Exception) {
+            networkCallbackRegistered = false
+        }
+    }
 
-        val request = NetworkRequest.Builder()  
-            .addCapability(  
-                NetworkCapabilities.NET_CAPABILITY_INTERNET  
-            )  
-            .build()  
+    if (!wifiCallbackRegistered) {
+        try {
+            val wifiRequest = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .build()
+            cm.registerNetworkCallback(wifiRequest, wifiNetworkCallback)
+            wifiCallbackRegistered = true
+            preservedWifiNetwork = PortalNetworkHelper.findWifiNetwork(cm)
+        } catch (_: Exception) {
+            wifiCallbackRegistered = false
+        }
+    }
 
-        connectivityManager?.registerNetworkCallback(  
-            request,  
-            licenseNetworkCallback  
-        )  
-
-        networkCallbackRegistered = true  
-
-    } catch (_: Exception) {  
-        networkCallbackRegistered = false  
-    }  
+    if (!vpnCallbackRegistered) {
+        try {
+            val vpnRequest = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .build()
+            cm.registerNetworkCallback(vpnRequest, vpnNetworkCallback)
+            vpnCallbackRegistered = true
+            vpnConnectedConfirmed = PortalNetworkHelper.isVpnConnected(cm)
+        } catch (_: Exception) {
+            vpnCallbackRegistered = false
+        }
+    }
 }  
 
 private fun verifyLicenseWhenOnline() {  
@@ -857,20 +995,15 @@ private fun createScreen() {
         }  
     )  
 
-    loginPanel.addView(  
-        makeButton("▶ START ULTRA LOADER") {  
-            if (!checkActivationBeforeAction()) return@makeButton  
-
-            if (readCredentials() == null) {  
-                showCredentialDialog()  
-            } else {  
-                startPortalProcess()  
-            }  
-        }.apply {  
-            textSize = 15f  
-            background = rounded(Color.rgb(0, 90, 115), cyan)  
-        }  
-    )  
+    loginPanel.addView(
+        makeButton("▶ START ULTRA LOADER") {
+            if (!checkActivationBeforeAction()) return@makeButton
+            startPortalProcess(userInitiated = true)
+        }.apply {
+            textSize = 15f
+            background = rounded(Color.rgb(0, 90, 115), cyan)
+        }
+    )
 
     notifAccessButton = makeButton("⚠ ENABLE WIFI NOTIFICATION ACCESS") {
         try {
@@ -887,34 +1020,34 @@ private fun createScreen() {
     }
     loginPanel.addView(notifAccessButton)
 
-    webTitle = TextView(this).apply {  
-        text = "📈 LIVE INTERNET USAGE GRAPH"  
-        textSize = 12f  
-        typeface = Typeface.DEFAULT_BOLD  
-        setTextColor(cyan)  
-        setPadding(5, 12, 5, 7)  
-    }  
+    webTitle = TextView(this).apply {
+        text = "📈 LIVE INTERNET USAGE GRAPH"
+        textSize = 12f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(cyan)
+        setPadding(5, 12, 5, 7)
+    }
 
-    webView = WebView(this).apply {  
+    webView = WebView(this).apply {
         visibility = View.INVISIBLE
         alpha = 0f
 
-        settings.javaScriptEnabled = true  
-        settings.domStorageEnabled = true  
-        settings.loadsImagesAutomatically = true  
-        settings.javaScriptCanOpenWindowsAutomatically = false  
-        settings.setSupportMultipleWindows(false)  
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true
+        settings.loadsImagesAutomatically = true
+        settings.javaScriptCanOpenWindowsAutomatically = false
+        settings.setSupportMultipleWindows(false)
 
-        settings.userAgentString =  
-            WebSettings.getDefaultUserAgent(this@MainActivity)  
-                .replace("; wv", "")  
+        settings.userAgentString =
+            WebSettings.getDefaultUserAgent(this@MainActivity)
+                .replace("; wv", "")
 
-        CookieManager.getInstance().setAcceptCookie(true)  
-        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)  
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
-        webChromeClient = WebChromeClient()  
+        webChromeClient = WebChromeClient()
 
-        webViewClient = object : WebViewClient() {  
+        webViewClient = object : WebViewClient() {
 
             override fun shouldOverrideUrlLoading(
                 view: WebView?,
@@ -935,11 +1068,11 @@ private fun createScreen() {
                 return super.shouldOverrideUrlLoading(view, request)
             }
 
-            override fun onPageStarted(  
-                view: WebView?,  
-                url: String?,  
-                favicon: Bitmap?  
-            ) {  
+            override fun onPageStarted(
+                view: WebView?,
+                url: String?,
+                favicon: Bitmap?
+            ) {
                 netCheckPageHasError = false
                 if (
                     stage == Stage.CHECK_INTERNET &&
@@ -951,10 +1084,10 @@ private fun createScreen() {
                     scheduleNextNetCheckRefresh(1500L)
                     return
                 }
-                if (!dashboardShown && stage != Stage.IDLE && !netWorkingVerified) {  
-                    workflowStatus("PORTAL PAGE LOADING...")  
-                }  
-            }  
+                if (!dashboardShown && stage != Stage.IDLE && !netWorkingVerified) {
+                    workflowStatus("PORTAL PAGE LOADING...")
+                }
+            }
 
             override fun onReceivedError(
                 view: WebView?,
@@ -967,6 +1100,8 @@ private fun createScreen() {
                     if (stage == Stage.CHECK_INTERNET && !netWorkingVerified) {
                         handler.removeCallbacks(netCheckPageTimeoutRunnable)
                         scheduleNextNetCheckRefresh(1500L)
+                    } else if (stage == Stage.LOGOUT || stage == Stage.VERIFY_LOGOUT) {
+                        scheduleLogoutRetryAfterNetworkError()
                     }
                 }
             }
@@ -986,27 +1121,56 @@ private fun createScreen() {
                     if (stage == Stage.CHECK_INTERNET && !netWorkingVerified) {
                         handler.removeCallbacks(netCheckPageTimeoutRunnable)
                         scheduleNextNetCheckRefresh(1500L)
+                    } else if (stage == Stage.LOGOUT || stage == Stage.VERIFY_LOGOUT) {
+                        scheduleLogoutRetryAfterNetworkError()
                     }
                 }
             }
 
-            override fun onPageFinished(  
-                view: WebView?,  
-                url: String?  
-            ) {  
-                when (stage) {  
-                    Stage.LOGIN -> tryAutoLogin()  
-                    Stage.CHECK_LOGIN -> checkPortalLogin()  
-                    Stage.WAIT_SECOND_LOGIN -> checkSecondLoginForm()
+            override fun onPageFinished(
+                view: WebView?,
+                url: String?
+            ) {
+                when (stage) {
+                    Stage.LOGIN -> {
+                        handler.removeCallbacks(autoLoginRetryRunnable)
+                        tryAutoLogin()
+                    }
+                    Stage.CHECK_LOGIN -> {
+                        handler.removeCallbacks(checkLoginRunnable)
+                        checkPortalLogin()
+                    }
+                    Stage.DETECT_LOGOUT -> {
+                        handler.removeCallbacks(detectLogoutRunnable)
+                        detectLogoutControl()
+                    }
+                    Stage.LOGOUT -> {
+                        if (awaitingLogoutPageReload) {
+                            awaitingLogoutPageReload = false
+                            handler.removeCallbacks(logoutRetryRunnable)
+                            clickPortalLogout()
+                        } else if (secondLoginTimerRunning) {
+                            handler.removeCallbacks(secondLoginAgentRunnable)
+                            clickPortalLoginAgent()
+                        }
+                    }
+                    Stage.VERIFY_LOGOUT -> {
+                        handler.removeCallbacks(verifyLogoutRunnable)
+                        verifyPortalLogout()
+                    }
+                    Stage.WAIT_SECOND_LOGIN -> {
+                        handler.removeCallbacks(secondFormCheckRunnable)
+                        checkSecondLoginForm()
+                    }
                     Stage.CHECK_INTERNET -> verifyCheckInternetPageLoaded(url)
-                    else -> {  
-                        if (stage == Stage.IDLE && !dashboardShown) {  
-                            statusText("● PORTAL PAGE READY", green)  
-                        }  
-                    }  
-                }  
-            }  
-        }  
+                    else -> {
+                        if (stage == Stage.IDLE && !dashboardShown) {
+                            statusText("● PORTAL PAGE READY", green)
+                        }
+                    }
+                }
+            }
+        }
     }  
 
     val density = resources.displayMetrics.density
@@ -1578,95 +1742,205 @@ override fun onRequestPermissionsResult(
     }
 }  
 
-private fun showCredentialDialog() {  
-    val box = LinearLayout(this).apply {  
-        orientation = LinearLayout.VERTICAL  
-        setPadding(20, 8, 20, 5)  
-    }  
+private fun showCredentialDialog(resumeLoginAfterSave: Boolean = false) {
+    val box = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(20, 8, 20, 5)
+    }
 
-    val user = EditText(this).apply {  
-        hint = "User ID"  
-        setSingleLine(true)  
-    }  
+    val user = EditText(this).apply {
+        hint = "User ID"
+        setSingleLine(true)
+    }
 
-    val pass = EditText(this).apply {  
-        hint = "Password"  
-        inputType = 129  
-        setSingleLine(true)  
-    }  
+    val pass = EditText(this).apply {
+        hint = "Password"
+        inputType = 129
+        setSingleLine(true)
+    }
 
-    box.addView(user)  
-    box.addView(pass)  
+    box.addView(user)
+    box.addView(pass)
 
-    AlertDialog.Builder(this)  
-        .setTitle("Portal Login")  
-        .setMessage("Enter your Portal User ID and Password.")  
-        .setView(box)  
-        .setPositiveButton("SAVE") { _, _ ->  
-            val u = user.text.toString().trim()  
-            val p = pass.text.toString()  
+    AlertDialog.Builder(this)
+        .setTitle("Portal Login")
+        .setMessage("Enter your Portal User ID and Password.")
+        .setView(box)
+        .setPositiveButton("SAVE") { _, _ ->
+            val u = user.text.toString().trim()
+            val p = pass.text.toString()
 
-            if (u.isNotBlank() && p.isNotBlank()) {  
-                if (saveCredentials(u, p)) {  
-                    userInput.setText(u)  
-                    passwordInput.setText(p)  
-                    startPortalProcess()  
-                } else {  
-                    toast("Unable to save credentials")  
-                }  
-            } else {  
-                toast("Both fields are required")  
-            }  
-        }  
-        .setNegativeButton("CANCEL", null)  
-        .show()  
-}  
+            if (u.isNotBlank() && p.isNotBlank()) {
+                if (saveCredentials(u, p)) {
+                    userInput.setText(u)
+                    passwordInput.setText(p)
+                    if (resumeLoginAfterSave && stage == Stage.LOGIN) {
+                        tryAutoLogin()
+                    } else {
+                        startPortalProcess(userInitiated = true)
+                    }
+                } else {
+                    toast("Unable to save credentials")
+                }
+            } else {
+                toast("Both fields are required")
+            }
+        }
+        .setNegativeButton("CANCEL") { _, _ ->
+            if (resumeLoginAfterSave && stage == Stage.LOGIN) {
+                stage = Stage.IDLE
+                statusText("● LOGIN CREDENTIALS REQUIRED", red)
+            }
+        }
+        .show()
+}
 
-private fun startPortalProcess() {  
-    if (!checkActivationBeforeAction()) return  
+private fun cancelWorkflowCallbacks() {
+    handler.removeCallbacks(autoLoginRetryRunnable)
+    handler.removeCallbacks(checkLoginRunnable)
+    handler.removeCallbacks(detectLogoutRunnable)
+    handler.removeCallbacks(logoutRetryRunnable)
+    handler.removeCallbacks(verifyLogoutRunnable)
+    handler.removeCallbacks(secondLoginAgentRunnable)
+    handler.removeCallbacks(secondFormCheckRunnable)
+    handler.removeCallbacks(liveNetCheckRunnable)
+    handler.removeCallbacks(netCheckRefreshRunnable)
+    handler.removeCallbacks(netCheckPageTimeoutRunnable)
+}
 
-    if (readCredentials() == null) {  
-        showCredentialDialog()  
-        return  
-    }  
+private fun persistDetectedLogoutControl(control: DetectedLogoutControl?) {
+    try {
+        val prefs = getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
+        if (control == null) {
+            prefs.edit().remove("detected_logout_json").apply()
+        } else {
+            prefs.edit().putString("detected_logout_json", control.toJson()).apply()
+        }
+    } catch (_: Exception) {
+    }
+}
 
-    dashboardShown = false  
-    stage = Stage.LOGIN  
-    loginSubmitted = false  
-    vpnOpened = false  
+private fun restorePersistedLogoutControl() {
+    try {
+        val prefs = getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
+        val raw = prefs.getString("detected_logout_json", null)
+        detectedLogoutControl = DetectedLogoutControl.fromJson(raw)
+        val savedSession = WifiNotificationListener.getSessionCapturedPortal(this)
+        if (savedSession != null) {
+            activeSessionUrl = savedSession.first
+            activeDetectionType = savedSession.second
+            portalUrl = savedSession.first
+        }
+    } catch (_: Exception) {
+    }
+}
+
+private fun clearPersistedLogoutControl() {
+    persistDetectedLogoutControl(null)
+}
+
+private fun checkExistingWifiPortalOnStartup() {
+    if (startupPortalChecked || !appInitialized) return
+    startupPortalChecked = true
+
+    executor.execute {
+        val cm = connectivityManager
+            ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).also {
+                connectivityManager = it
+            }
+
+        val wifi = PortalNetworkHelper.findWifiNetwork(cm) ?: return@execute
+        preservedWifiNetwork = wifi
+        portalNetwork = wifi
+
+        // Scan any active Wi-Fi notifications already present before Ultra Loader launched.
+        WifiNotificationListener.scanActiveNotificationsNow(notifyService = false)
+
+        val sessionCaptured = WifiNotificationListener.getSessionCapturedPortal(this)
+        val capPortalUrl = PortalNetworkHelper.getCaptivePortalUrl(cm, wifi, preferVenue = false)
+        val capVenueUrl = PortalNetworkHelper.getCaptivePortalUrl(cm, wifi, preferVenue = true)
+
+        val resolvedUrl = sessionCaptured?.first
+            ?: capVenueUrl
+            ?: capPortalUrl
+
+        val resolvedType = sessionCaptured?.second
+            ?: if (!capVenueUrl.isNullOrBlank()) {
+                WifiNotificationListener.TYPE_VIEW_WEBSITE
+            } else {
+                WifiNotificationListener.TYPE_PORTAL_LOGIN
+            }
+
+        if (!resolvedUrl.isNullOrBlank() && PortalNetworkHelper.isValidHttpUrl(resolvedUrl)) {
+            WifiNotificationListener.markSessionCaptured(this, resolvedUrl, resolvedType)
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed && stage == Stage.IDLE) {
+                    handleDetectedPortalLaunch(
+                        resolvedUrl,
+                        resolvedType,
+                        System.currentTimeMillis(),
+                        forceIfIdleOrFinished = false
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun startPortalProcess(userInitiated: Boolean = false) {
+    if (!checkActivationBeforeAction()) return
+
+    if (userInitiated) {
+        completedSessionUrl = null
+    }
+
+    cancelWorkflowCallbacks()
+
+    dashboardShown = false
+    stage = Stage.LOGIN
+    loginSubmitted = false
+    vpnOpened = false
     vpnDialogShown = false
+    awaitingLogoutPageReload = false
+    detectedLogoutControl = null
+    clearPersistedLogoutControl()
+
     vpnDialog?.dismiss()
     vpnDialog = null
     portalLinkDialog?.dismiss()
     portalLinkDialog = null
 
-    stopSecondLoginTimer()  
-    secondLoginElapsedSeconds = 0L  
+    stopSecondLoginTimer()
+    secondLoginElapsedSeconds = 0L
 
-    secondLoginTimerStatus.text = "SECOND LOGIN TIMER: NOT STARTED"  
-    secondLoginStageStatus.text = "LOGIN STAGE: WAITING"  
+    secondLoginTimerStatus.text = "SECOND LOGIN TIMER: NOT STARTED"
+    secondLoginStageStatus.text = "LOGIN STAGE: WAITING"
 
-    logoutSearchAttempts = 0  
-    loginActionSearchAttempts = 0  
+    autoLoginAttempts = 0
+    loginVerifyAttempts = 0
+    logoutDetectAttempts = 0
+    logoutSearchAttempts = 0
+    logoutVerifyAttempts = 0
+    loginActionSearchAttempts = 0
     secondFormSearchAttempts = 0
     autoLoginLinkClicks = 0
-    secondLoginButtonFound = false  
+    secondLoginButtonFound = false
 
-    logoutSearchRunning = false  
-    loginActionSearchRunning = false  
-    secondFormCheckRunning = false  
+    logoutDetectRunning = false
+    logoutSearchRunning = false
+    logoutVerifyRunning = false
+    loginActionSearchRunning = false
+    secondFormCheckRunning = false
     netCheckRunning = false
     netWorkingVerified = false
     netCheckPageHasError = false
     netCheckRefreshAttempt = 0
-    handler.removeCallbacks(netCheckRefreshRunnable)
-    handler.removeCallbacks(netCheckPageTimeoutRunnable)
     if (::webView.isInitialized) {
         webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
     }
 
     try {
-        getSharedPreferences("wifi_notification_links", Context.MODE_PRIVATE)
+        getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
             .edit()
             .putBoolean("pending_auto_start", false)
             .apply()
@@ -1675,218 +1949,116 @@ private fun startPortalProcess() {
 
     workflowStatus("FINDING CURRENT PORTAL...")
 
-    discoverPortalUrl()  
+    discoverPortalUrl()
 }  
 
 private fun getWifiGatewayIp(manager: ConnectivityManager, network: Network?): String? {
-    try {
-        if (network != null) {
-            val lp = manager.getLinkProperties(network)
-            val routeGateway = lp?.routes?.firstOrNull { route ->
-                route.isDefaultRoute && route.gateway is java.net.Inet4Address
-            }?.gateway?.hostAddress
-            if (!routeGateway.isNullOrBlank() && routeGateway != "0.0.0.0") {
-                return routeGateway
-            }
-        }
-    } catch (_: Exception) {
-    }
-    try {
-        @Suppress("DEPRECATION")
-        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
-        @Suppress("DEPRECATION")
-        val gw = wm.dhcpInfo?.gateway ?: 0
-        if (gw != 0) {
-            return String.format(
-                Locale.US,
-                "%d.%d.%d.%d",
-                gw and 0xff,
-                gw shr 8 and 0xff,
-                gw shr 16 and 0xff,
-                gw shr 24 and 0xff
-            )
-        }
-    } catch (_: Exception) {
-    }
-    return null
+    return PortalNetworkHelper.getWifiGatewayIp(this, manager, network)
 }
 
 private fun discoverPortalUrl() {
     executor.execute {
+        val manager = connectivityManager
+            ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).also {
+                connectivityManager = it
+            }
 
-        // Scan all active Wi-Fi notifications right when START ULTRA LOADER runs
-        WifiNotificationListener.scanActiveNotificationsNow(notifyService = true)
+        val wifi = PortalNetworkHelper.findWifiNetwork(manager)
+        val network = wifi ?: manager.activeNetwork
+        if (wifi != null) {
+            preservedWifiNetwork = wifi
+        }
+        portalNetwork = wifi ?: network
+
+        val prefs = getSharedPreferences(
+            WifiNotificationListener.PREFS,
+            Context.MODE_PRIVATE
+        )
 
         var found: String? = null
         var notificationLink = false
 
-        val manager =
-            getSystemService(Context.CONNECTIVITY_SERVICE)
-                as ConnectivityManager
-
-        val wifi = manager.allNetworks.firstOrNull { network ->
-            manager.getNetworkCapabilities(network)
-                ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        // 1. Prefer already-captured URL for the active Wi-Fi session (captures once, skips probes).
+        val activeUrl = activeSessionUrl
+        if (PortalNetworkHelper.isValidHttpUrl(activeUrl)) {
+            found = activeUrl
+            notificationLink = true
         }
-
-        val network = wifi ?: manager.activeNetwork
-        portalNetwork = wifi ?: network
-        val gatewayIp = getWifiGatewayIp(manager, network)
-
-        val prefs = getSharedPreferences(
-            "wifi_notification_links",
-            Context.MODE_PRIVATE
-        )
-
-        val savedUrl = prefs.getString("latest_url", null)
-        val savedTime = prefs.getLong("latest_url_time", 0L)
-
-        // Use a recently captured Wi-Fi notification / browser link first.
-        if (
-            !savedUrl.isNullOrBlank() &&
-            System.currentTimeMillis() - savedTime <= 30L * 60L * 1000L
-        ) {
-            try {
-                val parsed = URL(savedUrl)
-
-                if (
-                    parsed.protocol == "http" ||
-                    parsed.protocol == "https"
-                ) {
-                    found = savedUrl
-                    notificationLink = true
-                }
-            } catch (_: Exception) {
-            }
-        }
-
-        if (found == null && network != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                val linkProps = manager.getLinkProperties(network)
-                val capData = linkProps?.javaClass?.getMethod("getCaptivePortalData")?.invoke(linkProps)
-                val userUrl = capData?.javaClass?.getMethod("getUserPortalUrl")?.invoke(capData)?.toString()
-                val venueUrl = capData?.javaClass?.getMethod("getVenueInfoUrl")?.invoke(capData)?.toString()
-                val pendingType = prefs.getString("pending_detection_type", null)
-                val capUrl = if (pendingType == "VIEW_WEBSITE") {
-                    venueUrl ?: userUrl
-                } else {
-                    userUrl ?: venueUrl
-                }
-                if (!capUrl.isNullOrBlank() && (capUrl.startsWith("http://") || capUrl.startsWith("https://"))) {
-                    found = capUrl
-                    notificationLink = true
-                }
-            } catch (_: Exception) {
-            }
-        }
-
-        // Probe Wi-Fi gateway and standard non-Google captive endpoints
-        val probeTargets = mutableListOf<Pair<String, Boolean>>()
-        if (!gatewayIp.isNullOrBlank()) {
-            probeTargets.add("http://$gatewayIp/" to true)
-            probeTargets.add("http://$gatewayIp:8000/" to true)
-            probeTargets.add("http://$gatewayIp:8080/" to true)
-            probeTargets.add("http://$gatewayIp/login" to true)
-            probeTargets.add("http://$gatewayIp/status" to true)
-        }
-        probeTargets.add("http://captive.apple.com/hotspot-detect.html" to false)
-        probeTargets.add("http://detectportal.firefox.com/canonical.html" to false)
-        probeTargets.add("http://www.msftconnecttest.com/redirect" to false)
-        probeTargets.add("http://neverssl.com/" to false)
-        probeTargets.add("http://1.1.1.1/" to false)
 
         if (found == null) {
-            for ((probe, isGateway) in probeTargets) {
-                if (found != null) break
-
-                var connection: HttpURLConnection? = null
-
-                try {
-                    connection = (
-                        if (network != null) network.openConnection(URL(probe))
-                        else URL(probe).openConnection()
-                    ) as HttpURLConnection
-
-                    connection.instanceFollowRedirects = false
-                    connection.connectTimeout = 2500
-                    connection.readTimeout = 2500
-                    connection.requestMethod = "GET"
-
-                    val code = connection.responseCode
-                    val location = connection.getHeaderField("Location")
-
-                    if (
-                        code in 300..399 &&
-                        !location.isNullOrBlank()
-                    ) {
-                        val resolvedLocation = try {
-                            URL(URL(probe), location).toString()
-                        } catch (_: Exception) {
-                            location
-                        }
-                        if (
-                            resolvedLocation.startsWith("http://") ||
-                            resolvedLocation.startsWith("https://")
-                        ) {
-                            found = resolvedLocation
-                        }
-                    } else if (code == 200) {
-                        val body = try {
-                            connection.inputStream.bufferedReader().use { it.readText().take(16384) }
-                        } catch (_: Exception) {
-                            ""
-                        }
-                        val htmlRedirect = Regex(
-                            """(?:[;\s"']url\s*=\s*['"]?|location(?:\.href)?\s*=\s*['"]|location\.replace\(\s*['"])([^'"\s>]+)['"]?""",
-                            RegexOption.IGNORE_CASE
-                        ).find(body)?.groupValues?.getOrNull(1)
-                        if (!htmlRedirect.isNullOrBlank()) {
-                            val resolvedHtml = try {
-                                URL(URL(probe), htmlRedirect).toString()
-                            } catch (_: Exception) {
-                                htmlRedirect
-                            }
-                            if (
-                                resolvedHtml.startsWith("http://") ||
-                                resolvedHtml.startsWith("https://")
-                            ) {
-                                found = resolvedHtml
-                            }
-                        } else if (
-                            isGateway &&
-                            body.contains("<input", ignoreCase = true) &&
-                            Regex("""password|log.?in|sign.?in|log.?out|sign.?out|portal|captive""", RegexOption.IGNORE_CASE).containsMatchIn(body)
-                        ) {
-                            found = probe
-                        }
-                    }
-
-                } catch (_: Exception) {
-                } finally {
-                    connection?.disconnect()
-                }
+            val sessionPortal = WifiNotificationListener.getSessionCapturedPortal(this)
+            if (sessionPortal != null && PortalNetworkHelper.isValidHttpUrl(sessionPortal.first)) {
+                found = sessionPortal.first
+                activeDetectionType = sessionPortal.second
+                notificationLink = true
             }
         }
 
-        // Fall back to remembered portal URL for this Wi-Fi router gateway
+        if (found == null) {
+            WifiNotificationListener.scanActiveNotificationsNow(notifyService = false)
+            val afterScan = WifiNotificationListener.getSessionCapturedPortal(this)
+            if (afterScan != null && PortalNetworkHelper.isValidHttpUrl(afterScan.first)) {
+                found = afterScan.first
+                activeDetectionType = afterScan.second
+                notificationLink = true
+            }
+        }
+
+        if (found == null) {
+            val savedUrl = prefs.getString("latest_url", null)
+            val savedTime = prefs.getLong("latest_url_time", 0L)
+            if (
+                !savedUrl.isNullOrBlank() &&
+                System.currentTimeMillis() - savedTime <= 30L * 60L * 1000L &&
+                PortalNetworkHelper.isValidHttpUrl(savedUrl)
+            ) {
+                found = savedUrl
+                notificationLink = true
+            }
+        }
+
+        // 2. Check CaptivePortalData directly (Android 11+ Detection A & Detection B).
+        if (found == null && network != null) {
+            val pendingType = activeDetectionType ?: prefs.getString("pending_detection_type", null)
+            val preferVenue = pendingType == WifiNotificationListener.TYPE_VIEW_WEBSITE
+            val capUrl = PortalNetworkHelper.getCaptivePortalUrl(manager, network, preferVenue)
+            if (PortalNetworkHelper.isValidHttpUrl(capUrl)) {
+                found = capUrl
+                notificationLink = true
+            }
+        }
+
+        // 3. Only probe Wi-Fi gateway / captive endpoints when no valid portal URL is available yet.
+        val gatewayIp = if (found == null) getWifiGatewayIp(manager, network) else null
+        if (found == null) {
+            found = probePortalEndpointsConcurrently(network, gatewayIp)
+        }
+
+        // 4. Fall back to remembered portal URL for this Wi-Fi router gateway.
         if (found == null && !gatewayIp.isNullOrBlank()) {
             val gwUrl = prefs.getString("gateway_url_$gatewayIp", null)
             val gwTime = prefs.getLong("gateway_url_${gatewayIp}_time", 0L)
             if (
                 !gwUrl.isNullOrBlank() &&
                 System.currentTimeMillis() - gwTime <= 7L * 24L * 60L * 60L * 1000L &&
-                (gwUrl.startsWith("http://") || gwUrl.startsWith("https://"))
+                PortalNetworkHelper.isValidHttpUrl(gwUrl)
             ) {
                 found = gwUrl
                 notificationLink = true
             }
         }
 
-        if (!found.isNullOrBlank()) {
+        if (!found.isNullOrBlank() && PortalNetworkHelper.isValidHttpUrl(found)) {
+            activeSessionUrl = found
+            val detType = activeDetectionType
+                ?: prefs.getString("pending_detection_type", null)
+                ?: WifiNotificationListener.TYPE_PORTAL_LOGIN
+            WifiNotificationListener.markSessionCaptured(this, found, detType)
             saveCapturedUrlForCurrentNetwork(found, gatewayIp)
         }
 
         runOnUiThread {
+            if (isFinishing || isDestroyed || stage != Stage.LOGIN) return@runOnUiThread
 
             if (!ActivationManager.hasAccess(this)) {
                 statusText("● ACTIVATION EXPIRED", red)
@@ -1908,17 +2080,12 @@ private fun discoverPortalUrl() {
                 return@runOnUiThread
             }
 
-            val selectedNetwork = portalNetwork
-
-            if (selectedNetwork != null) {
-                val bound =
-                    (getSystemService(Context.CONNECTIVITY_SERVICE)
-                        as ConnectivityManager)
-                        .bindProcessToNetwork(selectedNetwork)
-
-                if (!bound) {
-                    statusText("● WIFI ROUTING NOT AVAILABLE", red)
-                }
+            val boundNet = PortalNetworkHelper.bindToWifiNetwork(manager, preservedWifiNetwork ?: portalNetwork)
+            if (boundNet != null) {
+                preservedWifiNetwork = boundNet
+                portalNetwork = boundNet
+            } else if (portalNetwork != null) {
+                statusText("● WIFI ROUTING NOT AVAILABLE", red)
             }
 
             portalUrl = found
@@ -1934,254 +2101,501 @@ private fun discoverPortalUrl() {
     }
 }
 
-private fun tryAutoLogin() {  
-    if (stage != Stage.LOGIN || loginSubmitted) return  
-    if (!ActivationManager.hasAccess(this)) return  
+private fun probePortalEndpointsConcurrently(network: Network?, gatewayIp: String?): String? {
+    val probeTargets = mutableListOf<Pair<String, Boolean>>()
+    if (!gatewayIp.isNullOrBlank()) {
+        probeTargets.add("http://$gatewayIp/" to true)
+        probeTargets.add("http://$gatewayIp:8000/" to true)
+        probeTargets.add("http://$gatewayIp:8080/" to true)
+        probeTargets.add("http://$gatewayIp/login" to true)
+        probeTargets.add("http://$gatewayIp/status" to true)
+    }
+    probeTargets.add("http://captive.apple.com/hotspot-detect.html" to false)
+    probeTargets.add("http://detectportal.firefox.com/canonical.html" to false)
+    probeTargets.add("http://www.msftconnecttest.com/redirect" to false)
+    probeTargets.add("http://neverssl.com/" to false)
+    probeTargets.add("http://1.1.1.1/" to false)
 
-    val credentials = readCredentials() ?: return  
-
-    val user = Base64.encodeToString(  
-        credentials.first.toByteArray(StandardCharsets.UTF_8),  
-        Base64.NO_WRAP  
-    )  
-
-    val pass = Base64.encodeToString(  
-        credentials.second.toByteArray(StandardCharsets.UTF_8),  
-        Base64.NO_WRAP  
-    )  
-
-    val script = """  
-        (function() {  
-          function dec(s){  
-            try{return decodeURIComponent(escape(atob(s)));}  
-            catch(e){return atob(s);}  
-          }  
-
-          var u=dec('$user'), p=dec('$pass');  
-          var all=Array.from(document.querySelectorAll('input'));  
-
-          var pf=all.find(function(x){  
-            return (x.type||'').toLowerCase()==='password';  
-          });  
-
-          var uf=all.find(function(x){  
-            if(x===pf)return false;  
-            var n=((x.name||'')+' '+(x.id||'')+' '+(x.placeholder||'')).toLowerCase();  
-            return ['user','email','login','account'].some(function(k){  
-              return n.includes(k);  
-            }) || ['text','email'].includes((x.type||'').toLowerCase());  
-          });  
-
-          if(!uf||!pf){
-            var btns=Array.from(document.querySelectorAll('a,button,input[type=button],input[type=submit],[role=button]'));
-            var hasLogout=btns.some(function(b){
-              var sig=((b.innerText||'')+' '+(b.value||'')+' '+(b.id||'')+' '+(b.name||'')+' '+(b.getAttribute('href')||'')).toLowerCase();
-              return /log.?out|sign.?out/.test(sig);
-            });
-            var bodyTxt=(document.body?document.body.innerText:'').toLowerCase();
-            if(hasLogout || /successfully connected|connected successfully/.test(bodyTxt)){
-              return 'ALREADY_LOGGED_IN';
+    val probePool = Executors.newFixedThreadPool(4)
+    return try {
+        val completion = ExecutorCompletionService<String?>(probePool)
+        val futures = probeTargets.map { (probe, isGateway) ->
+            completion.submit {
+                probeSinglePortalTarget(network, probe, isGateway)
             }
-            var nav=btns.find(function(b){
-              var sig=((b.innerText||'')+' '+(b.value||'')+' '+(b.id||'')+' '+(b.name||''));
-              return /log.?in|sign.?in|connect|continue|enter|proceed/i.test(sig);
-            });
-            if(nav && ${if (autoLoginLinkClicks < 3) "true" else "false"}){
-              nav.click();
-              return 'NAVIGATED';
+        }
+        var found: String? = null
+        val deadline = System.currentTimeMillis() + 3500L
+        for (i in futures.indices) {
+            val remaining = (deadline - System.currentTimeMillis()).coerceAtLeast(100L)
+            val future = completion.poll(remaining, TimeUnit.MILLISECONDS) ?: break
+            val candidate = try {
+                future.get()
+            } catch (_: Exception) {
+                null
             }
-            return 'FORM_NOT_FOUND';
-          }
+            if (!candidate.isNullOrBlank()) {
+                found = candidate
+                break
+            }
+        }
+        futures.forEach { it.cancel(true) }
+        found
+    } catch (_: Exception) {
+        null
+    } finally {
+        probePool.shutdownNow()
+    }
+}
 
-          uf.focus(); uf.value=u;  
-          pf.focus(); pf.value=p;  
+private fun probeSinglePortalTarget(
+    network: Network?,
+    probe: String,
+    isGateway: Boolean
+): String? {
+    var connection: HttpURLConnection? = null
+    return try {
+        connection = (
+            if (network != null) network.openConnection(URL(probe))
+            else URL(probe).openConnection()
+        ) as HttpURLConnection
 
-          [uf,pf].forEach(function(x){  
-            x.dispatchEvent(new Event('input',{bubbles:true}));  
-            x.dispatchEvent(new Event('change',{bubbles:true}));  
-          });  
+        connection.instanceFollowRedirects = false
+        connection.connectTimeout = 2200
+        connection.readTimeout = 2200
+        connection.requestMethod = "GET"
 
-          Array.from(document.querySelectorAll('input[type=checkbox]'))  
-            .forEach(function(c){  
-              var label=((c.name||'')+' '+(c.id||' ')+' '+(c.parentElement?c.parentElement.innerText:'')).toLowerCase();  
-              if(/terms?|conditions?|agreement|accept|policy/.test(label)&&!c.checked&&!c.disabled)c.click();  
-            });  
+        val code = connection.responseCode
+        val location = connection.getHeaderField("Location")
 
-          var form=pf.closest('form');  
+        if (code in 300..399 && !location.isNullOrBlank()) {
+            val resolvedLocation = try {
+                URL(URL(probe), location).toString()
+            } catch (_: Exception) {
+                location
+            }
+            if (PortalNetworkHelper.isValidHttpUrl(resolvedLocation)) {
+                return resolvedLocation
+            }
+        } else if (code == 200) {
+            val body = try {
+                connection.inputStream.bufferedReader().use { it.readText().take(16384) }
+            } catch (_: Exception) {
+                ""
+            }
+            val htmlRedirect = Regex(
+                """(?:[;\s"']url\s*=\s*['"]?|location(?:\.href)?\s*=\s*['"]|location\.replace\(\s*['"])([^'"\s>]+)['"]?""",
+                RegexOption.IGNORE_CASE
+            ).find(body)?.groupValues?.getOrNull(1)
+            if (!htmlRedirect.isNullOrBlank()) {
+                val resolvedHtml = try {
+                    URL(URL(probe), htmlRedirect).toString()
+                } catch (_: Exception) {
+                    htmlRedirect
+                }
+                if (PortalNetworkHelper.isValidHttpUrl(resolvedHtml)) {
+                    return resolvedHtml
+                }
+            } else if (
+                isGateway &&
+                body.contains("<input", ignoreCase = true) &&
+                Regex("""password|log.?in|sign.?in|log.?out|sign.?out|portal|captive""", RegexOption.IGNORE_CASE)
+                    .containsMatchIn(body)
+            ) {
+                return probe
+            }
+        }
+        null
+    } catch (_: Exception) {
+        null
+    } finally {
+        connection?.disconnect()
+    }
+}
 
-          if(form){  
-            var submit=form.querySelector('button[type=submit],input[type=submit]');  
-            if(submit)submit.click();  
-            else if(form.requestSubmit)form.requestSubmit();  
-            else form.submit();  
-            return 'SUBMITTED';  
-          }  
+private fun tryAutoLogin() {
+    if (stage != Stage.LOGIN || loginSubmitted || isFinishing || isDestroyed) return
+    if (!ActivationManager.hasAccess(this)) return
 
-          var buttons=Array.from(document.querySelectorAll('button,input[type=button],input[type=submit]'));  
-          var login=buttons.find(function(b){  
-            return /log.?in|sign.?in|connect|continue/i.test(b.innerText||b.value||'');  
-          });  
+    handler.removeCallbacks(autoLoginRetryRunnable)
+    autoLoginAttempts++
 
-          if(login){login.click();return 'SUBMITTED';}  
-          return 'NO_SUBMIT_BUTTON';  
-        })();  
-    """.trimIndent()  
+    val credentials = readCredentials()
+    val hasCredentials = credentials != null
+    val user = if (credentials != null) {
+        Base64.encodeToString(
+            credentials.first.toByteArray(StandardCharsets.UTF_8),
+            Base64.NO_WRAP
+        )
+    } else {
+        ""
+    }
+    val pass = if (credentials != null) {
+        Base64.encodeToString(
+            credentials.second.toByteArray(StandardCharsets.UTF_8),
+            Base64.NO_WRAP
+        )
+    } else {
+        ""
+    }
 
-    webView.evaluateJavascript(script) { result ->  
-        if (result?.contains("SUBMITTED") == true) {  
-            loginSubmitted = true  
-            stage = Stage.CHECK_LOGIN  
+    val script = PortalJsScripts.buildAutoLoginScript(
+        encodedUser = user,
+        encodedPass = pass,
+        hasCredentials = hasCredentials,
+        allowClickNav = autoLoginLinkClicks < 3
+    )
 
-            workflowStatus("LOGIN SUBMITTED - VERIFYING...")  
+    webView.evaluateJavascript(script) { result ->
+        if (stage != Stage.LOGIN || loginSubmitted || isFinishing || isDestroyed) {
+            return@evaluateJavascript
+        }
 
-            handler.postDelayed({ checkPortalLogin() }, 3000)  
+        when {
+            result?.contains("SUBMITTED") == true -> {
+                loginSubmitted = true
+                stage = Stage.CHECK_LOGIN
+                loginVerifyAttempts = 0
+                workflowStatus("LOGIN SUBMITTED — VERIFYING...")
+                handler.removeCallbacks(checkLoginRunnable)
+                handler.postDelayed(checkLoginRunnable, 1200)
+            }
 
-        } else if (result?.contains("ALREADY_LOGGED_IN") == true) {
-            loginSubmitted = true
-            stage = Stage.CHECK_LOGIN
+            result?.contains("ALREADY_LOGGED_IN") == true -> {
+                loginSubmitted = true
+                stage = Stage.DETECT_LOGOUT
+                logoutDetectAttempts = 0
+                logoutDetectRunning = false
+                workflowStatus("PORTAL LOGGED IN — INSPECTING LOGOUT...")
+                detectLogoutControl()
+            }
 
-            workflowStatus("PORTAL ALREADY LOGGED IN")
-            handler.postDelayed({ checkPortalLogin() }, 1000)
+            result?.contains("CREDENTIALS_REQUIRED") == true -> {
+                workflowStatus("PORTAL CREDENTIALS REQUIRED")
+                showCredentialDialog(resumeLoginAfterSave = true)
+            }
 
-        } else if (result?.contains("NAVIGATED") == true) {
-            autoLoginLinkClicks++
-            workflowStatus("OPENING PORTAL LOGIN...")
+            result?.contains("NAVIGATED") == true -> {
+                autoLoginLinkClicks++
+                workflowStatus("OPENING PORTAL LOGIN...")
+                handler.postDelayed(autoLoginRetryRunnable, 2000)
+            }
 
-        } else if (result?.contains("FORM_NOT_FOUND") == true) {  
-            workflowStatus("PORTAL LOGIN FORM NOT FOUND")  
-        } else {  
-            workflowStatus("CHECKING PORTAL FORM...")  
-            handler.postDelayed({ tryAutoLogin() }, 2000)  
-        }  
-    }  
-}  
+            result?.contains("FORM_NOT_FOUND") == true ||
+            result?.contains("NO_SUBMIT_BUTTON") == true -> {
+                if (autoLoginAttempts < 5) {
+                    workflowStatus("INSPECTING PORTAL PAGE... $autoLoginAttempts/5")
+                    handler.postDelayed(autoLoginRetryRunnable, 1000)
+                } else {
+                    stage = Stage.DETECT_LOGOUT
+                    logoutDetectAttempts = 0
+                    logoutDetectRunning = false
+                    detectLogoutControl()
+                }
+            }
 
-private fun checkPortalLogin() {  
-    if (stage != Stage.CHECK_LOGIN) return  
+            else -> {
+                if (autoLoginAttempts < 8) {
+                    workflowStatus("CHECKING PORTAL FORM...")
+                    handler.postDelayed(autoLoginRetryRunnable, 1200)
+                } else {
+                    stage = Stage.IDLE
+                    statusText("● PORTAL LOGIN FORM NOT FOUND", red)
+                }
+            }
+        }
+    }
+}
 
-    val script = """  
-        (function(){  
-          var t=(document.body?document.body.innerText:'').toLowerCase();  
-          var p=!!document.querySelector('input[type=password]');  
-          var l=/log.?out|sign.?out/.test(t);  
-          var s=/welcome|successfully connected|connected successfully/.test(t);  
-          if(!p&&(l||s))return 'LOGIN_OK';  
-          if(p)return 'LOGIN_FORM_STILL_HERE';  
-          return 'WAITING';  
-        })();  
-    """.trimIndent()  
+private fun checkPortalLogin() {
+    if (stage != Stage.CHECK_LOGIN || isFinishing || isDestroyed) return
 
-    webView.evaluateJavascript(script) { result ->  
-        when {  
-            result?.contains("LOGIN_OK") == true -> {  
-                workflowStatus("PORTAL LOGIN VERIFIED")  
+    handler.removeCallbacks(checkLoginRunnable)
+    loginVerifyAttempts++
 
-                (getSystemService(Context.CONNECTIVITY_SERVICE)  
-                    as ConnectivityManager).bindProcessToNetwork(null)  
+    val script = PortalJsScripts.buildCheckLoginScript()
 
-                handler.postDelayed({ openThunderVpn() }, 2500)  
-            }  
+    webView.evaluateJavascript(script) { result ->
+        if (stage != Stage.CHECK_LOGIN || isFinishing || isDestroyed) {
+            return@evaluateJavascript
+        }
 
-            result?.contains("LOGIN_FORM_STILL_HERE") == true -> {  
-                workflowStatus("LOGIN NOT CONFIRMED")  
-                handler.postDelayed({ checkPortalLogin() }, 3000)  
-            }  
+        when {
+            result?.contains("LOGIN_OK_") == true -> {
+                workflowStatus("PORTAL LOGIN VERIFIED — DETECTING LOGOUT")
+                stage = Stage.DETECT_LOGOUT
+                logoutDetectAttempts = 0
+                logoutDetectRunning = false
+                detectLogoutControl()
+            }
 
-            else -> handler.postDelayed({ checkPortalLogin() }, 2500)  
-        }  
-    }  
-}  
+            result?.contains("LOGIN_FORM_STILL_HERE") == true -> {
+                if (loginVerifyAttempts < 12) {
+                    workflowStatus("WAITING FOR LOGIN CONFIRMATION...")
+                    handler.postDelayed(checkLoginRunnable, 1200)
+                } else {
+                    stage = Stage.IDLE
+                    statusText("● LOGIN NOT CONFIRMED — CHECK DETAILS", red)
+                }
+            }
 
-private fun openThunderVpn() {  
-    if (!checkActivationBeforeAction()) return  
+            else -> {
+                if (loginVerifyAttempts < 10) {
+                    handler.postDelayed(checkLoginRunnable, 1000)
+                } else {
+                    stage = Stage.DETECT_LOGOUT
+                    logoutDetectAttempts = 0
+                    logoutDetectRunning = false
+                    detectLogoutControl()
+                }
+            }
+        }
+    }
+}
 
-    if (vpnOpened) {  
-        checkVpnStatus()  
-        return  
-    }  
+private fun parseJsJsonObject(raw: String?): JSONObject? {
+    if (raw.isNullOrBlank() || raw == "null") return null
+    return try {
+        val trimmed = raw.trim()
+        if (trimmed.startsWith("\"")) {
+            val unescaped = org.json.JSONTokener(trimmed).nextValue() as? String ?: return null
+            JSONObject(unescaped)
+        } else {
+            JSONObject(trimmed)
+        }
+    } catch (_: Exception) {
+        null
+    }
+}
 
-    vpnOpened = true  
-    stage = Stage.WAIT_VPN  
+private fun detectLogoutControl() {
+    if (stage != Stage.DETECT_LOGOUT || logoutDetectRunning || isFinishing || isDestroyed) return
 
-    val launch = packageManager.getLaunchIntentForPackage(VPN_PACKAGE)  
+    handler.removeCallbacks(detectLogoutRunnable)
+    logoutDetectRunning = true
+    logoutDetectAttempts++
 
-    if (launch == null) {  
-        statusText("● THUNDER VPN NOT INSTALLED", red)  
-        showVpnDialog()  
-        return  
-    }  
+    workflowStatus("DETECTING PORTAL LOGOUT... $logoutDetectAttempts/8")
 
-    try {  
-        workflowStatus("OPENING THUNDER VPN — CONNECT MANUALLY")  
-        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)  
-        startActivity(launch)  
+    val script = PortalJsScripts.buildDetectLogoutScript()
 
-        handler.postDelayed({ checkVpnStatus() }, 2500)  
-    } catch (_: Exception) {  
-        statusText("● VPN OPEN FAILED", red)  
-        showVpnDialog()  
-    }  
-}  
+    webView.evaluateJavascript(script) { result ->
+        logoutDetectRunning = false
+        if (stage != Stage.DETECT_LOGOUT || isFinishing || isDestroyed) {
+            return@evaluateJavascript
+        }
 
-private fun isVpnConnected(): Boolean {  
-    val manager =  
-        getSystemService(Context.CONNECTIVITY_SERVICE)  
-            as ConnectivityManager  
+        val json = parseJsJsonObject(result)
+        val found = json?.optBoolean("found", false) == true
+        val controlObj = json?.optJSONObject("control")
 
-    return manager.allNetworks.any { n ->  
-        manager.getNetworkCapabilities(n)  
-            ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true  
-    }  
-}  
+        if (found && controlObj != null) {
+            val control = DetectedLogoutControl(
+                pageUrl = controlObj.optString("pageUrl", portalUrl),
+                tagName = controlObj.optString("tagName", ""),
+                id = controlObj.optString("id", ""),
+                name = controlObj.optString("name", ""),
+                href = controlObj.optString("href", ""),
+                text = controlObj.optString("text", ""),
+                title = controlObj.optString("title", ""),
+                ariaLabel = controlObj.optString("ariaLabel", ""),
+                onclick = controlObj.optString("onclick", ""),
+                selector = controlObj.optString("selector", ""),
+                detectedAt = System.currentTimeMillis()
+            )
+            detectedLogoutControl = control
+            persistDetectedLogoutControl(control)
 
-private fun checkVpnStatus() {  
-    val connected = isVpnConnected()  
+            // Do NOT click Logout yet. Release temporary process binding so Thunder VPN
+            // can establish cleanly while keeping preservedWifiNetwork for the Logout step.
+            connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
 
-    if (::ipDetails.isInitialized) {  
-        updateVpnLine(connected)  
-    }  
+            openThunderVpn()
+        } else {
+            val reason = json?.optString("reason", "NOT_FOUND").orEmpty()
+            if (reason == "LOGIN_FORM_PRESENT" && logoutDetectAttempts < 4) {
+                handler.postDelayed(detectLogoutRunnable, 900)
+            } else if (logoutDetectAttempts < 8) {
+                handler.postDelayed(detectLogoutRunnable, 900)
+            } else {
+                detectedLogoutControl = null
+                clearPersistedLogoutControl()
+                stage = Stage.IDLE
+                statusText("● NO PORTAL LOGOUT CONTROL FOUND", red)
+            }
+        }
+    }
+}
 
-    if (connected) {  
-        workflowStatus("VPN CONNECTION DETECTED")  
+private fun openThunderVpn() {
+    if (!checkActivationBeforeAction()) return
 
+    val cm = connectivityManager
+        ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).also {
+            connectivityManager = it
+        }
+    PortalNetworkHelper.clearProcessNetworkBinding(cm)
+
+    if (detectedLogoutControl == null) {
+        statusText("● LOGOUT CONTROL NOT DETECTED", red)
+        return
+    }
+
+    stage = Stage.WAIT_VPN
+    vpnConnectedConfirmed = isVpnConnected()
+
+    if (vpnConnectedConfirmed && isActivityInForeground) {
+        proceedToLogoutAfterVpnConfirmed()
+        return
+    }
+
+    if (vpnOpened) {
+        statusText("● CONNECT THUNDER VPN MANUALLY", cyan)
+        checkVpnStatus()
+        return
+    }
+
+    vpnOpened = true
+
+    val launch = packageManager.getLaunchIntentForPackage(VPN_PACKAGE)
+
+    if (launch == null) {
+        statusText("● THUNDER VPN NOT INSTALLED", red)
+        showVpnDialog()
+        return
+    }
+
+    try {
+        statusText("● CONNECT THUNDER VPN MANUALLY", cyan)
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(launch)
+    } catch (_: Exception) {
+        statusText("● VPN OPEN FAILED", red)
+        showVpnDialog()
+    }
+}
+
+private fun isVpnConnected(): Boolean {
+    val manager = connectivityManager
+        ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).also {
+            connectivityManager = it
+        }
+    return PortalNetworkHelper.isVpnConnected(manager)
+}
+
+private fun onVpnStateChanged(connected: Boolean) {
+    vpnConnectedConfirmed = connected
+
+    if (::ipDetails.isInitialized) {
+        updateVpnLine(connected)
+    }
+
+    if (connected) {
         try {
             vpnDialog?.dismiss()
             vpnDialog = null
+            vpnDialogShown = false
         } catch (_: Exception) {
         }
 
-        if (stage == Stage.WAIT_VPN) {  
-            stage = Stage.LOGOUT  
-            logoutSearchAttempts = 0  
-            logoutSearchRunning = false  
+        if (stage == Stage.WAIT_VPN) {
+            if (isActivityInForeground) {
+                proceedToLogoutAfterVpnConfirmed()
+            } else {
+                statusText("● VPN CONNECTED — RETURN TO ULTRA LOADER", green)
+            }
+        } else if (stage == Stage.IDLE || stage == Stage.FINISHED) {
+            updateInternetStatus()
+            refreshIpLocationIfNeeded()
+        }
+    } else {
+        if (stage == Stage.WAIT_VPN ||
+            (stage == Stage.LOGOUT && !secondLoginTimerRunning) ||
+            stage == Stage.VERIFY_LOGOUT
+        ) {
+            handler.removeCallbacks(logoutRetryRunnable)
+            handler.removeCallbacks(verifyLogoutRunnable)
+            logoutSearchRunning = false
+            logoutVerifyRunning = false
+            awaitingLogoutPageReload = false
+            stage = Stage.WAIT_VPN
+            statusText("● VPN DISCONNECTED — RECONNECT THUNDER VPN", red)
+            if (isActivityInForeground) {
+                showVpnDialog()
+            }
+        } else {
+            updateInternetStatus()
+        }
+    }
+}
 
-            handler.postDelayed({ clickPortalLogout() }, 2000)  
-        }  
+private fun proceedToLogoutAfterVpnConfirmed() {
+    if (stage != Stage.WAIT_VPN || isFinishing || isDestroyed) return
+    if (!isVpnConnected() || !isActivityInForeground) return
 
-        updateInternetStatus()  
-        updateIpDetails()  
-    } else {  
-        if (stage == Stage.WAIT_VPN) {  
-            workflowStatus("WAITING FOR VPN CONNECTION")  
-            showVpnDialog()  
-        }  
-    }  
-}  
+    try {
+        vpnDialog?.dismiss()
+        vpnDialog = null
+        vpnDialogShown = false
+    } catch (_: Exception) {
+    }
 
-private fun updateVpnLine(connected: Boolean) {  
-    if (!::ipDetails.isInitialized) return  
+    stage = Stage.LOGOUT
+    logoutSearchAttempts = 0
+    logoutSearchRunning = false
+    awaitingLogoutPageReload = false
+    updateInternetStatus()
+    clickPortalLogout()
+}
 
-    val lines = ipDetails.text.toString().lines().toMutableList()  
+private fun checkVpnStatus() {
+    val connected = isVpnConnected()
+    vpnConnectedConfirmed = connected
 
-    if (lines.size >= 5) {  
-        lines[4] =  
-            "VPN: ${if (connected) "CONNECTED" else "DISCONNECTED"}"  
-        ipDetails.text = lines.joinToString("\n")  
-    }  
-}  
+    if (::ipDetails.isInitialized) {
+        updateVpnLine(connected)
+    }
+
+    if (connected) {
+        try {
+            vpnDialog?.dismiss()
+            vpnDialog = null
+            vpnDialogShown = false
+        } catch (_: Exception) {
+        }
+
+        if (stage == Stage.WAIT_VPN) {
+            if (isActivityInForeground) {
+                proceedToLogoutAfterVpnConfirmed()
+            } else {
+                statusText("● VPN CONNECTED — RETURN TO ULTRA LOADER", green)
+            }
+        } else {
+            updateInternetStatus()
+            refreshIpLocationIfNeeded()
+        }
+    } else if (stage == Stage.WAIT_VPN) {
+        statusText("● CONNECT THUNDER VPN MANUALLY", cyan)
+        if (isActivityInForeground) {
+            showVpnDialog()
+        }
+    }
+}
+
+private fun updateVpnLine(connected: Boolean) {
+    if (!::ipDetails.isInitialized) return
+
+    val lines = ipDetails.text.toString().lines().toMutableList()
+
+    if (lines.size >= 5) {
+        lines[4] =
+            "VPN: ${if (connected) "CONNECTED" else "DISCONNECTED"}"
+        ipDetails.text = lines.joinToString("\n")
+    }
+}
 
 private fun showVpnDialog() {
-    if (vpnDialogShown || isFinishing || isDestroyed) return
+    if (vpnDialogShown || !isActivityInForeground || isFinishing || isDestroyed) return
 
     vpnDialogShown = true
 
@@ -2189,206 +2603,300 @@ private fun showVpnDialog() {
         .setTitle("THUNDER VPN")
         .setMessage(
             "Please open Thunder VPN and connect manually. " +
-            "After connecting VPN, return to ULTRA LOADER and tap CONNECT."
+            "As soon as VPN connects and you return to ULTRA LOADER, portal Logout will run automatically."
         )
-        .setPositiveButton("CONNECT") { _, _ ->
+        .setPositiveButton("CHECK / CONTINUE") { _, _ ->
             vpnDialog = null
+            vpnDialogShown = false
             if (isVpnConnected()) {
-                workflowStatus("VPN CONNECTION DETECTED")
-                if (stage == Stage.WAIT_VPN || stage == Stage.LOGOUT) {
-                    stage = Stage.LOGOUT
-                    logoutSearchAttempts = 0
-                    logoutSearchRunning = false
-                    clickPortalLogout()
+                if (stage == Stage.WAIT_VPN) {
+                    proceedToLogoutAfterVpnConfirmed()
                 }
             } else {
                 toast("Connect Thunder VPN first")
-                vpnDialogShown = false
                 showVpnDialog()
             }
         }
         .setNeutralButton("OPEN VPN") { _, _ ->
             vpnDialog = null
             vpnDialogShown = false
+            vpnOpened = false
             openThunderVpn()
         }
         .setNegativeButton("LATER") { _, _ ->
             vpnDialog = null
+            vpnDialogShown = false
         }
         .create()
 
     vpnDialog = dialog
     dialog.show()
-}  
+}
 
-private fun clickPortalLogout() {  
-    if (stage != Stage.LOGOUT || logoutSearchRunning) return  
+private fun scheduleLogoutRetryAfterNetworkError() {
+    if ((stage != Stage.LOGOUT && stage != Stage.VERIFY_LOGOUT) || secondLoginTimerRunning) return
+    if (!isVpnConnected()) {
+        onVpnStateChanged(false)
+        return
+    }
+    handler.removeCallbacks(verifyLogoutRunnable)
+    handler.removeCallbacks(logoutRetryRunnable)
+    logoutVerifyRunning = false
+    logoutSearchRunning = false
+    stage = Stage.LOGOUT
+    if (logoutSearchAttempts < 6) {
+        awaitingLogoutPageReload = true
+        val cm = connectivityManager
+            ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).also {
+                connectivityManager = it
+            }
+        val boundWifi = PortalNetworkHelper.bindToWifiNetwork(cm, preservedWifiNetwork ?: portalNetwork)
+        if (boundWifi != null) {
+            preservedWifiNetwork = boundWifi
+            portalNetwork = boundWifi
+        }
+        val targetPage = detectedLogoutControl?.pageUrl?.takeIf { PortalNetworkHelper.isValidHttpUrl(it) }
+            ?: portalUrl
+        if (::webView.isInitialized && PortalNetworkHelper.isValidHttpUrl(targetPage)) {
+            webView.loadUrl(targetPage)
+        }
+    } else {
+        stage = Stage.IDLE
+        statusText("● PORTAL LOGOUT FAILED OVER WIFI", red)
+    }
+}
 
-    if (logoutSearchAttempts >= 10) {  
-        workflowStatus("PORTAL LOGOUT BUTTON NOT FOUND")  
-        return  
-    }  
+private fun clickPortalLogout() {
+    if (stage != Stage.LOGOUT || secondLoginTimerRunning || logoutSearchRunning || isFinishing || isDestroyed) return
 
-    logoutSearchRunning = true  
-    logoutSearchAttempts++  
+    if (!isVpnConnected()) {
+        stage = Stage.WAIT_VPN
+        statusText("● VPN DISCONNECTED — RECONNECT THUNDER VPN", red)
+        if (isActivityInForeground) showVpnDialog()
+        return
+    }
 
-    workflowStatus("SEARCHING PORTAL LOGOUT... $logoutSearchAttempts/10")  
+    if (logoutSearchAttempts >= 6) {
+        stage = Stage.IDLE
+        statusText("● PORTAL LOGOUT BUTTON NOT FOUND", red)
+        return
+    }
 
-    portalNetwork?.let {  
-        (getSystemService(Context.CONNECTIVITY_SERVICE)  
-            as ConnectivityManager).bindProcessToNetwork(it)  
-    }  
+    handler.removeCallbacks(logoutRetryRunnable)
+    logoutSearchRunning = true
+    logoutSearchAttempts++
 
-    val script = """  
-        (function(){  
-          var a=Array.from(document.querySelectorAll('a,button,input[type=button],input[type=submit],[role=button]'));  
-          var x=a.find(function(n){  
-            var sig=(n.innerText||'')+' '+(n.value||'')+' '+(n.id||'')+' '+(n.name||'')+' '+(n.title||'')+' '+(n.getAttribute('aria-label')||'')+' '+(n.getAttribute('href')||'');
-            return /log.?out|sign.?out/i.test(sig);  
-          });  
-          if(!x)return 'LOGOUT_NOT_FOUND';  
-          x.click();  
-          return 'LOGOUT_CLICKED';  
-        })();  
-    """.trimIndent()  
+    workflowStatus("CLICKING PORTAL LOGOUT... $logoutSearchAttempts/6")
 
-    webView.evaluateJavascript(script) { result ->  
-        logoutSearchRunning = false  
+    val cm = connectivityManager
+        ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).also {
+            connectivityManager = it
+        }
 
-        if (stage != Stage.LOGOUT) return@evaluateJavascript  
+    // Route portal Logout directly over the preserved Wi-Fi network, not the VPN tunnel.
+    val boundWifi = PortalNetworkHelper.bindToWifiNetwork(cm, preservedWifiNetwork ?: portalNetwork)
+    if (boundWifi != null) {
+        preservedWifiNetwork = boundWifi
+        portalNetwork = boundWifi
+    }
 
-        if (result?.contains("LOGOUT_CLICKED") == true) {  
-            workflowStatus("LOGOUT CLICKED")  
-            startSecondLoginTimer()  
-            handler.postDelayed({ clickPortalLoginAgent() }, 2500)  
-        } else if (logoutSearchAttempts < 10) {  
-            if (logoutSearchAttempts == 3 || logoutSearchAttempts == 6) {
-                if (::webView.isInitialized && portalUrl.startsWith("http")) {
-                    webView.loadUrl(portalUrl)
+    val script = PortalJsScripts.buildClickLogoutScript(detectedLogoutControl)
+
+    webView.evaluateJavascript(script) { result ->
+        logoutSearchRunning = false
+
+        if (stage != Stage.LOGOUT || isFinishing || isDestroyed) return@evaluateJavascript
+
+        if (result?.contains("LOGOUT_CLICKED") == true) {
+            stage = Stage.VERIFY_LOGOUT
+            logoutVerifyAttempts = 0
+            logoutVerifyRunning = false
+            workflowStatus("VERIFYING PORTAL LOGOUT...")
+            handler.removeCallbacks(verifyLogoutRunnable)
+            handler.postDelayed(verifyLogoutRunnable, 900)
+        } else if (logoutSearchAttempts < 6) {
+            val targetPage = detectedLogoutControl?.pageUrl?.takeIf { PortalNetworkHelper.isValidHttpUrl(it) }
+                ?: portalUrl
+            if (::webView.isInitialized && PortalNetworkHelper.isValidHttpUrl(targetPage)) {
+                awaitingLogoutPageReload = true
+                webView.loadUrl(targetPage)
+            } else {
+                handler.postDelayed(logoutRetryRunnable, 900)
+            }
+        } else {
+            stage = Stage.IDLE
+            statusText("● PORTAL LOGOUT BUTTON NOT FOUND", red)
+        }
+    }
+}
+
+private fun verifyPortalLogout() {
+    if (stage != Stage.VERIFY_LOGOUT || logoutVerifyRunning || isFinishing || isDestroyed) return
+
+    if (!isVpnConnected()) {
+        stage = Stage.WAIT_VPN
+        statusText("● VPN DISCONNECTED — RECONNECT THUNDER VPN", red)
+        if (isActivityInForeground) showVpnDialog()
+        return
+    }
+
+    handler.removeCallbacks(verifyLogoutRunnable)
+    logoutVerifyRunning = true
+    logoutVerifyAttempts++
+
+    val previousPage = detectedLogoutControl?.pageUrl ?: portalUrl
+    val script = PortalJsScripts.buildVerifyLogoutScript(previousPage)
+
+    webView.evaluateJavascript(script) { result ->
+        logoutVerifyRunning = false
+        if (stage != Stage.VERIFY_LOGOUT || isFinishing || isDestroyed) return@evaluateJavascript
+
+        when {
+            result?.contains("LOGOUT_VERIFIED_") == true -> {
+                workflowStatus("LOGOUT VERIFIED — STARTING SECOND LOGIN")
+                stage = Stage.LOGOUT
+                loginActionSearchAttempts = 0
+                loginActionSearchRunning = false
+                startSecondLoginTimer()
+                clickPortalLoginAgent()
+            }
+
+            result?.contains("LOGOUT_ERROR_PAGE") == true -> {
+                scheduleLogoutRetryAfterNetworkError()
+            }
+
+            result?.contains("LOGOUT_STILL_PRESENT") == true -> {
+                if (logoutVerifyAttempts == 3 || logoutVerifyAttempts == 6) {
+                    stage = Stage.LOGOUT
+                    clickPortalLogout()
+                } else if (logoutVerifyAttempts < 12) {
+                    handler.postDelayed(verifyLogoutRunnable, 600)
+                } else {
+                    stage = Stage.IDLE
+                    statusText("● LOGOUT NOT CONFIRMED BY PORTAL", red)
                 }
             }
-            handler.postDelayed({ clickPortalLogout() }, 2500)  
-        } else {  
-            workflowStatus("PORTAL LOGOUT BUTTON NOT FOUND")  
-        }  
-    }  
-}  
 
-private fun startSecondLoginTimer() {  
-    stopSecondLoginTimer()  
+            else -> {
+                if (logoutVerifyAttempts < 14) {
+                    handler.postDelayed(verifyLogoutRunnable, 550)
+                } else {
+                    stage = Stage.IDLE
+                    statusText("● LOGOUT VERIFICATION TIMEOUT", red)
+                }
+            }
+        }
+    }
+}
 
-    secondLoginTimerStartedAt = SystemClock.elapsedRealtime()  
-    secondLoginElapsedSeconds = 0L  
-    secondLoginTimerRunning = true  
+private fun startSecondLoginTimer() {
+    stopSecondLoginTimer()
 
-    secondLoginTimerStatus.text = "SECOND LOGIN SEARCH: 0s"  
-    secondLoginStageStatus.text = "SEARCHING FOR SECOND LOGIN BUTTON"  
+    secondLoginTimerStartedAt = SystemClock.elapsedRealtime()
+    secondLoginElapsedSeconds = 0L
+    secondLoginTimerRunning = true
 
-    handler.removeCallbacks(timerUpdater)  
-    handler.post(timerUpdater)  
-}  
+    secondLoginTimerStatus.text = "SECOND LOGIN SEARCH: 0s"
+    secondLoginStageStatus.text = "SEARCHING FOR SECOND LOGIN BUTTON"
 
-private fun stopSecondLoginTimer() {  
-    if (secondLoginTimerRunning) {  
-        secondLoginElapsedSeconds =  
-            (SystemClock.elapsedRealtime() -  
-                secondLoginTimerStartedAt) / 1000L  
-    }  
+    handler.removeCallbacks(timerUpdater)
+    handler.post(timerUpdater)
+}
 
-    secondLoginTimerRunning = false  
-    handler.removeCallbacks(timerUpdater)  
-}  
+private fun stopSecondLoginTimer() {
+    if (secondLoginTimerRunning) {
+        secondLoginElapsedSeconds =
+            (SystemClock.elapsedRealtime() -
+                secondLoginTimerStartedAt) / 1000L
+    }
 
-private fun clickPortalLoginAgent() {  
-    if (stage != Stage.LOGOUT || loginActionSearchRunning) return  
+    secondLoginTimerRunning = false
+    handler.removeCallbacks(timerUpdater)
+}
 
-    if (loginActionSearchAttempts >= 60) {  
-        stopSecondLoginTimer()  
-        secondLoginStageStatus.text = "SECOND LOGIN BUTTON NOT FOUND"  
-        secondLoginStageStatus.setTextColor(red)  
-        workflowStatus("PORTAL LOGIN ACTION NOT FOUND")  
-        return  
-    }  
+private fun clickPortalLoginAgent() {
+    if (stage != Stage.LOGOUT || loginActionSearchRunning || isFinishing || isDestroyed) return
 
-    loginActionSearchRunning = true  
-    loginActionSearchAttempts++  
+    handler.removeCallbacks(secondLoginAgentRunnable)
 
-    workflowStatus(  
+    if (loginActionSearchAttempts >= 60) {
+        stopSecondLoginTimer()
+        secondLoginStageStatus.text = "SECOND LOGIN BUTTON NOT FOUND"
+        secondLoginStageStatus.setTextColor(red)
+        workflowStatus("PORTAL LOGIN ACTION NOT FOUND")
+        return
+    }
+
+    loginActionSearchRunning = true
+    loginActionSearchAttempts++
+
+    workflowStatus(
         "SEARCHING SECOND LOGIN BUTTON... $loginActionSearchAttempts/60"
-    )  
+    )
 
-    val script = """  
-        (function(){  
-          var a=Array.from(document.querySelectorAll('a,button,input[type=button],input[type=submit],[role=button]'));  
-          var x=a.find(function(n){  
-            var sig=(n.innerText||'')+' '+(n.value||'')+' '+(n.id||'')+' '+(n.name||'')+' '+(n.title||'')+' '+(n.getAttribute('aria-label')||'')+' '+(n.getAttribute('href')||'');
-            return /log.?in|sign.?in/i.test(sig);  
-          });  
-          if(!x)return 'LOGIN_AGENT_NOT_FOUND';  
-          x.click();  
-          return 'LOGIN_AGENT_CLICKED';  
-        })();  
-    """.trimIndent()  
+    val script = PortalJsScripts.buildSecondLoginAgentScript()
 
-    webView.evaluateJavascript(script) { result ->  
-        loginActionSearchRunning = false  
+    webView.evaluateJavascript(script) { result ->
+        loginActionSearchRunning = false
 
-        if (stage != Stage.LOGOUT) return@evaluateJavascript  
+        if (stage != Stage.LOGOUT || isFinishing || isDestroyed) return@evaluateJavascript
 
-        if (result?.contains("LOGIN_AGENT_CLICKED") == true) {  
-            secondLoginButtonFound = true  
+        if (result?.contains("LOGIN_AGENT_FORM_ALREADY_OPEN") == true) {
+            secondLoginButtonFound = true
             secondFormSearchAttempts = 0
-            stage = Stage.WAIT_SECOND_LOGIN  
+            stage = Stage.WAIT_SECOND_LOGIN
+            stopSecondLoginTimer()
+            secondLoginStageStatus.text = "SECOND LOGIN FORM READY"
+            workflowStatus("SECOND LOGIN FORM READY")
+            startInAppInternetRefreshCheck()
+        } else if (result?.contains("LOGIN_AGENT_CLICKED") == true) {
+            secondLoginButtonFound = true
+            secondFormSearchAttempts = 0
+            stage = Stage.WAIT_SECOND_LOGIN
 
-            stopSecondLoginTimer()  
-            secondLoginStageStatus.text = "LOGIN BUTTON CLICKED"  
-            workflowStatus("SECOND LOGIN BUTTON FOUND")  
+            stopSecondLoginTimer()
+            secondLoginStageStatus.text = "LOGIN BUTTON CLICKED"
+            workflowStatus("SECOND LOGIN BUTTON FOUND")
 
-            handler.postDelayed({ checkSecondLoginForm() }, 1000)  
+            handler.postDelayed(secondFormCheckRunnable, 800)
+        } else if (loginActionSearchAttempts < 60) {
+            handler.postDelayed(secondLoginAgentRunnable, 1500)
+        } else {
+            stopSecondLoginTimer()
+            secondLoginStageStatus.text = "SECOND LOGIN BUTTON NOT FOUND"
+            secondLoginStageStatus.setTextColor(red)
+            workflowStatus("PORTAL LOGIN ACTION NOT FOUND")
+        }
+    }
+}
 
-        } else if (loginActionSearchAttempts < 60) {  
-            handler.postDelayed({ clickPortalLoginAgent() }, 2000)  
-        } else {  
-            stopSecondLoginTimer()  
-            secondLoginStageStatus.text = "SECOND LOGIN BUTTON NOT FOUND"  
-            secondLoginStageStatus.setTextColor(red)  
-            workflowStatus("PORTAL LOGIN ACTION NOT FOUND")  
-        }  
-    }  
-}  
+private fun checkSecondLoginForm() {
+    if (stage != Stage.WAIT_SECOND_LOGIN || isFinishing || isDestroyed) return
+    if (!secondLoginButtonFound || secondFormCheckRunning) return
 
-private fun checkSecondLoginForm() {  
-    if (stage != Stage.WAIT_SECOND_LOGIN) return  
-    if (!secondLoginButtonFound || secondFormCheckRunning) return  
-
-    secondFormCheckRunning = true  
+    handler.removeCallbacks(secondFormCheckRunnable)
+    secondFormCheckRunning = true
     secondFormSearchAttempts++
 
-    val formScript = """  
-        (function(){  
-          var u=document.querySelector('input[type=text],input[type=email],input[name*=user i]');  
-          var p=document.querySelector('input[type=password]');  
-          return u&&p?'SECOND_FORM_READY':'WAITING';  
-        })();  
-    """.trimIndent()  
+    val formScript = PortalJsScripts.buildSecondLoginFormScript()
 
-    webView.evaluateJavascript(formScript) { result ->  
-        if (stage != Stage.WAIT_SECOND_LOGIN) {  
-            secondFormCheckRunning = false  
-            return@evaluateJavascript  
-        }  
+    webView.evaluateJavascript(formScript) { result ->
+        if (stage != Stage.WAIT_SECOND_LOGIN || isFinishing || isDestroyed) {
+            secondFormCheckRunning = false
+            return@evaluateJavascript
+        }
 
-        if (result?.contains("SECOND_FORM_READY") == true || secondFormSearchAttempts >= 5) {  
+        if (result?.contains("SECOND_FORM_READY") == true || secondFormSearchAttempts >= 5) {
             secondFormCheckRunning = false
             startInAppInternetRefreshCheck()
-        } else {  
-            secondFormCheckRunning = false  
+        } else {
+            secondFormCheckRunning = false
 
-            workflowStatus("WAITING FOR SECOND LOGIN FORM...")  
+            workflowStatus("WAITING FOR SECOND LOGIN FORM...")
 
-            handler.postDelayed({ checkSecondLoginForm() }, 2000)  
-        }  
-    }  
+            handler.postDelayed(secondFormCheckRunnable, 1200)
+        }
+    }
 }  
 
 private fun startInAppInternetRefreshCheck() {
@@ -2513,6 +3021,7 @@ private fun markInternetConnected() {
     netWorkingVerified = true
     netCheckRunning = false
     stage = Stage.FINISHED
+    completedSessionUrl = portalUrl
 
     if (::webView.isInitialized) {
         webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
@@ -2541,6 +3050,7 @@ private fun startLiveNetWorkingCheck() {
         return
     }
 
+    handler.removeCallbacks(liveNetCheckRunnable)
     netCheckRunning = true
 
     executor.execute {
@@ -2559,7 +3069,7 @@ private fun startLiveNetWorkingCheck() {
                 markInternetConnected()
             } else {
                 workflowStatus("CHECKING INTERNET CONNECTION...")
-                handler.postDelayed({ startLiveNetWorkingCheck() }, 1500)
+                handler.postDelayed(liveNetCheckRunnable, 1500)
             }
         }
     }
@@ -2841,37 +3351,53 @@ private fun handleDetectedPortalLaunch(
     if (!appInitialized || isFinishing || isDestroyed) return
     if (!ActivationManager.hasAccess(this)) return
 
-    // Never interrupt an active mid-flow automation cycle unless explicitly forced
-    if (!forceIfIdleOrFinished && stage != Stage.IDLE && stage != Stage.FINISHED) return
+    // Never interrupt an active mid-flow automation cycle.
+    if (stage != Stage.IDLE && stage != Stage.FINISHED) return
 
-    if (
-        !forceIfIdleOrFinished &&
-        detectedUrl.isNullOrBlank() &&
-        System.currentTimeMillis() - lastAutoTriggerAt < 30_000L
-    ) {
-        return
-    }
+    val normalizedUrl = detectedUrl?.trim()?.takeIf { PortalNetworkHelper.isValidHttpUrl(it) }
 
-    if (!forceIfIdleOrFinished && detectedAt > 0L && detectedAt <= lastAutoTriggerAt) {
-        return
+    // Capture once per Wi-Fi session: do not restart/recapture the same URL after completion.
+    if (!forceIfIdleOrFinished) {
+        if (stage == Stage.FINISHED &&
+            (normalizedUrl == null || normalizedUrl == completedSessionUrl || normalizedUrl == activeSessionUrl)
+        ) {
+            return
+        }
+        if (normalizedUrl != null && normalizedUrl == activeSessionUrl && stage == Stage.IDLE && completedSessionUrl == normalizedUrl) {
+            return
+        }
+        if (normalizedUrl == null && System.currentTimeMillis() - lastAutoTriggerAt < 30_000L) {
+            return
+        }
+        if (detectedAt > 0L && detectedAt <= lastAutoTriggerAt) {
+            return
+        }
     }
 
     lastAutoTriggerAt = if (detectedAt > 0L) detectedAt else System.currentTimeMillis()
+    if (normalizedUrl != null) {
+        activeSessionUrl = normalizedUrl
+    }
+    if (!detectionType.isNullOrBlank()) {
+        activeDetectionType = detectionType
+    }
 
     try {
-        val prefs = getSharedPreferences("wifi_notification_links", Context.MODE_PRIVATE)
+        val prefs = getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
         val editor = prefs.edit().putBoolean("pending_auto_start", false)
         if (!detectionType.isNullOrBlank()) {
             editor.putString("pending_detection_type", detectionType)
         }
         editor.apply()
-        if (!detectedUrl.isNullOrBlank()) {
-            saveCapturedUrlForCurrentNetwork(detectedUrl)
+        if (normalizedUrl != null) {
+            val typeToSave = detectionType ?: activeDetectionType ?: WifiNotificationListener.TYPE_PORTAL_LOGIN
+            WifiNotificationListener.markSessionCaptured(this, normalizedUrl, typeToSave)
+            saveCapturedUrlForCurrentNetwork(normalizedUrl)
         }
     } catch (_: Exception) {
     }
 
-    startPortalProcess()
+    startPortalProcess(userInitiated = forceIfIdleOrFinished)
 }
 
 override fun onNewIntent(intent: Intent?) {
@@ -2883,62 +3409,79 @@ override fun onNewIntent(intent: Intent?) {
     val incomingUrl = extractIncomingPortalUrl(intent)
     if (!incomingUrl.isNullOrBlank()) {
         saveCapturedUrlForCurrentNetwork(incomingUrl)
+        WifiNotificationListener.markSessionCaptured(
+            this,
+            incomingUrl,
+            WifiNotificationListener.TYPE_VIEW_WEBSITE
+        )
         intent.action = null
         intent.data = null
-        handler.postDelayed({
+        handler.post {
             handleDetectedPortalLaunch(
                 incomingUrl,
-                "VIEW_WEBSITE",
+                WifiNotificationListener.TYPE_VIEW_WEBSITE,
                 System.currentTimeMillis(),
                 forceIfIdleOrFinished = true
             )
-        }, 250)
+        }
     } else if (intent.action == ACTION_OPEN_PORTAL) {
         val detectedUrl = intent.getStringExtra("detected_url")
         val detectionType = intent.getStringExtra("detection_type")
         val detectedAt = intent.getLongExtra("detected_at", System.currentTimeMillis())
         intent.action = null
-        handler.postDelayed({
+        handler.post {
             handleDetectedPortalLaunch(detectedUrl, detectionType, detectedAt, forceIfIdleOrFinished = true)
-        }, 250)
+        }
     }
 }
 
-override fun onResume() {  
-    super.onResume()  
+override fun onResume() {
+    super.onResume()
+    isActivityInForeground = true
 
-    if (!appInitialized) return  
+    if (!appInitialized) return
 
-    updateActivationStatus()  
+    updateActivationStatus()
     updateNotificationAccessButton()
-    updateInternetStatus()  
-    updateDeviceDataUsage()  
-    verifyLicenseWhenOnline()  
+    updateInternetStatus()
+    updateDeviceDataUsage()
+    verifyLicenseWhenOnline()
 
-    if (isNotificationAccessEnabled()) {
+    // Only refresh notifications when idle and no session URL has been captured yet,
+    // so switching back from Thunder VPN never re-triggers "Connected / Tap to view website".
+    if (isNotificationAccessEnabled() &&
+        stage == Stage.IDLE &&
+        WifiNotificationListener.getSessionCapturedPortal(this) == null
+    ) {
         startMonitorService(refresh = true)
     }
 
-    if (!ActivationManager.hasAccess(this)) {  
-        statusText("● ACTIVATION EXPIRED", red)  
+    if (!ActivationManager.hasAccess(this)) {
+        statusText("● ACTIVATION EXPIRED", red)
 
-        ActivationManager.requireActivation(this) {  
-            updateActivationStatus()  
-        }  
-        return  
-    }  
+        ActivationManager.requireActivation(this) {
+            updateActivationStatus()
+        }
+        return
+    }
 
-    if (stage == Stage.WAIT_VPN) {  
-        handler.postDelayed({ checkVpnStatus() }, 700)  
-    }  
-}  
+    if (stage == Stage.WAIT_VPN) {
+        checkVpnStatus()
+    }
+}
 
-override fun onDestroy() {  
-    secondLoginTimerRunning = false  
-    handler.removeCallbacksAndMessages(null)  
-    executor.shutdownNow()  
+override fun onPause() {
+    isActivityInForeground = false
+    super.onPause()
+}
 
-    activationPopup?.dismiss()  
+override fun onDestroy() {
+    isActivityInForeground = false
+    secondLoginTimerRunning = false
+    handler.removeCallbacksAndMessages(null)
+    executor.shutdownNow()
+
+    activationPopup?.dismiss()
     flashDialog?.dismiss()
     vpnDialog?.dismiss()
     portalLinkDialog?.dismiss()
@@ -2951,31 +3494,38 @@ override fun onDestroy() {
         wifiPortalReceiverRegistered = false
     }
 
-    if (networkCallbackRegistered) {  
-        try {  
-            connectivityManager?.unregisterNetworkCallback(  
-                licenseNetworkCallback  
-            )  
-        } catch (_: Exception) {  
-        }  
+    if (networkCallbackRegistered) {
+        try {
+            connectivityManager?.unregisterNetworkCallback(licenseNetworkCallback)
+        } catch (_: Exception) {
+        }
+        networkCallbackRegistered = false
+    }
 
-        networkCallbackRegistered = false  
-    }  
+    if (wifiCallbackRegistered) {
+        try {
+            connectivityManager?.unregisterNetworkCallback(wifiNetworkCallback)
+        } catch (_: Exception) {
+        }
+        wifiCallbackRegistered = false
+    }
 
-    try {  
-        (  
-            getSystemService(Context.CONNECTIVITY_SERVICE)  
-                as ConnectivityManager  
-        ).bindProcessToNetwork(null)  
-    } catch (_: Exception) {  
-    }  
+    if (vpnCallbackRegistered) {
+        try {
+            connectivityManager?.unregisterNetworkCallback(vpnNetworkCallback)
+        } catch (_: Exception) {
+        }
+        vpnCallbackRegistered = false
+    }
 
-    if (::webView.isInitialized) {  
-        webView.stopLoading()  
-        webView.destroy()  
-    }  
+    connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
 
-    super.onDestroy()  
+    if (::webView.isInitialized) {
+        webView.stopLoading()
+        webView.destroy()
+    }
+
+    super.onDestroy()
 }  
 
 private inner class GlobeView(context: Context) : View(context) {

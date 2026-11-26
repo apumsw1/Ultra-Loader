@@ -13,6 +13,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
+import java.util.concurrent.ConcurrentHashMap
 
 class PortalMonitorService : Service() {
 
@@ -36,15 +37,26 @@ class PortalMonitorService : Service() {
 
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
     private var callbackRegistered = false
+
+    @Volatile
     private var lastMonitorMessage: String? = null
+
+    @Volatile
     private var wifiNotificationVisible = false
+
+    @Volatile
     private var lastDetectedUrl: String? = null
+
+    @Volatile
     private var lastDetectionType: String? = null
 
-    private val wifiNetworks = mutableSetOf<Network>()
-    private val captiveNetworks = mutableSetOf<Network>()
-    private val websiteNetworks = mutableSetOf<Network>()
-    private val validatedNetworks = mutableSetOf<Network>()
+    @Volatile
+    private var sessionBroadcastSignature: String? = null
+
+    private val wifiNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
+    private val captiveNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
+    private val websiteNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
+    private val validatedNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
 
     override fun onCreate() {
         super.onCreate()
@@ -65,7 +77,7 @@ class PortalMonitorService : Service() {
         )
 
         registerWifiMonitor()
-        refreshCurrentNetworks()
+        refreshCurrentNetworks(scanNotifications = true)
     }
 
     private fun createNotificationChannel() {
@@ -209,15 +221,23 @@ class PortalMonitorService : Service() {
     }
 
     @Suppress("DEPRECATION")
-    private fun refreshCurrentNetworks() {
+    private fun refreshCurrentNetworks(scanNotifications: Boolean) {
         try {
-            WifiNotificationListener.scanActiveNotificationsNow(notifyService = true)
+            if (scanNotifications) {
+                WifiNotificationListener.scanActiveNotificationsNow(notifyService = true)
+            }
 
-            val prefs = getSharedPreferences("wifi_notification_links", Context.MODE_PRIVATE)
-            val recentType = prefs.getString("pending_detection_type", null)
-            val recentAt = prefs.getLong("latest_notification_time", 0L)
-            if (!recentType.isNullOrBlank() && System.currentTimeMillis() - recentAt <= 10 * 60_000L) {
-                lastDetectionType = recentType
+            val sessionCaptured = WifiNotificationListener.getSessionCapturedPortal(this)
+            if (sessionCaptured != null) {
+                lastDetectedUrl = sessionCaptured.first
+                lastDetectionType = sessionCaptured.second
+            } else {
+                val prefs = getSharedPreferences(WifiNotificationListener.PREFS, Context.MODE_PRIVATE)
+                val recentType = prefs.getString("pending_detection_type", null)
+                val recentAt = prefs.getLong("latest_notification_time", 0L)
+                if (!recentType.isNullOrBlank() && System.currentTimeMillis() - recentAt <= 10 * 60_000L) {
+                    lastDetectionType = recentType
+                }
             }
 
             for (network in connectivityManager.allNetworks) {
@@ -231,9 +251,9 @@ class PortalMonitorService : Service() {
                 ) {
                     wifiNetworks.add(network)
                     showWifiNotification(
-                        captiveDetected = lastDetectionType == "PORTAL_LOGIN",
+                        captiveDetected = lastDetectionType == WifiNotificationListener.TYPE_PORTAL_LOGIN,
                         forceRefresh = false,
-                        websiteDetected = lastDetectionType == "VIEW_WEBSITE"
+                        websiteDetected = lastDetectionType == WifiNotificationListener.TYPE_VIEW_WEBSITE
                     )
                     evaluateNetwork(network, capabilities)
                 }
@@ -270,17 +290,8 @@ class PortalMonitorService : Service() {
             NetworkCapabilities.NET_CAPABILITY_VALIDATED
         )
 
-        var capPortalUrl: String? = null
-        var capVenueUrl: String? = null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                val linkProps = connectivityManager.getLinkProperties(network)
-                val capData = linkProps?.javaClass?.getMethod("getCaptivePortalData")?.invoke(linkProps)
-                capPortalUrl = capData?.javaClass?.getMethod("getUserPortalUrl")?.invoke(capData)?.toString()
-                capVenueUrl = capData?.javaClass?.getMethod("getVenueInfoUrl")?.invoke(capData)?.toString()
-            } catch (_: Exception) {
-            }
-        }
+        val (capPortalUrl, capVenueUrl) =
+            PortalNetworkHelper.getCaptivePortalUrls(connectivityManager, network)
 
         if (captive) {
             val newlyCaptive = captiveNetworks.add(network)
@@ -288,10 +299,10 @@ class PortalMonitorService : Service() {
             validatedNetworks.remove(network)
             val resolved = capPortalUrl ?: capVenueUrl
             if (!resolved.isNullOrBlank()) {
-                saveLinkIfFresh(resolved, "PORTAL_LOGIN")
+                saveLinkIfFresh(resolved, WifiNotificationListener.TYPE_PORTAL_LOGIN)
             }
-            if (newlyCaptive) {
-                broadcastPortalDetected(resolved, "PORTAL_LOGIN")
+            if (newlyCaptive || !resolved.isNullOrBlank()) {
+                broadcastPortalOnce(resolved, WifiNotificationListener.TYPE_PORTAL_LOGIN)
             }
             showWifiNotification(
                 captiveDetected = true,
@@ -304,9 +315,9 @@ class PortalMonitorService : Service() {
             val hasVenueWebsite = !capVenueUrl.isNullOrBlank()
             if (hasVenueWebsite) {
                 val newlyWebsite = websiteNetworks.add(network)
-                saveLinkIfFresh(capVenueUrl!!, "VIEW_WEBSITE")
-                if (newlyWebsite) {
-                    broadcastPortalDetected(capVenueUrl, "VIEW_WEBSITE")
+                saveLinkIfFresh(capVenueUrl!!, WifiNotificationListener.TYPE_VIEW_WEBSITE)
+                if (newlyWebsite || sessionBroadcastSignature == null) {
+                    broadcastPortalOnce(capVenueUrl, WifiNotificationListener.TYPE_VIEW_WEBSITE)
                 }
                 showWifiNotification(
                     captiveDetected = false,
@@ -325,9 +336,9 @@ class PortalMonitorService : Service() {
 
             if (!hasVenueWebsite) {
                 showWifiNotification(
-                    captiveDetected = lastDetectionType == "PORTAL_LOGIN",
+                    captiveDetected = lastDetectionType == WifiNotificationListener.TYPE_PORTAL_LOGIN,
                     forceRefresh = false,
-                    websiteDetected = lastDetectionType == "VIEW_WEBSITE"
+                    websiteDetected = lastDetectionType == WifiNotificationListener.TYPE_VIEW_WEBSITE
                 )
             }
         }
@@ -336,30 +347,30 @@ class PortalMonitorService : Service() {
     }
 
     private fun saveLinkIfFresh(url: String, type: String) {
-        if (!url.startsWith("http://") && !url.startsWith("https://")) return
+        if (!url.startsWith("http://", ignoreCase = true) &&
+            !url.startsWith("https://", ignoreCase = true)
+        ) return
         lastDetectedUrl = url
         lastDetectionType = type
-        try {
-            val prefs = getSharedPreferences("wifi_notification_links", Context.MODE_PRIVATE)
-            val now = System.currentTimeMillis()
-            val lastTime = prefs.getLong("latest_url_time", 0L)
-            if (now - lastTime > 10_000L || prefs.getString("latest_url", null).isNullOrBlank()) {
-                prefs.edit()
-                    .putString("latest_url", url)
-                    .putLong("latest_url_time", now)
-                    .putString("pending_detection_type", type)
-                    .apply()
-            }
-        } catch (_: Exception) {
-        }
+        WifiNotificationListener.markSessionCaptured(this, url, type)
     }
 
-    private fun broadcastPortalDetected(url: String?, type: String) {
+    @Synchronized
+    private fun broadcastPortalOnce(url: String?, type: String) {
+        val normalizedUrl = url?.trim().orEmpty()
+        val sig = "$type|$normalizedUrl"
+
+        // Do not rebroadcast if this exact URL or a valid URL for this type was already captured in this Wi-Fi session.
+        if (sessionBroadcastSignature == sig) return
+        if (sessionBroadcastSignature != null && normalizedUrl.isEmpty()) return
+        if (sessionBroadcastSignature?.endsWith("|$normalizedUrl") == true && normalizedUrl.isNotEmpty()) return
+
+        sessionBroadcastSignature = sig
         try {
             val intent = Intent("com.apumsw1.ultraloader.WIFI_PORTAL_DETECTED").apply {
                 setPackage(packageName)
-                if (!url.isNullOrBlank()) {
-                    putExtra("detected_url", url)
+                if (normalizedUrl.isNotEmpty()) {
+                    putExtra("detected_url", normalizedUrl)
                 }
                 putExtra("detection_type", type)
                 putExtra("detected_at", System.currentTimeMillis())
@@ -378,6 +389,8 @@ class PortalMonitorService : Service() {
         if (wifiNetworks.isEmpty()) {
             lastDetectedUrl = null
             lastDetectionType = null
+            sessionBroadcastSignature = null
+            WifiNotificationListener.clearSessionState(this)
             clearWifiNotification()
         }
 
@@ -386,10 +399,10 @@ class PortalMonitorService : Service() {
 
     private fun updateMonitorNotification() {
         val message = when {
-            captiveNetworks.isNotEmpty() || lastDetectionType == "PORTAL_LOGIN" ->
+            captiveNetworks.isNotEmpty() || lastDetectionType == WifiNotificationListener.TYPE_PORTAL_LOGIN ->
                 "Wi-Fi Login Portal detected"
 
-            websiteNetworks.isNotEmpty() || lastDetectionType == "VIEW_WEBSITE" ->
+            websiteNetworks.isNotEmpty() || lastDetectionType == WifiNotificationListener.TYPE_VIEW_WEBSITE ->
                 "Connected / Tap to view website detected"
 
             validatedNetworks.isNotEmpty() ->
@@ -469,7 +482,8 @@ class PortalMonitorService : Service() {
             ACTION_REFRESH_NOTIFICATIONS -> {
                 wifiNotificationVisible = false
                 lastMonitorMessage = null
-                refreshCurrentNetworks()
+                val alreadyCaptured = WifiNotificationListener.getSessionCapturedPortal(this) != null
+                refreshCurrentNetworks(scanNotifications = !alreadyCaptured)
             }
 
             ACTION_PORTAL_NOTIFICATION_DETECTED -> {
@@ -481,7 +495,7 @@ class PortalMonitorService : Service() {
                 if (!detectionType.isNullOrBlank()) {
                     lastDetectionType = detectionType
                 }
-                val isWebsite = lastDetectionType == "VIEW_WEBSITE"
+                val isWebsite = lastDetectionType == WifiNotificationListener.TYPE_VIEW_WEBSITE
                 showWifiNotification(
                     captiveDetected = !isWebsite,
                     forceRefresh = true,
@@ -510,6 +524,7 @@ class PortalMonitorService : Service() {
 
         lastDetectedUrl = null
         lastDetectionType = null
+        sessionBroadcastSignature = null
         lastMonitorMessage = null
         wifiNotificationVisible = false
 
