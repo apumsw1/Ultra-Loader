@@ -156,6 +156,7 @@ private var pendingWebViewState: Bundle? = null
 private var activeSessionUrl: String? = null
 private var activeDetectionType: String? = null
 private var completedSessionUrl: String? = null
+private var autoLaunchConsumedForWifiSession = false
 
 private var secondLoginTimerStartedAt = 0L
 private var secondLoginElapsedSeconds = 0L
@@ -258,6 +259,9 @@ private val wifiNetworkCallback =
                 !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
             ) {
                 handler.post {
+                    if (preservedWifiNetwork != null && preservedWifiNetwork != network) {
+                        autoLaunchConsumedForWifiSession = false
+                    }
                     preservedWifiNetwork = network
                     if (portalNetwork == null) {
                         portalNetwork = network
@@ -287,6 +291,9 @@ private val wifiNetworkCallback =
                 val cm = connectivityManager ?: return@post
                 val replacement = PortalNetworkHelper.findWifiNetwork(cm)
                 if (replacement != null) {
+                    if (preservedWifiNetwork != replacement) {
+                        autoLaunchConsumedForWifiSession = false
+                    }
                     preservedWifiNetwork = replacement
                     if (portalNetwork == network) {
                         portalNetwork = replacement
@@ -297,6 +304,7 @@ private val wifiNetworkCallback =
                     activeSessionUrl = null
                     activeDetectionType = null
                     completedSessionUrl = null
+                    autoLaunchConsumedForWifiSession = false
                     detectedLogoutControl = null
                     clearPersistedLogoutControl()
                 }
@@ -446,6 +454,7 @@ private fun restoreWorkflowInstanceState(savedInstanceState: Bundle) {
     activeSessionUrl = savedInstanceState.getString("active_session_url", null)
     activeDetectionType = savedInstanceState.getString("active_detection_type", null)
     completedSessionUrl = savedInstanceState.getString("completed_session_url", null)
+    autoLaunchConsumedForWifiSession = savedInstanceState.getBoolean("auto_launch_consumed", false)
     vpnOpened = savedInstanceState.getBoolean("vpn_opened", false)
     loginSubmitted = savedInstanceState.getBoolean("login_submitted", false)
     vpnConnectedConfirmed = savedInstanceState.getBoolean("vpn_connected_confirmed", false)
@@ -470,6 +479,7 @@ override fun onSaveInstanceState(outState: Bundle) {
     outState.putString("active_session_url", activeSessionUrl)
     outState.putString("active_detection_type", activeDetectionType)
     outState.putString("completed_session_url", completedSessionUrl)
+    outState.putBoolean("auto_launch_consumed", autoLaunchConsumedForWifiSession)
     outState.putBoolean("vpn_opened", vpnOpened)
     outState.putBoolean("login_submitted", loginSubmitted)
     outState.putBoolean("vpn_connected_confirmed", vpnConnectedConfirmed)
@@ -2184,6 +2194,7 @@ private fun checkExistingWifiPortalOnStartup() {
 private fun startPortalProcess(userInitiated: Boolean = false) {
     if (!checkActivationBeforeAction()) return
 
+    autoLaunchConsumedForWifiSession = true
     if (userInitiated) {
         completedSessionUrl = null
     }
@@ -2402,11 +2413,13 @@ private fun tryAutoLogin() {
     autoLoginAttempts++
 
     var credentials = readCredentials()
-    if (credentials == null && ::userInput.isInitialized && ::passwordInput.isInitialized) {
+    if (::userInput.isInitialized && ::passwordInput.isInitialized) {
         val typedUser = userInput.text.toString().trim()
         val typedPass = passwordInput.text.toString()
         if (typedUser.isNotBlank() && typedPass.isNotBlank()) {
-            saveCredentials(typedUser, typedPass)
+            if (credentials == null || credentials.first != typedUser || credentials.second != typedPass) {
+                saveCredentials(typedUser, typedPass)
+            }
             credentials = Pair(typedUser, typedPass)
         }
     }
@@ -3335,10 +3348,10 @@ private fun markInternetConnected() {
         webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
     }
 
-    statusText("● CONNECTED", green)
+    statusText("● CONNECTED — DONE", green)
 
     if (::secondLoginStageStatus.isInitialized) {
-        secondLoginStageStatus.text = "SECOND LOGIN FORM FOUND • CONNECTED"
+        secondLoginStageStatus.text = "GOOGLE REFRESHED • AUTOMATION DONE"
         secondLoginStageStatus.setTextColor(green)
     }
 
@@ -3644,8 +3657,11 @@ private fun handleDetectedPortalLaunch(
 
     val normalizedUrl = detectedUrl?.trim()?.takeIf { PortalNetworkHelper.isValidHttpUrl(it) }
 
-    // Capture once per Wi-Fi session: do not restart/recapture the same URL after completion.
+    // Capture once per Wi-Fi session: auto-open detection link only one time unless user clicks Start.
     if (!forceIfIdleOrFinished) {
+        if (autoLaunchConsumedForWifiSession) {
+            return
+        }
         if (stage == Stage.FINISHED &&
             (normalizedUrl == null || normalizedUrl == completedSessionUrl || normalizedUrl == activeSessionUrl)
         ) {
@@ -3665,6 +3681,7 @@ private fun handleDetectedPortalLaunch(
         }
     }
 
+    autoLaunchConsumedForWifiSession = true
     lastAutoTriggerAt = if (detectedAt > 0L) detectedAt else System.currentTimeMillis()
     if (normalizedUrl != null) {
         activeSessionUrl = normalizedUrl
@@ -3751,6 +3768,7 @@ override fun onResume() {
     // so switching back from Thunder VPN never re-triggers "Connected / Tap to view website".
     if (isNotificationAccessEnabled() &&
         stage == Stage.IDLE &&
+        !autoLaunchConsumedForWifiSession &&
         WifiNotificationListener.getSessionCapturedPortal(this) == null
     ) {
         startMonitorService(refresh = true)

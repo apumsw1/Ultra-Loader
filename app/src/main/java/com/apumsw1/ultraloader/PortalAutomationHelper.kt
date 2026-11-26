@@ -537,18 +537,31 @@ object PortalJsScripts {
         }
 
         function findVisibleUsernameField(doc, pf) {
-          var inputs = Array.from(doc.querySelectorAll('input'));
-          return inputs.find(function(x) {
-            if (x === pf || !isElemVisible(x)) return false;
-            var t = (x.type || 'text').toLowerCase();
-            if (['hidden', 'password', 'checkbox', 'radio', 'submit', 'button', 'reset', 'file', 'image'].includes(t)) {
-              return false;
-            }
-            var n = ((x.name || '') + ' ' + (x.id || '') + ' ' + (x.placeholder || '') + ' ' + (x.getAttribute('aria-label') || '')).toLowerCase();
-            return ['user', 'email', 'login', 'account', 'uid', 'name', 'id', 'phone', 'voucher', 'code'].some(function(k) {
-              return n.includes(k);
-            }) || ['text', 'email', 'tel'].includes(t);
-          }) || null;
+          var form = pf && pf.closest ? pf.closest('form') : null;
+          var scopes = form ? [form, doc] : [doc];
+          for (var s = 0; s < scopes.length; s++) {
+            var inputs = Array.from(scopes[s].querySelectorAll('input'));
+            var keywordMatch = inputs.find(function(x) {
+              if (x === pf || !isElemVisible(x)) return false;
+              var t = (x.type || 'text').toLowerCase();
+              if (['hidden', 'password', 'checkbox', 'radio', 'submit', 'button', 'reset', 'file', 'image'].includes(t)) {
+                return false;
+              }
+              var n = ((x.name || '') + ' ' + (x.id || '') + ' ' + (x.placeholder || '') + ' ' + (x.getAttribute('aria-label') || '')).toLowerCase();
+              return ['user', 'email', 'login', 'account', 'uid', 'name', 'id', 'phone', 'mobile', 'voucher', 'code'].some(function(k) {
+                return n.includes(k);
+              });
+            });
+            if (keywordMatch) return keywordMatch;
+
+            var genericMatch = inputs.find(function(x) {
+              if (x === pf || !isElemVisible(x)) return false;
+              var t = (x.type || 'text').toLowerCase();
+              return ['text', 'email', 'tel', 'number', ''].includes(t);
+            });
+            if (genericMatch) return genericMatch;
+          }
+          return null;
         }
 
         function findLogoutCandidate() {
@@ -718,22 +731,79 @@ object PortalJsScripts {
                 try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
                 try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
                 try { el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true })); } catch (e) {}
+                try { el.dispatchEvent(new Event('blur', { bubbles: true })); } catch (e) {}
+              }
+
+              function findCheckboxLabel(doc, c) {
+                if (c.id) {
+                  try {
+                    var explicitLabel = doc.querySelector('label[for="' + c.id.replace(/"/g, '\\"') + '"]');
+                    if (explicitLabel) return explicitLabel;
+                  } catch (e) {}
+                }
+                return c.closest ? c.closest('label') : null;
+              }
+
+              function isCheckboxControlVisible(doc, c) {
+                if (isElemVisible(c)) return true;
+                var lbl = findCheckboxLabel(doc, c);
+                if (lbl && isElemVisible(lbl)) return true;
+                var parent = c.parentElement;
+                if (parent && isElemVisible(parent)) {
+                  var tag = (parent.tagName || '').toLowerCase();
+                  if (tag === 'label' || tag === 'span' || tag === 'div') return true;
+                }
+                return false;
               }
 
               function getCheckboxContext(doc, c) {
                 var parts = [c.name || '', c.id || '', c.className || '', c.getAttribute('aria-label') || ''];
-                if (c.id) {
-                  try {
-                    var explicitLabel = doc.querySelector('label[for="' + c.id.replace(/"/g, '\\"') + '"]');
-                    if (explicitLabel) parts.push(explicitLabel.innerText || explicitLabel.textContent || '');
-                  } catch (e) {}
-                }
-                var wrapLabel = c.closest ? c.closest('label') : null;
-                if (wrapLabel) parts.push(wrapLabel.innerText || wrapLabel.textContent || '');
+                var lbl = findCheckboxLabel(doc, c);
+                if (lbl) parts.push(lbl.innerText || lbl.textContent || '');
                 if (c.parentElement) parts.push(c.parentElement.innerText || c.parentElement.textContent || '');
-                var container = c.closest ? c.closest('tr,div,p,li,section') : null;
-                if (container) parts.push((container.innerText || container.textContent || '').slice(0, 220));
+                var container = c.closest ? c.closest('tr,div,p,li,section,fieldset') : null;
+                if (container) parts.push((container.innerText || container.textContent || '').slice(0, 260));
                 return parts.join(' ').toLowerCase();
+              }
+
+              function tickCheckboxesInScope(scopeEl, doc, insideForm) {
+                var boxes = Array.from((scopeEl || doc).querySelectorAll('input[type=checkbox]'));
+                boxes.forEach(function(c) {
+                  if (c.checked || c.disabled || !isCheckboxControlVisible(doc, c)) return;
+                  var ctx = getCheckboxContext(doc, c);
+                  var isOptionalRemember = /remember|keep\s*me|stay\s*signed|show\s*pass|save\s*login/.test(ctx);
+                  var isConsent = /terms?|conditions?|agreement|accept|policy|agree|consent|confirm|rule|acceptable|i\s+have\s+read|privacy|aup/.test(ctx) ||
+                    c.required ||
+                    c.getAttribute('aria-required') === 'true' ||
+                    (!isOptionalRemember && insideForm);
+                  if (isConsent && !isOptionalRemember) {
+                    try { c.click(); } catch (e) {}
+                    if (!c.checked) {
+                      var lbl = findCheckboxLabel(doc, c);
+                      if (lbl) {
+                        try { lbl.click(); } catch (e) {}
+                      }
+                    }
+                    if (!c.checked) {
+                      c.checked = true;
+                      try { c.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); } catch (e) {}
+                      try { c.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
+                      try { c.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+                    }
+                  }
+                });
+                var roleBoxes = Array.from((scopeEl || doc).querySelectorAll('[role=checkbox]'));
+                roleBoxes.forEach(function(rb) {
+                  if (!isElemVisible(rb) || rb.getAttribute('aria-checked') === 'true') return;
+                  var ctx = ((rb.innerText || rb.textContent || '') + ' ' + (rb.getAttribute('aria-label') || '')).toLowerCase();
+                  var isOptionalRemember = /remember|keep\s*me|stay\s*signed|show\s*pass|save\s*login/.test(ctx);
+                  var isConsent = /terms?|conditions?|agreement|accept|policy|agree|consent|confirm|rule|acceptable/.test(ctx) ||
+                    rb.getAttribute('aria-required') === 'true' ||
+                    (!isOptionalRemember && insideForm);
+                  if (isConsent && !isOptionalRemember) {
+                    try { rb.click(); } catch (e) {}
+                  }
+                });
               }
 
               var logoutCandFirst = findLogoutCandidate();
@@ -765,22 +835,7 @@ object PortalJsScripts {
                 }
                 if (nav && ${if (allowClickNav) "true" else "false"}) {
                   var navDoc = nav.ownerDocument || document;
-                  Array.from(navDoc.querySelectorAll('input[type=checkbox]')).forEach(function(c) {
-                    if (c.checked || c.disabled || !isElemVisible(c)) return;
-                    var ctx = getCheckboxContext(navDoc, c);
-                    var isOptionalRemember = /remember|keep\s*me|stay\s*signed|show\s*pass|save\s*login/.test(ctx);
-                    var isConsent = /terms?|conditions?|agreement|accept|policy|agree|consent|confirm|rule|acceptable/.test(ctx) ||
-                      c.required ||
-                      c.getAttribute('aria-required') === 'true';
-                    if (isConsent && !isOptionalRemember) {
-                      try { c.click(); } catch (e) {}
-                      if (!c.checked) {
-                        c.checked = true;
-                        try { c.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
-                        try { c.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
-                      }
-                    }
-                  });
+                  tickCheckboxesInScope(navDoc, navDoc, false);
                   nav.click();
                   return 'NAVIGATED';
                 }
@@ -800,24 +855,10 @@ object PortalJsScripts {
               setFieldValue(pf, p);
 
               var form = pf.closest ? pf.closest('form') : null;
-              var checkboxScope = form || formDoc;
-              Array.from(checkboxScope.querySelectorAll('input[type=checkbox]')).forEach(function(c) {
-                if (c.checked || c.disabled || !isElemVisible(c)) return;
-                var ctx = getCheckboxContext(formDoc, c);
-                var isOptionalRemember = /remember|keep\s*me|stay\s*signed|show\s*pass|save\s*login/.test(ctx);
-                var isConsent = /terms?|conditions?|agreement|accept|policy|agree|consent|confirm|rule|acceptable/.test(ctx) ||
-                  c.required ||
-                  c.getAttribute('aria-required') === 'true' ||
-                  (!isOptionalRemember && form != null);
-                if (isConsent && !isOptionalRemember) {
-                  try { c.click(); } catch (e) {}
-                  if (!c.checked) {
-                    c.checked = true;
-                    try { c.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {}
-                    try { c.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
-                  }
-                }
-              });
+              if (form) {
+                tickCheckboxesInScope(form, formDoc, true);
+              }
+              tickCheckboxesInScope(formDoc, formDoc, form == null);
 
               if (form) {
                 var submit = form.querySelector('button[type=submit],input[type=submit]');
@@ -828,14 +869,19 @@ object PortalJsScripts {
                 var formBtns = Array.from(form.querySelectorAll('button,input[type=button],input[type=submit],[role=button],a'));
                 var formBtn = formBtns.find(function(b) {
                   return isElemVisible(b) && !isLogoutElement(b) &&
-                    /log\s*in|sign\s*in|connect|continue|submit|enter|accept/i.test((b.innerText || b.value || b.id || b.name || ''));
+                    /log\s*in|sign\s*in|connect|continue|submit|enter|accept|agree|ok|go|next/i.test((b.innerText || b.value || b.id || b.name || ''));
                 });
                 if (formBtn) {
                   formBtn.click();
                   return 'SUBMITTED';
                 }
-                var disabledSubmit = form.querySelector('button[type=submit][disabled],input[type=submit][disabled]');
-                if (disabledSubmit) {
+                var disabledFormBtn = formBtns.find(function(b) {
+                  return b.disabled && (
+                    (b.type || '').toLowerCase() === 'submit' ||
+                    /log\s*in|sign\s*in|connect|continue|submit|enter|accept|agree/i.test((b.innerText || b.value || b.id || b.name || ''))
+                  );
+                });
+                if (disabledFormBtn) {
                   return 'LOGIN_BUTTON_DISABLED';
                 }
                 if (form.requestSubmit) form.requestSubmit();
@@ -845,8 +891,10 @@ object PortalJsScripts {
 
               var buttons = Array.from(formDoc.querySelectorAll('button,input[type=button],input[type=submit],[role=button]'));
               var loginBtn = buttons.find(function(b) {
-                return isElemVisible(b) && !isLogoutElement(b) &&
-                  /log\s*in|sign\s*in|connect|continue|submit/i.test((b.innerText || b.value || b.id || b.name || ''));
+                return isElemVisible(b) && !isLogoutElement(b) && (
+                  (b.type || '').toLowerCase() === 'submit' ||
+                  /log\s*in|sign\s*in|connect|continue|submit|enter|accept|agree|ok|go|next/i.test((b.innerText || b.value || b.id || b.name || ''))
+                );
               });
               if (loginBtn) {
                 loginBtn.click();
@@ -854,7 +902,10 @@ object PortalJsScripts {
               }
 
               var anyDisabledLogin = buttons.find(function(b) {
-                return b.disabled && /log\s*in|sign\s*in|connect|continue|submit/i.test((b.innerText || b.value || b.id || b.name || ''));
+                return b.disabled && (
+                  (b.type || '').toLowerCase() === 'submit' ||
+                  /log\s*in|sign\s*in|connect|continue|submit|enter|accept|agree/i.test((b.innerText || b.value || b.id || b.name || ''))
+                );
               });
               if (anyDisabledLogin) {
                 return 'LOGIN_BUTTON_DISABLED';
