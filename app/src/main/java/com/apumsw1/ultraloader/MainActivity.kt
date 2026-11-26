@@ -2220,15 +2220,17 @@ private fun discoverPortalUrl() {
             }
 
             if (found.isNullOrBlank()) {
-                stage = Stage.IDLE
                 updateNotificationAccessButton()
                 if (!isNotificationAccessEnabled()) {
+                    stage = Stage.IDLE
                     statusText("● ENABLE WIFI NOTIFICATION ACCESS", red)
-                } else if (WifiNotificationListener.hasSystemPortalIntent()) {
-                    workflowStatus("WAITING FOR SYSTEM PORTAL LINK")
-                    showSystemPortalLinkDialog()
                 } else {
-                    workflowStatus("PORTAL URL NOT YET DETECTED")
+                    workflowStatus("WAITING FOR PORTAL LINK...")
+                    handler.postDelayed({
+                        if (stage == Stage.LOGIN && !isFinishing && !isDestroyed) {
+                            discoverPortalUrl()
+                        }
+                    }, 2000)
                 }
                 return@runOnUiThread
             }
@@ -3474,33 +3476,7 @@ private fun saveCapturedUrlForCurrentNetwork(
 }
 
 private fun showSystemPortalLinkDialog() {
-    if (isFinishing || isDestroyed) return
-    portalLinkDialog?.dismiss()
-
-    val dialog = AlertDialog.Builder(this)
-        .setTitle("WIFI PORTAL LINK")
-        .setMessage(
-            "Android kept this Wi-Fi's 'Tap to view website' link inside the system notification. " +
-                "Tap OPEN PORTAL LINK and pick ULTRA LOADER (or open in Chrome and Share -> Ultra Loader) " +
-                "to capture and automate it automatically."
-        )
-        .setPositiveButton("OPEN PORTAL LINK") { _, _ ->
-            portalLinkDialog = null
-            if (!WifiNotificationListener.openSystemPortalIntent()) {
-                toast("Tap your phone's Wi-Fi notification and open or Share to Ultra Loader")
-            }
-        }
-        .setNeutralButton("RETRY") { _, _ ->
-            portalLinkDialog = null
-            startPortalProcess()
-        }
-        .setNegativeButton("CLOSE") { _, _ ->
-            portalLinkDialog = null
-        }
-        .create()
-
-    portalLinkDialog = dialog
-    dialog.show()
+    // No-op: popup removed to keep all workflow inside WebView.
 }
 
 private fun handleDetectedPortalLaunch(
