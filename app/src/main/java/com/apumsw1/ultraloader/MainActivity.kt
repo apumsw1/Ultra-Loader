@@ -1152,11 +1152,11 @@ private fun createScreen() {
     }
 
     webView = WebView(this).apply {
-        alpha = 0f
-        isFocusable = false
-        isFocusableInTouchMode = false
-        isClickable = false
-        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        alpha = 1f
+        isFocusable = true
+        isFocusableInTouchMode = true
+        isClickable = true
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
 
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
@@ -1344,6 +1344,17 @@ private fun createScreen() {
     content.addView(clockTextView(), matchWrap())
     content.addView(loginPanel, matchWrap())
     content.addView(webTitle, matchWrap())
+
+    val webViewPanel = createPanel()
+    webViewPanel.addView(panelHeading("🌐 LIVE PORTAL & AUTOMATION BROWSER"))
+    webView.layoutParams = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT,
+        (260 * density).toInt()
+    )
+    (webView.parent as? ViewGroup)?.removeView(webView)
+    webViewPanel.addView(webView)
+    content.addView(webViewPanel, matchWrap())
+
     content.addView(trafficPanel, matchWrap())
 
     val footer = TextView(this).apply {
@@ -1365,23 +1376,7 @@ private fun createScreen() {
         )
     )
     root.isClickable = true
-
-    val hostContainer = FrameLayout(this)
-    hostContainer.addView(
-        webView,
-        FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        )
-    )
-    hostContainer.addView(
-        root,
-        FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        )
-    )
-    setContentView(hostContainer)
+    setContentView(root)
 
     readCredentials()?.let {  
         userInput.setText(it.first)  
@@ -2213,6 +2208,15 @@ private fun discoverPortalUrl() {
             val capUrl = PortalNetworkHelper.getCaptivePortalUrl(manager, network, preferVenue)
             if (PortalNetworkHelper.isValidHttpUrl(capUrl)) {
                 found = capUrl
+            }
+        }
+
+        // 3. Fallback: Router Gateway IP URL if no notification or capport data found yet
+        if (found == null && network != null) {
+            val gwIp = PortalNetworkHelper.getWifiGatewayIp(this, manager, network)
+            if (!gwIp.isNullOrBlank()) {
+                found = "http://$gwIp/"
+                activeDetectionType = WifiNotificationListener.TYPE_PORTAL_LOGIN
             }
         }
 
