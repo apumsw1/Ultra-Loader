@@ -14,14 +14,22 @@ import android.net.NetworkRequest
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import java.util.IdentityHashMap
 import java.util.Locale
 
 class VpnAutoConnectService : AccessibilityService() {
 
     companion object {
+        private const val TAG = "VpnAutoConnect"
+        private const val INSPECT_POLL_INTERVAL_MS = 900L
+        private const val CONNECTING_STUCK_THRESHOLD_MS = 10_000L
+        private const val FAKE_CONNECTED_RETRY_MS = 4_000L
+
         @Volatile
         private var activeInstance: VpnAutoConnectService? = null
 
@@ -52,6 +60,8 @@ class VpnAutoConnectService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private var connectivityManager: ConnectivityManager? = null
     private var vpnCallbackRegistered = false
+    private var connectingSinceMs = 0L
+    private var fakeConnectedSinceMs = 0L
 
     private val inspectRunnable = Runnable {
         inspectActiveWindowAndConnect()
@@ -104,7 +114,10 @@ class VpnAutoConnectService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         activeInstance = this
+        connectingSinceMs = 0L
+        fakeConnectedSinceMs = 0L
         registerVpnCallback()
+        Log.i(TAG, "Accessibility service connected (armed=${VpnAutomationBridge.isArmed()})")
         if (VpnAutomationBridge.isArmed()) {
             scheduleInspect(200L)
         }
@@ -126,7 +139,8 @@ class VpnAutoConnectService : AccessibilityService() {
         val eventPkg = event?.packageName?.toString().orEmpty()
         if (eventPkg.isNotBlank() &&
             eventPkg != VpnAutomationBridge.VPN_PACKAGE &&
-            eventPkg != VpnAutomationBridge.VPN_DIALOG_PACKAGE
+            eventPkg != VpnAutomationBridge.VPN_DIALOG_PACKAGE &&
+            eventPkg != "com.android.settings"
         ) {
             return
         }
@@ -135,14 +149,20 @@ class VpnAutoConnectService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
+        Log.w(TAG, "Accessibility service interrupted")
         handler.removeCallbacks(inspectRunnable)
+        connectingSinceMs = 0L
+        fakeConnectedSinceMs = 0L
     }
 
     override fun onDestroy() {
+        Log.i(TAG, "Accessibility service destroying")
         if (activeInstance === this) {
             activeInstance = null
         }
         handler.removeCallbacksAndMessages(null)
+        connectingSinceMs = 0L
+        fakeConnectedSinceMs = 0L
         if (vpnCallbackRegistered) {
             try {
                 connectivityManager?.unregisterNetworkCallback(vpnCallback)
@@ -166,18 +186,24 @@ class VpnAutoConnectService : AccessibilityService() {
                 .build()
             cm.registerNetworkCallback(request, vpnCallback)
             vpnCallbackRegistered = true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register VPN NetworkCallback: ${e.message}")
             vpnCallbackRegistered = false
         }
     }
 
     private fun scheduleInspect(delayMs: Long) {
+        if (!VpnAutomationBridge.isArmed()) return
         handler.removeCallbacks(inspectRunnable)
         handler.postDelayed(inspectRunnable, delayMs)
     }
 
     private fun inspectActiveWindowAndConnect() {
-        if (!VpnAutomationBridge.isArmed()) return
+        if (!VpnAutomationBridge.isArmed()) {
+            connectingSinceMs = 0L
+            fakeConnectedSinceMs = 0L
+            return
+        }
 
         val cm = connectivityManager
             ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).also {
@@ -185,32 +211,80 @@ class VpnAutoConnectService : AccessibilityService() {
             }
 
         if (PortalNetworkHelper.isVpnConnected(cm)) {
+            Log.i(TAG, "OS VPN confirmed connected -> returning to Ultra Loader")
             returnToUltraLoader()
             return
         }
 
-        val root = try {
-            rootInActiveWindow
-        } catch (_: Exception) {
-            null
-        } ?: return
-
+        val roots = mutableListOf<AccessibilityNodeInfo>()
         val allNodes = mutableListOf<AccessibilityNodeInfo>()
+        val seenNodes = IdentityHashMap<AccessibilityNodeInfo, Boolean>()
+
+        fun trackNode(n: AccessibilityNodeInfo): Boolean {
+            if (seenNodes.containsKey(n)) return false
+            seenNodes[n] = true
+            allNodes.add(n)
+            return true
+        }
+
         try {
-            collectNodes(root, allNodes)
-            val rootPkg = root.packageName?.toString().orEmpty()
+            try {
+                windows?.forEach { win ->
+                    val r = try { win?.root } catch (_: Exception) { null }
+                    if (r != null) roots.add(r)
+                }
+            } catch (_: Exception) {
+            }
+            val activeRoot = try {
+                rootInActiveWindow
+            } catch (_: Exception) {
+                null
+            }
+            if (activeRoot != null && roots.none { it === activeRoot }) {
+                roots.add(activeRoot)
+            }
 
-            if (rootPkg == VpnAutomationBridge.VPN_DIALOG_PACKAGE) {
-                handleSystemVpnDialog(allNodes)
+            if (roots.isEmpty()) {
+                scheduleInspect(INSPECT_POLL_INTERVAL_MS)
                 return
             }
 
-            if (rootPkg != VpnAutomationBridge.VPN_PACKAGE) {
+            // 1. Always inspect system VPN permission dialogs first across all windows.
+            for (root in roots) {
+                val rootPkg = root.packageName?.toString().orEmpty()
+                if (rootPkg == VpnAutomationBridge.VPN_DIALOG_PACKAGE) {
+                    val dialogNodes = mutableListOf<AccessibilityNodeInfo>()
+                    collectNodes(root, dialogNodes) { trackNode(it) }
+                    if (handleSystemVpnDialog(dialogNodes)) {
+                        connectingSinceMs = 0L
+                        fakeConnectedSinceMs = 0L
+                        scheduleInspect(INSPECT_POLL_INTERVAL_MS)
+                        return
+                    }
+                }
+            }
+
+            // 2. Inspect Thunder VPN windows.
+            val vpnRoots = roots.filter {
+                it.packageName?.toString().orEmpty() == VpnAutomationBridge.VPN_PACKAGE
+            }
+            if (vpnRoots.isEmpty()) {
+                scheduleInspect(INSPECT_POLL_INTERVAL_MS)
                 return
             }
 
-            // Do not tap again if Thunder VPN already shows connected or connecting state.
-            val screenTexts = allNodes.mapNotNull { node ->
+            val vpnNodes = mutableListOf<AccessibilityNodeInfo>()
+            for (vRoot in vpnRoots) {
+                collectNodes(vRoot, vpnNodes) { trackNode(it) }
+            }
+
+            // Check if Thunder VPN displays an inline VPN consent/connection dialog.
+            if (handleInlinePermissionPrompt(vpnNodes)) {
+                scheduleInspect(INSPECT_POLL_INTERVAL_MS)
+                return
+            }
+
+            val screenTexts = vpnNodes.mapNotNull { node ->
                 listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
                     .joinToString(" ")
                     .trim()
@@ -218,6 +292,7 @@ class VpnAutoConnectService : AccessibilityService() {
                     .takeIf { it.isNotBlank() }
             }
 
+            val now = SystemClock.elapsedRealtime()
             val alreadyConnectedUi = screenTexts.any { txt ->
                 (txt.contains("tap to disconnect") ||
                     txt == "disconnect" ||
@@ -226,11 +301,31 @@ class VpnAutoConnectService : AccessibilityService() {
                     !txt.contains("not connected") &&
                     !txt.contains("disconnected")
             }
+
             if (alreadyConnectedUi) {
                 if (PortalNetworkHelper.isVpnConnected(cm)) {
                     returnToUltraLoader()
+                    return
                 }
+                if (fakeConnectedSinceMs == 0L) {
+                    fakeConnectedSinceMs = now
+                    Log.w(TAG, "Thunder UI shows Connected while OS VPN is disconnected; waiting to verify/retry")
+                }
+                val fakeElapsed = now - fakeConnectedSinceMs
+                if (fakeElapsed >= FAKE_CONNECTED_RETRY_MS && VpnAutomationBridge.canAttemptClick()) {
+                    val retryTarget = findThunderConnectNode(vpnNodes)
+                        ?: findThunderDisconnectOrPowerNode(vpnNodes)
+                    if (retryTarget != null) {
+                        Log.w(TAG, "OS VPN still disconnected after ${fakeElapsed}ms despite UI Connected; tapping recovery node")
+                        VpnAutomationBridge.recordClickAttempt()
+                        clickNodeOrBounds(retryTarget, allNodes)
+                        fakeConnectedSinceMs = now
+                    }
+                }
+                scheduleInspect(INSPECT_POLL_INTERVAL_MS)
                 return
+            } else {
+                fakeConnectedSinceMs = 0L
             }
 
             val connectingUi = screenTexts.any { txt ->
@@ -240,17 +335,42 @@ class VpnAutoConnectService : AccessibilityService() {
                     txt.contains("establishing")
             }
             if (connectingUi) {
+                if (connectingSinceMs == 0L) {
+                    connectingSinceMs = now
+                    Log.d(TAG, "Thunder VPN is in Connecting state; monitoring OS VPN")
+                }
+                val connectingElapsed = now - connectingSinceMs
+                if (connectingElapsed >= CONNECTING_STUCK_THRESHOLD_MS && VpnAutomationBridge.canAttemptClick()) {
+                    val stuckRecoveryNode = findThunderConnectNode(vpnNodes)
+                        ?: findThunderDisconnectOrPowerNode(vpnNodes)
+                    if (stuckRecoveryNode != null) {
+                        Log.w(TAG, "Thunder VPN stuck in Connecting for ${connectingElapsed}ms; retrying tap")
+                        VpnAutomationBridge.recordClickAttempt()
+                        clickNodeOrBounds(stuckRecoveryNode, allNodes)
+                        connectingSinceMs = now
+                    }
+                }
+                scheduleInspect(INSPECT_POLL_INTERVAL_MS)
                 return
+            } else {
+                connectingSinceMs = 0L
             }
 
-            if (!VpnAutomationBridge.canAttemptClick()) {
-                return
+            if (VpnAutomationBridge.canAttemptClick()) {
+                val target = findThunderConnectNode(vpnNodes)
+                if (target != null) {
+                    Log.i(TAG, "Clicking Thunder VPN Connect node (text=${target.text} id=${target.viewIdResourceName})")
+                    VpnAutomationBridge.recordClickAttempt()
+                    clickNodeOrBounds(target, allNodes)
+                } else {
+                    Log.d(TAG, "Thunder VPN Connect button not yet visible; continuing poll")
+                }
             }
 
-            val target = findThunderConnectNode(allNodes) ?: return
-            VpnAutomationBridge.recordClickAttempt()
-            clickNodeOrBounds(target, allNodes)
-        } catch (_: Exception) {
+            scheduleInspect(INSPECT_POLL_INTERVAL_MS)
+        } catch (e: Exception) {
+            Log.e(TAG, "inspectActiveWindowAndConnect error: ${e.message}")
+            scheduleInspect(INSPECT_POLL_INTERVAL_MS)
         } finally {
             for (node in allNodes) {
                 try {
@@ -259,16 +379,28 @@ class VpnAutoConnectService : AccessibilityService() {
                 } catch (_: Exception) {
                 }
             }
+            for (root in roots) {
+                if (!seenNodes.containsKey(root)) {
+                    try {
+                        @Suppress("DEPRECATION")
+                        root.recycle()
+                    } catch (_: Exception) {
+                    }
+                }
+            }
         }
     }
 
     private fun collectNodes(
         node: AccessibilityNodeInfo?,
         out: MutableList<AccessibilityNodeInfo>,
-        depth: Int = 0
+        depth: Int = 0,
+        track: (AccessibilityNodeInfo) -> Boolean = { true }
     ) {
-        if (node == null || depth > 24 || out.size > 350) return
-        out.add(node)
+        if (node == null || depth > 24 || out.size > 400) return
+        if (track(node)) {
+            out.add(node)
+        }
         val count = node.childCount
         for (i in 0 until count) {
             val child = try {
@@ -277,30 +409,65 @@ class VpnAutoConnectService : AccessibilityService() {
                 null
             }
             if (child != null) {
-                collectNodes(child, out, depth + 1)
+                collectNodes(child, out, depth + 1, track)
             }
         }
     }
 
-    private fun handleSystemVpnDialog(nodes: MutableList<AccessibilityNodeInfo>) {
-        if (!VpnAutomationBridge.canAttemptClick(minIntervalMs = 1000L, maxAttempts = 6)) return
+    private fun handleSystemVpnDialog(nodes: MutableList<AccessibilityNodeInfo>): Boolean {
+        if (!VpnAutomationBridge.canAttemptClick(minIntervalMs = 900L)) return false
 
         val okButton = nodes.firstOrNull { node ->
             val id = node.viewIdResourceName.orEmpty().lowercase(Locale.ROOT)
             val txt = (node.text?.toString().orEmpty() + " " + node.contentDescription?.toString().orEmpty())
                 .trim()
                 .lowercase(Locale.ROOT)
-            node.isEnabled && (
+            node.isEnabled && node.isVisibleToUser && (
                 id == "android:id/button1" ||
                     txt == "ok" ||
                     txt == "allow" ||
                     txt == "always allow" ||
                     txt == "connect"
                 )
-        } ?: return
+        } ?: return false
 
+        Log.i(TAG, "Approving system VPN permission dialog (${okButton.text})")
         VpnAutomationBridge.recordClickAttempt()
         clickNodeOrBounds(okButton, nodes)
+        return true
+    }
+
+    private fun handleInlinePermissionPrompt(nodes: MutableList<AccessibilityNodeInfo>): Boolean {
+        val hasConnectionRequest = nodes.any { n ->
+            val t = (n.text?.toString().orEmpty() + " " + n.contentDescription?.toString().orEmpty())
+                .lowercase(Locale.ROOT)
+            t.contains("connection request") || t.contains("vpn permission") || t.contains("wants to set up a vpn")
+        }
+        if (!hasConnectionRequest) return false
+        return handleSystemVpnDialog(nodes)
+    }
+
+    private fun findThunderDisconnectOrPowerNode(nodes: List<AccessibilityNodeInfo>): AccessibilityNodeInfo? {
+        val rect = Rect()
+        return nodes.firstOrNull { node ->
+            if (!node.isEnabled || !node.isVisibleToUser) return@firstOrNull false
+            node.getBoundsInScreen(rect)
+            if (rect.width() <= 0 || rect.height() <= 0) return@firstOrNull false
+            val text = node.text?.toString().orEmpty().trim().lowercase(Locale.ROOT)
+            val desc = node.contentDescription?.toString().orEmpty().trim().lowercase(Locale.ROOT)
+            val viewId = node.viewIdResourceName.orEmpty().trim().lowercase(Locale.ROOT)
+            val clickable = node.isClickable || hasClickableAncestor(node)
+            clickable && (
+                viewId.contains("btn_connect") ||
+                    viewId.contains("connect_btn") ||
+                    viewId.contains("power_btn") ||
+                    viewId.contains("iv_connect") ||
+                    text == "disconnect" ||
+                    desc == "disconnect" ||
+                    text == "cancel" ||
+                    text == "retry"
+                )
+        }
     }
 
     private fun findThunderConnectNode(nodes: List<AccessibilityNodeInfo>): AccessibilityNodeInfo? {
@@ -324,6 +491,8 @@ class VpnAutoConnectService : AccessibilityService() {
             var score = 0
             if (text == "connect" || desc == "connect" ||
                 text == "tap to connect" || desc == "tap to connect" ||
+                text == "reconnect" || desc == "reconnect" ||
+                text == "retry" || desc == "retry" ||
                 text == "start" || desc == "start" ||
                 text == "turn on" || desc == "turn on"
             ) {
@@ -465,6 +634,8 @@ class VpnAutoConnectService : AccessibilityService() {
             }
         if (!PortalNetworkHelper.isVpnConnected(cm)) return
 
+        connectingSinceMs = 0L
+        fakeConnectedSinceMs = 0L
         handler.removeCallbacks(inspectRunnable)
         VpnAutomationBridge.disarm()
         if (!VpnAutomationBridge.claimReturnToApp()) return
@@ -486,7 +657,8 @@ class VpnAutoConnectService : AccessibilityService() {
                 )
             }
             startActivity(intent)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "launchUltraLoaderForeground failed: ${e.message}")
         }
     }
 }

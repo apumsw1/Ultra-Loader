@@ -91,6 +91,7 @@ data class DetectedLogoutControl(
 }
 
 object VpnAutomationBridge {
+    private const val TAG = "UltraLoaderVpnBridge"
     const val VPN_PACKAGE = "com.fast.free.unblock.thunder.vpn"
     const val VPN_DIALOG_PACKAGE = "com.android.vpndialogs"
     const val ACTION_RETURN_FROM_VPN = "com.apumsw1.ultraloader.RETURN_FROM_VPN"
@@ -111,19 +112,36 @@ object VpnAutomationBridge {
     private var lastClickAtMs: Long = 0L
 
     fun arm(timeoutMs: Long = 60_000L) {
-        armedUntilMs = System.currentTimeMillis() + timeoutMs
+        val now = System.currentTimeMillis()
+        armedUntilMs = now + timeoutMs
         returnToAppClaimed = false
         clickAttempts = 0
         lastClickAtMs = 0L
+        android.util.Log.i(TAG, "Armed VPN bridge for ${timeoutMs}ms")
+    }
+
+    fun extendArmIfNeeded(minRemainingMs: Long = 20_000L, extensionMs: Long = 35_000L) {
+        val now = System.currentTimeMillis()
+        if (armedUntilMs > 0L && armedUntilMs - now < minRemainingMs) {
+            armedUntilMs = now + extensionMs
+            android.util.Log.d(TAG, "Extended VPN bridge deadline by ${extensionMs}ms")
+        }
     }
 
     fun disarm() {
+        if (armedUntilMs > 0L) {
+            android.util.Log.i(TAG, "Disarmed VPN bridge after $clickAttempts click attempts")
+        }
         armedUntilMs = 0L
         clickAttempts = 0
         lastClickAtMs = 0L
     }
 
     fun isArmed(): Boolean = System.currentTimeMillis() < armedUntilMs
+
+    fun remainingArmMs(): Long = (armedUntilMs - System.currentTimeMillis()).coerceAtLeast(0L)
+
+    fun getClickAttempts(): Int = clickAttempts
 
     @Synchronized
     fun claimReturnToApp(): Boolean {
@@ -132,31 +150,42 @@ object VpnAutomationBridge {
         return true
     }
 
-    fun canAttemptClick(minIntervalMs: Long = 1800L, maxAttempts: Int = 6): Boolean {
+    // Purely deadline-based throttling (no fixed click attempt cap)
+    fun canAttemptClick(minIntervalMs: Long = 1800L): Boolean {
         if (!isArmed()) return false
-        if (clickAttempts >= maxAttempts) return false
         return System.currentTimeMillis() - lastClickAtMs >= minIntervalMs
     }
 
     fun recordClickAttempt() {
         clickAttempts++
         lastClickAtMs = System.currentTimeMillis()
+        android.util.Log.d(TAG, "Recorded VPN click attempt #$clickAttempts (remaining=${remainingArmMs()}ms)")
     }
 }
 
 object PortalNetworkHelper {
+    private const val TAG = "UltraLoaderNet"
+
+    private val IRRELEVANT_LINK_KEYWORDS = listOf(
+        "/privacy", "privacy-policy", "privacypolicy",
+        "/terms", "terms-of-service", "terms_of_use", "tos",
+        "/cookie", "/legal", "/about", "/faq", "/help", "/support",
+        "play.google.com", "apps.apple.com", "itunes.apple.com",
+        "facebook.com", "instagram.com", "twitter.com", "x.com", "youtube.com", "t.me/"
+    )
 
     fun isConnectivityCheckOrBrowserProbeUrl(value: String?): Boolean {
         if (value.isNullOrBlank()) return false
         return try {
             val uri = URI(value.trim())
-            val host = uri.host?.lowercase(Locale.ROOT) ?: return false
+            val host = uri.host?.lowercase(Locale.ROOT)?.trimEnd('.') ?: return false
             val path = uri.path?.lowercase(Locale.ROOT).orEmpty()
 
             if (host == "detectportal.firefox.com" ||
                 host.endsWith(".detectportal.firefox.com") ||
                 host == "mozilla.org" || host.endsWith(".mozilla.org") ||
                 host == "mozilla.com" || host.endsWith(".mozilla.com") ||
+                host == "mozilla.net" || host.endsWith(".mozilla.net") ||
                 host == "firefox.com" || host.endsWith(".firefox.com")
             ) {
                 return true
@@ -165,31 +194,41 @@ object PortalNetworkHelper {
             if (host == "connectivitycheck.gstatic.com" ||
                 host == "connectivitycheck.android.com" ||
                 host == "connectivitycheck.google.com" ||
+                host.startsWith("connectivitycheck.") ||
                 host == "google.com" ||
                 host == "www.google.com" ||
                 host == "clients.l.google.com" ||
                 host.matches(Regex("^clients\\d*\\.google\\.com$")) ||
                 ((host == "google.com" || host.endsWith(".google.com") || host.endsWith(".gstatic.com")) &&
-                    (path == "/generate_24" || path == "/gen_204" || path.startsWith("/generate_24") || path.startsWith("/gen_204")))
+                    (path == "/generate_24" || path == "/gen_204" ||
+                        path.startsWith("/generate_24") || path.startsWith("/gen_204") || path.contains("ncsi")))
             ) {
                 return true
             }
 
             if (host == "captive.apple.com" ||
                 host.endsWith(".captive.apple.com") ||
+                host == "apple.com" ||
+                host == "www.apple.com" ||
                 ((host == "apple.com" || host.endsWith(".apple.com")) &&
-                    (path.contains("hotspot-detect") || path.contains("/library/test/")))
+                    (path.contains("hotspot-detect") || path.contains("/library/test/") || path.contains("captive")))
             ) {
                 return true
             }
 
             if (host == "msftconnecttest.com" || host.endsWith(".msftconnecttest.com") ||
-                host == "msftncsi.com" || host.endsWith(".msftncsi.com")
+                host == "msftncsi.com" || host.endsWith(".msftncsi.com") ||
+                (host == "edge.microsoft.com" && (path.contains("captive") || path.contains("connecttest")))
             ) {
                 return true
             }
 
-            if (host == "schemas.android.com" || host == "www.w3.org" || host == "ns.adobe.com") {
+            if (host == "schemas.android.com" ||
+                host == "www.w3.org" ||
+                host == "ns.adobe.com" ||
+                host == "neverssl.com" ||
+                host == "www.neverssl.com"
+            ) {
                 return true
             }
 
@@ -197,6 +236,61 @@ object PortalNetworkHelper {
         } catch (_: Exception) {
             false
         }
+    }
+
+    fun isIrrelevantAuxiliaryUrl(value: String?): Boolean {
+        if (value.isNullOrBlank()) return true
+        val lower = value.trim().lowercase(Locale.ROOT)
+        return IRRELEVANT_LINK_KEYWORDS.any { lower.contains(it) }
+    }
+
+    fun scorePortalCandidateUrl(value: String?, detectionType: String?): Int {
+        if (!isUsablePortalUrl(value)) return Int.MIN_VALUE
+        val raw = value!!.trim()
+        val lower = raw.lowercase(Locale.ROOT)
+        val uri = try {
+            URI(raw)
+        } catch (_: Exception) {
+            return Int.MIN_VALUE
+        }
+        val host = uri.host?.lowercase(Locale.ROOT).orEmpty()
+        if (host.isBlank()) return Int.MIN_VALUE
+
+        var score = 100
+        if (isIrrelevantAuxiliaryUrl(raw)) {
+            score -= 180
+        }
+
+        val isPrivateOrLocalIp = Regex("""^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.|100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\.)""").containsMatchIn(host) ||
+            host.endsWith(".local") || host.endsWith(".lan") || host.endsWith(".hotspot")
+        if (isPrivateOrLocalIp) score += 35
+
+        if (lower.contains("portal") || lower.contains("captive") || lower.contains("hotspot")) score += 25
+        if (lower.contains("login") || lower.contains("signin") || lower.contains("auth")) score += 20
+        if (lower.contains("status") || lower.contains("welcome") || lower.contains("logout")) score += 12
+
+        if (detectionType == WifiNotificationListener.TYPE_VIEW_WEBSITE) {
+            if (lower.contains("status") || lower.contains("welcome") || lower.contains("venue") || lower.contains("portal")) {
+                score += 18
+            }
+        } else if (detectionType == WifiNotificationListener.TYPE_PORTAL_LOGIN) {
+            if (lower.contains("login") || lower.contains("signin") || lower.contains("auth") || lower.contains("captive")) {
+                score += 18
+            }
+        }
+
+        if (uri.query?.isNotBlank() == true) score += 6
+        return score
+    }
+
+    fun selectBestPortalUrl(candidates: Collection<String?>, detectionType: String?): String? {
+        return candidates
+            .asSequence()
+            .mapNotNull { it?.trim() }
+            .filter { isUsablePortalUrl(it) }
+            .distinct()
+            .maxByOrNull { scorePortalCandidateUrl(it, detectionType) }
+            ?.takeIf { scorePortalCandidateUrl(it, detectionType) > 0 || candidates.none { c -> isUsablePortalUrl(c) && !isIrrelevantAuxiliaryUrl(c) } }
     }
 
     fun isUsablePortalUrl(value: String?): Boolean {
@@ -385,9 +479,43 @@ object PortalNetworkHelper {
         return null
     }
 
+    @Suppress("DEPRECATION")
+    fun getWifiSessionFingerprint(
+        context: Context,
+        manager: ConnectivityManager,
+        network: Network? = null
+    ): String? {
+        val target = if (isWifiNetworkActive(manager, network)) network else findWifiNetwork(manager)
+        target ?: return null
+        val gw = getWifiGatewayIp(context, manager, target).orEmpty()
+        var ssid: String? = null
+        try {
+            val caps = manager.getNetworkCapabilities(target)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val transportWifi = caps?.transportInfo as? WifiInfo
+                ssid = cleanSsid(transportWifi?.ssid)
+            }
+        } catch (_: Exception) {
+        }
+        if (ssid.isNullOrBlank()) {
+            try {
+                val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                ssid = cleanSsid(wm?.connectionInfo?.ssid)
+            } catch (_: Exception) {
+            }
+        }
+        val netHandle = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) target.networkHandle.toString() else target.toString()
+        } catch (_: Exception) {
+            target.toString()
+        }
+        return "${ssid.orEmpty()}|$gw|$netHandle"
+    }
+
     fun probeCaptivePortalUrl(
         manager: ConnectivityManager,
-        network: Network?
+        network: Network?,
+        gatewayIp: String? = null
     ): String? {
         val target = if (isWifiNetworkActive(manager, network)) {
             network
@@ -395,23 +523,28 @@ object PortalNetworkHelper {
             findWifiNetwork(manager)
         } ?: return null
 
-        val probeUrls = listOf(
+        val probeUrls = mutableListOf(
             "http://connectivitycheck.gstatic.com/generate_204",
             "http://clients3.google.com/generate_204",
-            "http://captive.apple.com/hotspot-detect.html"
+            "http://captive.apple.com/hotspot-detect.html",
+            "http://www.msftconnecttest.com/connecttest.txt"
         )
+        if (!gatewayIp.isNullOrBlank() && gatewayIp != "0.0.0.0") {
+            probeUrls.add("http://$gatewayIp/")
+        }
 
         for (probeUrl in probeUrls) {
+            val isDirectGatewayProbe = !gatewayIp.isNullOrBlank() && probeUrl == "http://$gatewayIp/"
             var currentUrl = probeUrl
-            for (hop in 0..2) {
+            for (hop in 0..4) {
                 var conn: java.net.HttpURLConnection? = null
                 try {
                     val url = java.net.URL(currentUrl)
                     conn = target.openConnection(url) as? java.net.HttpURLConnection ?: break
                     conn.instanceFollowRedirects = false
                     conn.useCaches = false
-                    conn.connectTimeout = 4000
-                    conn.readTimeout = 4000
+                    conn.connectTimeout = if (isDirectGatewayProbe) 2500 else 3500
+                    conn.readTimeout = if (isDirectGatewayProbe) 2500 else 3500
                     conn.requestMethod = "GET"
 
                     val code = conn.responseCode
@@ -424,6 +557,7 @@ object PortalNetworkHelper {
                                 location
                             }
                             if (isUsablePortalUrl(resolved)) {
+                                android.util.Log.i(TAG, "probeCaptivePortalUrl redirect -> $resolved")
                                 return resolved
                             }
                             if (isValidHttpUrl(resolved) && resolved != currentUrl) {
@@ -452,7 +586,10 @@ object PortalNetworkHelper {
                             } catch (_: Exception) {
                                 metaMatch
                             }
-                            if (isUsablePortalUrl(resolved)) return resolved
+                            if (isUsablePortalUrl(resolved)) {
+                                android.util.Log.i(TAG, "probeCaptivePortalUrl meta-refresh -> $resolved")
+                                return resolved
+                            }
                         }
 
                         val jsMatch = Regex(
@@ -467,21 +604,64 @@ object PortalNetworkHelper {
                             } catch (_: Exception) {
                                 jsTarget
                             }
-                            if (isUsablePortalUrl(resolved)) return resolved
+                            if (isUsablePortalUrl(resolved)) {
+                                android.util.Log.i(TAG, "probeCaptivePortalUrl js-redirect -> $resolved")
+                                return resolved
+                            }
                         }
 
                         val formMatch = Regex(
                             """<form[^>]+action\s*=\s*["']([^"']+)["']""",
                             RegexOption.IGNORE_CASE
                         ).find(body)?.groupValues?.getOrNull(1)?.trim()
-                        if (!formMatch.isNullOrBlank() && formMatch.startsWith("http", ignoreCase = true)) {
-                            if (isUsablePortalUrl(formMatch)) return formMatch
+                        if (!formMatch.isNullOrBlank()) {
+                            val resolvedForm = try {
+                                java.net.URL(url, formMatch).toString()
+                            } catch (_: Exception) {
+                                formMatch
+                            }
+                            if (isUsablePortalUrl(resolvedForm)) {
+                                android.util.Log.i(TAG, "probeCaptivePortalUrl form action -> $resolvedForm")
+                                return resolvedForm
+                            }
+                        }
+
+                        val anchorMatches = Regex(
+                            """<a[^>]+href\s*=\s*["']([^"'#]+)["']""",
+                            RegexOption.IGNORE_CASE
+                        ).findAll(body)
+                            .mapNotNull { m ->
+                                val rawHref = m.groupValues.getOrNull(1)?.trim().orEmpty()
+                                if (rawHref.isBlank() || rawHref.startsWith("javascript:", true)) null
+                                else try {
+                                    java.net.URL(url, rawHref).toString()
+                                } catch (_: Exception) {
+                                    null
+                                }
+                            }
+                            .toList()
+                        val bestAnchor = selectBestPortalUrl(anchorMatches, null)
+                        if (!bestAnchor.isNullOrBlank()) {
+                            android.util.Log.i(TAG, "probeCaptivePortalUrl anchor -> $bestAnchor")
+                            return bestAnchor
+                        }
+
+                        if (isDirectGatewayProbe && body.contains("<html", ignoreCase = true) &&
+                            (body.contains("login", ignoreCase = true) ||
+                                body.contains("password", ignoreCase = true) ||
+                                body.contains("portal", ignoreCase = true) ||
+                                body.contains("logout", ignoreCase = true)) &&
+                            isUsablePortalUrl(currentUrl)
+                        ) {
+                            android.util.Log.i(TAG, "probeCaptivePortalUrl direct gateway HTML -> $currentUrl")
+                            return currentUrl
                         }
                         break
                     } else {
                         break
                     }
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    android.util.Log.d(TAG, "probeCaptivePortalUrl failed for $currentUrl: ${e.message}")
                     break
                 } finally {
                     conn?.disconnect()
@@ -660,14 +840,48 @@ object PortalJsScripts {
           try {
             var d = doc || document;
             var t = (d.body ? (d.body.innerText || d.body.textContent || '') : '').toLowerCase();
-            return /you\s+are\s+currently\s+logged\s+in|remaining\s+time|remaining\s+data\s+quota|successfully\s+connected|connected\s+successfully|internet\s+access\s+granted|authentication\s+successful/.test(t);
+            return /you\s+are\s+currently\s+logged\s+in|remaining\s+time|remaining\s+data\s+quota|successfully\s+connected|connected\s+successfully|internet\s+access\s+granted|authentication\s+successful|session\s+is\s+active/.test(t);
           } catch (e) {
             return false;
           }
         }
 
+        function hasLoginErrorBanner() {
+          try {
+            var t = (document.body ? (document.body.innerText || document.body.textContent || '') : '').toLowerCase();
+            return /\b(invalid\s+(user(name)?|password|credentials|voucher|code)|incorrect\s+(user(name)?|password)|wrong\s+(user(name)?|password)|authentication\s+failed|login\s+failed|access\s+denied|account\s+expired|max\s+sessions?\s+reached)\b/.test(t);
+          } catch (e) {
+            return false;
+          }
+        }
+
+        function isInteractiveControl(el) {
+          if (!el) return false;
+          var tag = (el.tagName || '').toLowerCase();
+          if (tag === 'button' || tag === 'input') return true;
+          if (tag === 'a') {
+            var h = el.getAttribute ? (el.getAttribute('href') || '').trim() : '';
+            var hasOc = typeof el.onclick === 'function' || (el.getAttribute && (el.getAttribute('onclick') !== null || el.hasAttribute('data-href') || el.hasAttribute('data-url') || el.hasAttribute('data-action')));
+            return h.length > 0 || hasOc;
+          }
+          var role = el.getAttribute ? (el.getAttribute('role') || '').toLowerCase() : '';
+          if (role === 'button' || role === 'link') return true;
+          if (typeof el.onclick === 'function') return true;
+          if (el.getAttribute && (
+            el.getAttribute('onclick') !== null ||
+            el.hasAttribute('data-action') ||
+            el.hasAttribute('data-href') ||
+            el.hasAttribute('data-url') ||
+            el.hasAttribute('formaction')
+          )) return true;
+          var view = (el.ownerDocument && el.ownerDocument.defaultView) ? el.ownerDocument.defaultView : window;
+          var st = view && view.getComputedStyle ? view.getComputedStyle(el) : null;
+          if (st && st.cursor === 'pointer' && (!el.querySelector || !el.querySelector('a,button,input'))) return true;
+          return false;
+        }
+
         function isLogoutElement(el) {
-          if (!el || !isElemVisible(el)) return false;
+          if (!el || !isElemVisible(el) || !isInteractiveControl(el)) return false;
           var tag = (el.tagName || '').toLowerCase();
           var inputType = (el.type || '').toLowerCase();
           if (tag === 'input' && ['hidden', 'text', 'password', 'email', 'tel', 'checkbox', 'radio'].includes(inputType)) {
@@ -708,7 +922,7 @@ object PortalJsScripts {
           var logoutRx = /\b(sign\s*[-_]?\s*out|log\s*[-_]?\s*out|log\s*[-_]?\s*off|disconnect|end\s*session|close\s*session)\b|signout|logout|logoff/i;
           if (!logoutRx.test(combined)) return false;
 
-          var loginOnlyRx = /\b(log\s*in|sign\s*in|sign\s*up|register)\b/i;
+          var loginOnlyRx = /\b(log\s*in|sign\s*in|sign\s*up|register|forgot|reset)\b/i;
           if (loginOnlyRx.test(textVal) && !logoutRx.test(textVal)) return false;
           return true;
         }
@@ -993,6 +1207,27 @@ object PortalJsScripts {
                 });
               }
 
+              function isNegativeAuthControl(b) {
+                var sig = ((b.innerText || '') + ' ' + (b.value || '') + ' ' + (b.id || '') + ' ' +
+                  (b.name || '') + ' ' + (b.title || '') + ' ' + (b.getAttribute ? (b.getAttribute('aria-label') || '') : '') + ' ' +
+                  (b.getAttribute ? (b.getAttribute('href') || '') : '')).toLowerCase();
+                return /\b(forgot|reset|recover|register|sign\s*up|create\s*account|help|support|privacy|terms|policy|cancel|back|faq|cookie)\b/.test(sig);
+              }
+
+              function scoreLoginControl(b) {
+                if (!isElemVisible(b) || isLogoutElement(b) || !isInteractiveControl(b) || isNegativeAuthControl(b)) return -1;
+                var type = (b.type || '').toLowerCase();
+                var sig = ((b.innerText || '') + ' ' + (b.value || '') + ' ' + (b.id || '') + ' ' +
+                  (b.name || '') + ' ' + (b.title || '') + ' ' + (b.getAttribute ? (b.getAttribute('aria-label') || '') : '')).replace(/\s+/g, ' ').trim().toLowerCase();
+                var s = 0;
+                if (type === 'submit') s += 40;
+                if (/\b(log\s*[-_]?\s*in|sign\s*[-_]?\s*in)\b|login|signin/i.test(sig)) s += 35;
+                else if (/\b(connect|submit|continue|accept|agree|enter|proceed|ok|go|next|get\s*online|start)\b/i.test(sig)) s += 20;
+                var tag = (b.tagName || '').toLowerCase();
+                if (tag === 'button' || tag === 'input') s += 10;
+                return s;
+              }
+
               var logoutCandFirst = findLogoutCandidate();
               var loggedInBanner = hasPeplinkLoggedInText(document);
               var pfMatch = findVisiblePasswordField();
@@ -1011,19 +1246,27 @@ object PortalJsScripts {
                 }
 
                 var docs = getAllDocs();
-                var nav = null;
-                for (var d = 0; d < docs.length && !nav; d++) {
-                  var btns = Array.from(docs[d].querySelectorAll('a,button,input[type=button],input[type=submit],[role=button]'));
-                  nav = btns.find(function(b) {
-                    if (!isElemVisible(b) || isLogoutElement(b)) return false;
+                var bestNav = null;
+                var bestNavScore = -1;
+                for (var d = 0; d < docs.length; d++) {
+                  var btns = Array.from(docs[d].querySelectorAll('a,button,input[type=button],input[type=submit],[role=button],[onclick]'));
+                  for (var bi = 0; bi < btns.length; bi++) {
+                    var b = btns[bi];
+                    if (!isElemVisible(b) || isLogoutElement(b) || !isInteractiveControl(b) || isNegativeAuthControl(b)) continue;
                     var sig = ((b.innerText || '') + ' ' + (b.value || '') + ' ' + (b.id || '') + ' ' + (b.name || '') + ' ' + (b.getAttribute('aria-label') || ''));
-                    return /\b(log\s*in|sign\s*in|connect|continue|enter|proceed|accept|agree|get\s*online|start)\b/i.test(sig);
-                  }) || null;
+                    if (/\b(log\s*in|sign\s*in|connect|continue|enter|proceed|accept|agree|get\s*online|start)\b/i.test(sig)) {
+                      var sc = scoreLoginControl(b);
+                      if (sc > bestNavScore) {
+                        bestNavScore = sc;
+                        bestNav = b;
+                      }
+                    }
+                  }
                 }
-                if (nav && ${if (allowClickNav) "true" else "false"}) {
-                  var navDoc = nav.ownerDocument || document;
+                if (bestNav && ${if (allowClickNav) "true" else "false"}) {
+                  var navDoc = bestNav.ownerDocument || document;
                   tickCheckboxesInScope(navDoc, navDoc, false);
-                  nav.click();
+                  bestNav.click();
                   return 'NAVIGATED';
                 }
                 return 'FORM_NOT_FOUND';
@@ -1048,24 +1291,24 @@ object PortalJsScripts {
               tickCheckboxesInScope(formDoc, formDoc, form == null);
 
               if (form) {
-                var submit = form.querySelector('button[type=submit],input[type=submit]');
-                if (submit && isElemVisible(submit)) {
-                  submit.click();
-                  return 'SUBMITTED';
-                }
                 var formBtns = Array.from(form.querySelectorAll('button,input[type=button],input[type=submit],[role=button],a'));
-                var formBtn = formBtns.find(function(b) {
-                  return isElemVisible(b) && !isLogoutElement(b) &&
-                    /log\s*in|sign\s*in|connect|continue|submit|enter|accept|agree|ok|go|next/i.test((b.innerText || b.value || b.id || b.name || ''));
-                });
-                if (formBtn) {
-                  formBtn.click();
+                var bestFormBtn = null;
+                var bestFormScore = 0;
+                for (var fi = 0; fi < formBtns.length; fi++) {
+                  var fs = scoreLoginControl(formBtns[fi]);
+                  if (fs > bestFormScore) {
+                    bestFormScore = fs;
+                    bestFormBtn = formBtns[fi];
+                  }
+                }
+                if (bestFormBtn) {
+                  bestFormBtn.click();
                   return 'SUBMITTED';
                 }
                 var disabledFormBtn = formBtns.find(function(b) {
-                  return b.disabled && (
+                  return b.disabled && !isNegativeAuthControl(b) && (
                     (b.type || '').toLowerCase() === 'submit' ||
-                    /log\s*in|sign\s*in|connect|continue|submit|enter|accept|agree/i.test((b.innerText || b.value || b.id || b.name || ''))
+                    /\b(log\s*in|sign\s*in|connect|continue|submit|enter|accept|agree)\b/i.test((b.innerText || b.value || b.id || b.name || ''))
                   );
                 });
                 if (disabledFormBtn) {
@@ -1076,22 +1319,25 @@ object PortalJsScripts {
                 return 'SUBMITTED';
               }
 
-              var buttons = Array.from(formDoc.querySelectorAll('button,input[type=button],input[type=submit],[role=button]'));
-              var loginBtn = buttons.find(function(b) {
-                return isElemVisible(b) && !isLogoutElement(b) && (
-                  (b.type || '').toLowerCase() === 'submit' ||
-                  /log\s*in|sign\s*in|connect|continue|submit|enter|accept|agree|ok|go|next/i.test((b.innerText || b.value || b.id || b.name || ''))
-                );
-              });
-              if (loginBtn) {
-                loginBtn.click();
+              var buttons = Array.from(formDoc.querySelectorAll('button,input[type=button],input[type=submit],[role=button],[onclick]'));
+              var bestDocBtn = null;
+              var bestDocScore = 0;
+              for (var di = 0; di < buttons.length; di++) {
+                var ds = scoreLoginControl(buttons[di]);
+                if (ds > bestDocScore) {
+                  bestDocScore = ds;
+                  bestDocBtn = buttons[di];
+                }
+              }
+              if (bestDocBtn) {
+                bestDocBtn.click();
                 return 'SUBMITTED';
               }
 
               var anyDisabledLogin = buttons.find(function(b) {
-                return b.disabled && (
+                return b.disabled && !isNegativeAuthControl(b) && (
                   (b.type || '').toLowerCase() === 'submit' ||
-                  /log\s*in|sign\s*in|connect|continue|submit|enter|accept|agree/i.test((b.innerText || b.value || b.id || b.name || ''))
+                  /\b(log\s*in|sign\s*in|connect|continue|submit|enter|accept|agree)\b/i.test((b.innerText || b.value || b.id || b.name || ''))
                 );
               });
               if (anyDisabledLogin) {
@@ -1106,21 +1352,32 @@ object PortalJsScripts {
     fun buildCheckLoginScript(): String {
         return """
             (function() {
+              if (document.readyState === 'loading') {
+                return 'WAITING';
+              }
               $SHARED_DOM_HELPERS
 
               var logoutCand = findLogoutCandidate();
               var loggedInText = hasPeplinkLoggedInText(document);
-              if (logoutCand) return 'LOGIN_OK_LOGOUT_PRESENT';
-
               var pfMatch = findVisiblePasswordField();
-              if (pfMatch && !loggedInText) return 'LOGIN_FORM_STILL_HERE';
+              var loginError = hasLoginErrorBanner();
 
-              if (loggedInText) return 'LOGIN_OK_SUCCESS_TEXT';
+              if (pfMatch && loginError) {
+                return 'LOGIN_FAILED_ERROR';
+              }
 
-              var t = (document.body ? (document.body.innerText || '') : '').toLowerCase();
-              if (/\bwelcome\b/.test(t) && !pfMatch) {
+              if (logoutCand && !pfMatch) {
+                return 'LOGIN_OK_LOGOUT_PRESENT';
+              }
+
+              if (pfMatch && !loggedInText) {
+                return 'LOGIN_FORM_STILL_HERE';
+              }
+
+              if (loggedInText && !pfMatch) {
                 return 'LOGIN_OK_SUCCESS_TEXT';
               }
+
               return 'WAITING';
             })();
         """.trimIndent()
@@ -1191,7 +1448,7 @@ object PortalJsScripts {
                   var doc = docs[d];
                   if (saved.id) {
                     var byId = doc.getElementById(saved.id);
-                    if (byId && isElemVisible(byId)) return byId;
+                    if (byId && isElemVisible(byId) && isLogoutElement(byId)) return byId;
                   }
                   if (saved.selector) {
                     try {
@@ -1207,7 +1464,7 @@ object PortalJsScripts {
                   if (saved.href) {
                     var byHref = all.find(function(n) {
                       var h = (n.getAttribute ? n.getAttribute('href') : '') || n.href || '';
-                      return h === saved.href && isElemVisible(n);
+                      return h === saved.href && isElemVisible(n) && isLogoutElement(n);
                     });
                     if (byHref) return byHref;
                   }
@@ -1265,8 +1522,9 @@ object PortalJsScripts {
               for (var d = 0; d < docs.length; d++) {
                 var btns = Array.from(docs[d].querySelectorAll('a,button,input[type=button],input[type=submit],[role=button],[role=link]'));
                 var loginBtn = btns.find(function(b) {
-                  if (!isElemVisible(b) || isLogoutElement(b)) return false;
+                  if (!isElemVisible(b) || isLogoutElement(b) || !isInteractiveControl(b)) return false;
                   var sig = (b.innerText || '') + ' ' + (b.value || '') + ' ' + (b.id || '') + ' ' + (b.name || '') + ' ' + (b.title || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('href') || '');
+                  if (/\b(forgot|reset|register|sign\s*up|create\s*account)\b/i.test(sig)) return false;
                   return /\b(log\s*in|sign\s*in)\b|login|signin/i.test(sig);
                 });
                 if (loginBtn && !logoutStillThere && !loggedInTextStillThere) {
@@ -1311,8 +1569,9 @@ object PortalJsScripts {
               for (var d = 0; d < docs.length; d++) {
                 var a = Array.from(docs[d].querySelectorAll('a,button,input[type=button],input[type=submit],[role=button],[role=link]'));
                 var x = a.find(function(n) {
-                  if (!isElemVisible(n) || isLogoutElement(n)) return false;
+                  if (!isElemVisible(n) || isLogoutElement(n) || !isInteractiveControl(n)) return false;
                   var sig = (n.innerText || '') + ' ' + (n.value || '') + ' ' + (n.id || '') + ' ' + (n.name || '') + ' ' + (n.title || '') + ' ' + (n.getAttribute('aria-label') || '') + ' ' + (n.getAttribute('href') || '');
+                  if (/\b(forgot|reset|register|sign\s*up|create\s*account)\b/i.test(sig)) return false;
                   return /\b(log\s*in|sign\s*in)\b|login|signin/i.test(sig);
                 });
                 if (x) {

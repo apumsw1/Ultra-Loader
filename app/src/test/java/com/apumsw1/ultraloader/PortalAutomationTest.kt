@@ -201,15 +201,14 @@ class PortalAutomationTest {
 
         val statusView = getPrivateField<TextView>(activity, "status")
 
-        // Requirement 4: Initial connection status starts with CONNECTING, PLEASE WAIT...
-        assertEquals("● CONNECTING, PLEASE WAIT...", statusView.text.toString())
+        // Requirement 11: Strict two-state connection status UI starts with PLEASE WAIT TO CONNECT
+        assertEquals("● PLEASE WAIT TO CONNECT", statusView.text.toString())
 
-        // Simulate idle -> SYSTEM READY -> ACTIVATION KEY VERIFIED progression
         callPrivateMethod(activity, "workflowStatus", arrayOf(String::class.java), "SYSTEM READY")
-        assertEquals("● SYSTEM READY", statusView.text.toString())
+        assertEquals("● PLEASE WAIT TO CONNECT", statusView.text.toString())
 
         callPrivateMethod(activity, "workflowStatus", arrayOf(String::class.java), "ACTIVATION KEY VERIFIED")
-        assertEquals("● ACTIVATION KEY VERIFIED", statusView.text.toString())
+        assertEquals("● PLEASE WAIT TO CONNECT", statusView.text.toString())
 
         // Requirement 5 & 10: Hide Login and Logout status messages from visible UI
         val hiddenStatuses = listOf(
@@ -232,7 +231,7 @@ class PortalAutomationTest {
         )
         for (hidden in hiddenStatuses) {
             callPrivateMethod(activity, "workflowStatus", arrayOf(String::class.java), hidden)
-            assertEquals("Hidden status '$hidden' leaked into UI", "● ACTIVATION KEY VERIFIED", statusView.text.toString())
+            assertEquals("Hidden status '$hidden' leaked into UI", "● PLEASE WAIT TO CONNECT", statusView.text.toString())
 
             callPrivateMethod(
                 activity,
@@ -241,22 +240,23 @@ class PortalAutomationTest {
                 "● $hidden",
                 Color.CYAN
             )
-            assertEquals("Hidden status '$hidden' leaked via statusText", "● ACTIVATION KEY VERIFIED", statusView.text.toString())
+            assertEquals("Hidden status '$hidden' leaked via statusText", "● PLEASE WAIT TO CONNECT", statusView.text.toString())
         }
 
-        // Other process statuses MUST remain visible (never globally filter "Detected")
-        val visibleStatuses = listOf(
+        // Other internal stage/URL messages must stay masked as PLEASE WAIT TO CONNECT on main status TextView
+        val internalStatuses = listOf(
             "ORIGINAL PORTAL URL DETECTED",
             "Original Portal Detected",
             "Portal Detected",
             "Router Detected",
             "VPN CONNECTED",
             "VPN Disconnected",
-            "REFRESHING GOOGLE (1)..."
+            "REFRESHING GOOGLE (1)...",
+            "http://172.16.0.1/login"
         )
-        for (visible in visibleStatuses) {
-            callPrivateMethod(activity, "workflowStatus", arrayOf(String::class.java), visible)
-            assertEquals("● $visible", statusView.text.toString())
+        for (internal in internalStatuses) {
+            callPrivateMethod(activity, "workflowStatus", arrayOf(String::class.java), internal)
+            assertEquals("● PLEASE WAIT TO CONNECT", statusView.text.toString())
         }
 
         // Router panel option removed from Home Page per user request
@@ -322,13 +322,14 @@ class PortalAutomationTest {
         shadowOf(Looper.getMainLooper()).idle()
 
         assertTrue(getPrivateBooleanField(activity, "netWorkingVerified"))
+        assertEquals("● CONNECTED", statusView.text.toString())
         assertEquals(View.VISIBLE, floatingBanner.visibility)
 
         val bannerTexts = collectAllTextViews(floatingBanner).map { it.text.toString() }
         assertTrue(bannerTexts.contains("✓ CONNECTED SUCCESSFULLY"))
         assertTrue(bannerTexts.contains("INTERNET VERIFIED • VPN CONNECTED"))
 
-        // Requirement 2: Duplicate internet-check probe must NOT start once Google page is loaded
+        // Requirement 8: Duplicate internet-check probe must NOT start once netWorkingVerified is true
         setPrivateField(activity, "netCheckRunning", false)
         callPrivateMethod(activity, "startLiveNetWorkingCheck")
         assertFalse(getPrivateBooleanField(activity, "netCheckRunning"))
@@ -577,6 +578,197 @@ class PortalAutomationTest {
             ActivationManager.clearAllLicensesForTesting(context)
             ActivationManager.resetCipherForProduction()
         }
+    }
+
+    @Test
+    fun multiUrlRankingDropsConnectivityAndIrrelevantLinksForBothNotificationTypes() {
+        val candidates = listOf(
+            "http://detectportal.firefox.com/canonical.html",
+            "https://connectivitycheck.gstatic.com/generate_24",
+            "https://portal.example.com/privacy-policy",
+            "http://172.16.0.1/login?dst=http://example.com"
+        )
+        val pickedPortal = PortalNetworkHelper.selectBestPortalUrl(
+            candidates,
+            WifiNotificationListener.TYPE_PORTAL_LOGIN
+        )
+        assertEquals("http://172.16.0.1/login?dst=http://example.com", pickedPortal)
+
+        val venueCandidates = listOf(
+            "https://wifi.airport.example/terms",
+            "https://wifi.airport.example/welcome/status",
+            "http://captive.apple.com/hotspot-detect.html"
+        )
+        val pickedVenue = PortalNetworkHelper.selectBestPortalUrl(
+            venueCandidates,
+            WifiNotificationListener.TYPE_VIEW_WEBSITE
+        )
+        assertEquals("https://wifi.airport.example/welcome/status", pickedVenue)
+    }
+
+    @Test
+    fun notificationListenerSupportsBothTypesAndPurgesStaleSessionOnWifiChange() {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val shadowCm = shadowOf(cm)
+        val wifiNetwork = ShadowNetwork.newInstance(401)
+        @Suppress("DEPRECATION")
+        val wifiInfo = ShadowNetworkInfo.newInstance(
+            NetworkInfo.DetailedState.CONNECTED,
+            ConnectivityManager.TYPE_WIFI,
+            0,
+            true,
+            NetworkInfo.State.CONNECTED
+        )
+        val wifiCaps = ShadowNetworkCapabilities.newInstance()
+        shadowOf(wifiCaps).addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+        shadowCm.addNetwork(wifiNetwork, wifiInfo)
+        shadowCm.setNetworkCapabilities(wifiNetwork, wifiCaps)
+
+        val listener = Robolectric.buildService(WifiNotificationListener::class.java).create().get()
+
+        val loginNotif = Notification.Builder(context)
+            .setContentTitle("Sign in to Wi-Fi network")
+            .setContentText("Open http://detectportal.firefox.com/success.txt or http://192.168.10.1/login")
+            .build()
+        val loginSbn = StatusBarNotification(
+            "com.android.networkstack",
+            "com.android.networkstack",
+            10,
+            "portal_tag",
+            1000,
+            0,
+            0,
+            loginNotif,
+            UserHandle.getUserHandleForUid(1000),
+            System.currentTimeMillis()
+        )
+        listener.onNotificationPosted(loginSbn)
+
+        val capturedLogin = WifiNotificationListener.getSessionCapturedPortal(context)
+        assertNotNull(capturedLogin)
+        assertEquals("http://192.168.10.1/login", capturedLogin?.first)
+        assertEquals(WifiNotificationListener.TYPE_PORTAL_LOGIN, capturedLogin?.second)
+
+        // Tag captured session with Wi-Fi A fingerprint, then query with Wi-Fi B -> stale session purged
+        WifiNotificationListener.markSessionCaptured(
+            context,
+            "http://192.168.10.1/login",
+            WifiNotificationListener.TYPE_PORTAL_LOGIN,
+            "Campus_A|192.168.10.1|401"
+        )
+        assertNotNull(
+            WifiNotificationListener.getSessionCapturedPortal(context, "Campus_A|192.168.10.1|401")
+        )
+        assertNull(
+            WifiNotificationListener.getSessionCapturedPortal(context, "Cafe_B|10.0.0.1|402")
+        )
+    }
+
+    @Test
+    fun vpnAutomationBridgeUsesDeadlineWithoutSixClickCap() {
+        VpnAutomationBridge.disarm()
+        VpnAutomationBridge.arm(60_000L)
+
+        // Must support far more than 6 click attempts while within the deadline
+        repeat(12) {
+            assertTrue(VpnAutomationBridge.isArmed())
+            assertTrue(VpnAutomationBridge.canAttemptClick(minIntervalMs = 0L))
+            VpnAutomationBridge.recordClickAttempt()
+        }
+        assertEquals(12, VpnAutomationBridge.getClickAttempts())
+
+        VpnAutomationBridge.disarm()
+        assertFalse(VpnAutomationBridge.isArmed())
+        assertFalse(VpnAutomationBridge.canAttemptClick(minIntervalMs = 0L))
+    }
+
+    @Test
+    fun portalJsScriptsEnforceStrictAuthAndLogoutVerificationRules() {
+        val autoLoginJs = PortalJsScripts.buildAutoLoginScript("dXNlcjE=", "cGFzczE=", true, true)
+        assertTrue(autoLoginJs.contains("isNegativeAuthControl"))
+        assertTrue(autoLoginJs.contains("isInteractiveControl"))
+        assertTrue(autoLoginJs.contains("forgot"))
+
+        val checkLoginJs = PortalJsScripts.buildCheckLoginScript()
+        assertTrue(checkLoginJs.contains("LOGIN_FAILED_ERROR"))
+        assertTrue(checkLoginJs.contains("logoutCand && !pfMatch"))
+        assertTrue(checkLoginJs.contains("loggedInText && !pfMatch"))
+        assertFalse(checkLoginJs.contains("bodyText.indexOf('welcome')"))
+
+        val detectLogoutJs = PortalJsScripts.buildDetectLogoutScript()
+        assertTrue(detectLogoutJs.contains("isInteractiveControl(el)"))
+
+        val verifyLogoutJs = PortalJsScripts.buildVerifyLogoutScript("http://172.16.0.1/status")
+        assertTrue(verifyLogoutJs.contains("LOGOUT_VERIFIED_LOGIN_FORM"))
+        assertTrue(verifyLogoutJs.contains("LOGOUT_STILL_PRESENT"))
+    }
+
+    @Test
+    fun vpnDisconnectAndInternetUnavailableAndWifiResetBehaveCorrectly() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java)
+        val activity = controller.create().get()
+        callPrivateMethod(activity, "createScreen")
+        setPrivateField(activity, "appInitialized", true)
+
+        // Verify exact 3s post-VPN delay constant and 60s logout deadline constant
+        val companion = MainActivity::class.java.getDeclaredField("Companion").apply { isAccessible = true }.get(null)
+        val vpnDelayField = MainActivity::class.java.getDeclaredField("VPN_RETURN_LOGOUT_DELAY_MS").apply { isAccessible = true }
+        val logoutTimeoutField = MainActivity::class.java.getDeclaredField("LOGOUT_SEARCH_TIMEOUT_MS").apply { isAccessible = true }
+        assertEquals(3000L, vpnDelayField.getLong(companion))
+        assertEquals(60_000L, logoutTimeoutField.getLong(companion))
+
+        // Connect OS VPN
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val vpnNetwork = ShadowNetwork.newInstance(502)
+        @Suppress("DEPRECATION")
+        val vpnInfo = ShadowNetworkInfo.newInstance(
+            NetworkInfo.DetailedState.CONNECTED,
+            ConnectivityManager.TYPE_VPN,
+            0,
+            true,
+            NetworkInfo.State.CONNECTED
+        )
+        val vpnCaps = ShadowNetworkCapabilities.newInstance()
+        shadowOf(vpnCaps).addTransportType(NetworkCapabilities.TRANSPORT_VPN)
+        shadowOf(vpnCaps).removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        shadowOf(cm).addNetwork(vpnNetwork, vpnInfo)
+        shadowOf(cm).setNetworkCapabilities(vpnNetwork, vpnCaps)
+
+        // Even with OS VPN connected & Google loaded, realInternetProbeVerified=false MUST block markInternetConnected()
+        setPrivateField(activity, "stepNotificationUrlDetected", true)
+        setPrivateField(activity, "stepOriginalPortalOpened", true)
+        setPrivateField(activity, "stepLoginCompleted", true)
+        setPrivateField(activity, "stepLogoutControlDetected", true)
+        setPrivateField(activity, "stepVpnConnectedConfirmed", true)
+        setPrivateField(activity, "stepReturnedFromVpnToWebView", true)
+        setPrivateField(activity, "stepLogoutVerified", true)
+        setPrivateField(activity, "stepSecondSignInCompleted", true)
+        setPrivateField(activity, "googlePageLoadedInWebView", true)
+        setPrivateField(activity, "realInternetProbeVerified", false)
+
+        callPrivateMethod(activity, "markInternetConnected")
+        assertFalse(getPrivateBooleanField(activity, "netWorkingVerified"))
+        assertEquals("● PLEASE WAIT TO CONNECT", getPrivateField<TextView>(activity, "status").text.toString())
+
+        // Verify resetForNewWifiSession clears previous session state and reverts to IDLE + PLEASE WAIT TO CONNECT
+        setPrivateField(activity, "portalUrl", "http://172.16.0.1/status")
+        setPrivateField(activity, "activeSessionUrl", "http://172.16.0.1/status")
+        setPrivateField(activity, "netWorkingVerified", true)
+        callPrivateMethod(
+            activity,
+            "resetForNewWifiSession",
+            arrayOf(ConnectivityManager::class.java, android.net.Network::class.java, String::class.java),
+            cm,
+            null,
+            "NewWifi|10.1.1.1|999"
+        )
+        assertEquals("", getPrivateField<String>(activity, "portalUrl"))
+        assertNull(getPrivateField<String?>(activity, "activeSessionUrl"))
+        assertFalse(getPrivateBooleanField(activity, "netWorkingVerified"))
+        assertEquals("IDLE", (getPrivateField<Any>(activity, "stage") as Enum<*>).name)
+        assertEquals("● PLEASE WAIT TO CONNECT", getPrivateField<TextView>(activity, "status").text.toString())
+
+        controller.destroy()
     }
 
     private fun findTextViewWithExactText(view: View, text: String): TextView? {

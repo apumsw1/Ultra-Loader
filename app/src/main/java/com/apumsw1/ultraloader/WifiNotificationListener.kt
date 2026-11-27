@@ -13,13 +13,14 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.text.Spanned
 import android.text.style.URLSpan
-import java.net.URI
+import android.util.Log
 import java.util.Collections
 import java.util.Locale
 
 class WifiNotificationListener : NotificationListenerService() {
 
     companion object {
+        private const val TAG = "WifiNotifListener"
         const val PREFS = "wifi_notification_links"
         const val TYPE_PORTAL_LOGIN = "PORTAL_LOGIN"
         const val TYPE_VIEW_WEBSITE = "VIEW_WEBSITE"
@@ -41,6 +42,9 @@ class WifiNotificationListener : NotificationListenerService() {
         @Volatile
         private var sessionCapturedType: String? = null
 
+        @Volatile
+        private var sessionNetworkKey: String? = null
+
         private val processedSignatures: MutableSet<String> =
             Collections.synchronizedSet(mutableSetOf())
 
@@ -58,7 +62,18 @@ class WifiNotificationListener : NotificationListenerService() {
             }
         }
 
-        fun getSessionCapturedPortal(context: Context): Pair<String, String>? {
+        fun getSessionCapturedPortal(
+            context: Context,
+            currentFingerprint: String? = null
+        ): Pair<String, String>? {
+            if (!currentFingerprint.isNullOrBlank()) {
+                val memKey = sessionNetworkKey
+                if (!memKey.isNullOrBlank() && memKey != currentFingerprint) {
+                    Log.i(TAG, "Purging stale session URL due to Wi-Fi fingerprint change ($memKey -> $currentFingerprint)")
+                    clearSessionState(context)
+                    return null
+                }
+            }
             val memUrl = sessionCapturedUrl
             val memType = sessionCapturedType
             if (!memUrl.isNullOrBlank() && PortalNetworkHelper.isUsablePortalUrl(memUrl)) {
@@ -71,9 +86,21 @@ class WifiNotificationListener : NotificationListenerService() {
                 val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 val savedUrl = prefs.getString("session_captured_url", null)
                 val savedType = prefs.getString("session_captured_type", null)
+                val savedNetKey = prefs.getString("session_network_key", null)
+                val savedAt = prefs.getLong("session_captured_at", 0L)
+                val isStaleAge = savedAt > 0L && (System.currentTimeMillis() - savedAt) > 30 * 60_000L
+                val isStaleNet = !currentFingerprint.isNullOrBlank() &&
+                    !savedNetKey.isNullOrBlank() &&
+                    savedNetKey != currentFingerprint
+                if (isStaleAge || isStaleNet) {
+                    Log.i(TAG, "Purging persisted stale session URL (staleAge=$isStaleAge, staleNet=$isStaleNet)")
+                    clearSessionState(context)
+                    return null
+                }
                 if (!savedUrl.isNullOrBlank() && PortalNetworkHelper.isUsablePortalUrl(savedUrl)) {
                     sessionCapturedUrl = savedUrl
                     sessionCapturedType = savedType ?: TYPE_PORTAL_LOGIN
+                    sessionNetworkKey = savedNetKey
                     Pair(savedUrl, sessionCapturedType ?: TYPE_PORTAL_LOGIN)
                 } else {
                     if (!savedUrl.isNullOrBlank()) {
@@ -86,12 +113,23 @@ class WifiNotificationListener : NotificationListenerService() {
             }
         }
 
-        fun markSessionCaptured(context: Context, url: String, type: String) {
-            if (!PortalNetworkHelper.isUsablePortalUrl(url)) return
+        fun markSessionCaptured(
+            context: Context,
+            url: String,
+            type: String,
+            networkFingerprint: String? = null
+        ) {
+            if (!PortalNetworkHelper.isUsablePortalUrl(url)) {
+                Log.d(TAG, "Ignored non-portal/probe URL in markSessionCaptured: $url")
+                return
+            }
             sessionCapturedUrl = url
             sessionCapturedType = type
+            if (!networkFingerprint.isNullOrBlank()) {
+                sessionNetworkKey = networkFingerprint
+            }
             try {
-                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                val editor = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                     .edit()
                     .putString("session_captured_url", url)
                     .putString("session_captured_type", type)
@@ -99,7 +137,10 @@ class WifiNotificationListener : NotificationListenerService() {
                     .putString("latest_url", url)
                     .putLong("latest_url_time", System.currentTimeMillis())
                     .putString("pending_detection_type", type)
-                    .apply()
+                if (!networkFingerprint.isNullOrBlank()) {
+                    editor.putString("session_network_key", networkFingerprint)
+                }
+                editor.apply()
             } catch (_: Exception) {
             }
         }
@@ -107,6 +148,7 @@ class WifiNotificationListener : NotificationListenerService() {
         fun clearSessionState(context: Context? = null) {
             sessionCapturedUrl = null
             sessionCapturedType = null
+            sessionNetworkKey = null
             latestPortalContentIntent = null
             processedSignatures.clear()
             activeInstance?.resetBroadcastDedup()
@@ -117,6 +159,7 @@ class WifiNotificationListener : NotificationListenerService() {
                         .remove("session_captured_url")
                         .remove("session_captured_type")
                         .remove("session_captured_at")
+                        .remove("session_network_key")
                         .remove("latest_url")
                         .remove("latest_url_time")
                         .remove("pending_detection_type")
@@ -213,6 +256,20 @@ class WifiNotificationListener : NotificationListenerService() {
             return null
         }
 
+        val currentFingerprint = try {
+            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+            PortalNetworkHelper.getWifiSessionFingerprint(this, cm)
+        } catch (_: Exception) {
+            null
+        }
+        if (!currentFingerprint.isNullOrBlank() &&
+            !sessionNetworkKey.isNullOrBlank() &&
+            sessionNetworkKey != currentFingerprint
+        ) {
+            Log.i(TAG, "Wi-Fi fingerprint changed ($sessionNetworkKey -> $currentFingerprint); clearing old session")
+            clearSessionState(this)
+        }
+
         val notification = sbn.notification ?: return null
         val extras = notification.extras ?: Bundle.EMPTY
         val texts = mutableListOf<String>()
@@ -261,7 +318,7 @@ class WifiNotificationListener : NotificationListenerService() {
             .filter { isUsablePortalUrl(it) }
             .toList()
 
-        val urls = (textUrls + extraUrls.filter { isUsablePortalUrl(it) })
+        val urls = (extraUrls.filter { isUsablePortalUrl(it) } + textUrls)
             .distinct()
 
         val venueUrlFromCapport = getCaptivePortalUrlFromNetwork(preferVenue = true)
@@ -279,16 +336,19 @@ class WifiNotificationListener : NotificationListenerService() {
             userUrlFromCapport ?: venueUrlFromCapport
         }
 
-        val resolvedUrl = urls.firstOrNull { isUsablePortalUrl(it) }
-            ?: capportUrl?.takeIf { isUsablePortalUrl(it) }
+        val rankedCandidates = (urls + listOfNotNull(capportUrl))
+        val resolvedUrl = PortalNetworkHelper.selectBestPortalUrl(rankedCandidates, detectionType)
+            ?.takeIf { isUsablePortalUrl(it) }
+        Log.i(
+            TAG,
+            "Notification matched pkg=${sbn.packageName} type=$detectionType candidates=${rankedCandidates.size} selected=${resolvedUrl ?: "none"}"
+        )
         val eventTime = if (sbn.postTime > 0L) sbn.postTime else System.currentTimeMillis()
 
         notification.contentIntent?.let { ci ->
             latestPortalContentIntent = ci
         }
 
-        // Deduplicate exact notification updates so "Connected / Tap to view website"
-        // is never captured or re-triggered repeatedly for the same notification/URL.
         val notificationSignature = "${sbn.key}|${sbn.postTime}|$detectionType|${resolvedUrl.orEmpty()}"
         if (!processedSignatures.add(notificationSignature)) {
             return null
@@ -297,7 +357,6 @@ class WifiNotificationListener : NotificationListenerService() {
         val alreadyCapturedUrl = sessionCapturedUrl
         val alreadyCapturedType = sessionCapturedType
         if (!alreadyCapturedUrl.isNullOrBlank() && alreadyCapturedType == detectionType) {
-            // Same detection type and URL already captured for this Wi-Fi session.
             if (resolvedUrl.isNullOrBlank() || resolvedUrl.equals(alreadyCapturedUrl, ignoreCase = false)) {
                 return null
             }
@@ -307,13 +366,13 @@ class WifiNotificationListener : NotificationListenerService() {
         val editor = prefs.edit()
 
         if (!resolvedUrl.isNullOrBlank() && isUsablePortalUrl(resolvedUrl)) {
-            val allDetected = (urls + listOfNotNull(capportUrl))
+            val allDetected = rankedCandidates
                 .filter { isUsablePortalUrl(it) }
                 .distinct()
             val oldUrls = prefs.getString("url_history", "")
                 .orEmpty()
                 .split("\n")
-                .filter { it.isNotBlank() }
+                .filter { it.isNotBlank() && isUsablePortalUrl(it) }
 
             val history = (allDetected.reversed() + oldUrls)
                 .distinct()
@@ -321,6 +380,10 @@ class WifiNotificationListener : NotificationListenerService() {
 
             sessionCapturedUrl = resolvedUrl
             sessionCapturedType = detectionType
+            if (!currentFingerprint.isNullOrBlank()) {
+                sessionNetworkKey = currentFingerprint
+                editor.putString("session_network_key", currentFingerprint)
+            }
 
             editor
                 .putString("session_captured_url", resolvedUrl)

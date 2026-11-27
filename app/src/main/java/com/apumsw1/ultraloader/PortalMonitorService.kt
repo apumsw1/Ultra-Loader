@@ -13,12 +13,14 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
 class PortalMonitorService : Service() {
 
     companion object {
+        private const val TAG = "PortalMonitorSvc"
         private const val CHANNEL_ID = "ultra_loader_wifi_v2"
         private const val WIFI_ALERT_CHANNEL_ID = "ultra_loader_wifi_alert_v1"
         private const val NOTIFICATION_ID = 7101
@@ -67,6 +69,9 @@ class PortalMonitorService : Service() {
 
     @Volatile
     private var lastShownWifiNotifSignature: String? = null
+
+    @Volatile
+    private var activeWifiFingerprint: String? = null
 
     private val wifiNetworks: MutableSet<Network> = Collections.newSetFromMap(ConcurrentHashMap())
     private val captiveNetworks: MutableSet<Network> = Collections.newSetFromMap(ConcurrentHashMap())
@@ -282,28 +287,39 @@ class PortalMonitorService : Service() {
         if (!VpnAutomationBridge.isArmed() || VpnAutomationBridge.appInForeground) return
         if (!PortalNetworkHelper.isVpnConnected(connectivityManager)) return
 
-        if (VpnAutoConnectService.requestReturnToUltraLoader(this)) {
-            return
+        Log.i(TAG, "Confirmed OS VPN while armed; initiating return to Ultra Loader")
+        val handledByAccessibility = VpnAutoConnectService.requestReturnToUltraLoader(this)
+        if (!handledByAccessibility) {
+            if (!VpnAutomationBridge.claimReturnToApp()) return
+            VpnAutomationBridge.disarm()
+
+            val fallbackIntent = Intent(this, MainActivity::class.java).apply {
+                action = VpnAutomationBridge.ACTION_RETURN_FROM_VPN
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                )
+            }
+
+            try {
+                startActivity(fallbackIntent)
+            } catch (e: Exception) {
+                Log.w(TAG, "Direct return startActivity failed: ${e.message}")
+            }
         }
 
-        if (!VpnAutomationBridge.claimReturnToApp()) return
-        VpnAutomationBridge.disarm()
-
-        val returnIntent = Intent(this, MainActivity::class.java).apply {
-            action = VpnAutomationBridge.ACTION_RETURN_FROM_VPN
-            addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP
-            )
-        }
-
+        // Always post high-priority fallback notification while app is still backgrounded;
+        // MainActivity.onResume cancels it immediately when foreground return succeeds.
         try {
-            startActivity(returnIntent)
-        } catch (_: Exception) {
-        }
-
-        try {
+            val returnIntent = Intent(this, MainActivity::class.java).apply {
+                action = VpnAutomationBridge.ACTION_RETURN_FROM_VPN
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                )
+            }
             val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     PendingIntent.FLAG_IMMUTABLE
@@ -338,11 +354,17 @@ class PortalMonitorService : Service() {
     @Suppress("DEPRECATION")
     private fun refreshCurrentNetworks(scanNotifications: Boolean) {
         try {
+            val wifiNet = PortalNetworkHelper.findWifiNetwork(connectivityManager)
+            val fp = PortalNetworkHelper.getWifiSessionFingerprint(this, connectivityManager, wifiNet)
+            if (!fp.isNullOrBlank()) {
+                activeWifiFingerprint = fp
+            }
+
             if (scanNotifications) {
                 WifiNotificationListener.scanActiveNotificationsNow(notifyService = true)
             }
 
-            val sessionCaptured = WifiNotificationListener.getSessionCapturedPortal(this)
+            val sessionCaptured = WifiNotificationListener.getSessionCapturedPortal(this, fp)
             if (sessionCaptured != null) {
                 lastDetectedUrl = sessionCaptured.first
                 lastDetectionType = sessionCaptured.second
@@ -371,7 +393,8 @@ class PortalMonitorService : Service() {
 
             updateMonitorNotification()
 
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "refreshCurrentNetworks error: ${e.message}")
         }
     }
 
@@ -383,7 +406,7 @@ class PortalMonitorService : Service() {
 
         val isWifi = capabilities.hasTransport(
             NetworkCapabilities.TRANSPORT_WIFI
-        )
+        ) && !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
 
         if (!isWifi) {
             removeNetwork(network)
@@ -391,6 +414,27 @@ class PortalMonitorService : Service() {
         }
 
         wifiNetworks.add(network)
+
+        val currentFp = PortalNetworkHelper.getWifiSessionFingerprint(this, connectivityManager, network)
+        if (!currentFp.isNullOrBlank() &&
+            !activeWifiFingerprint.isNullOrBlank() &&
+            currentFp != activeWifiFingerprint
+        ) {
+            Log.i(TAG, "Wi-Fi changed ($activeWifiFingerprint -> $currentFp); purging stale portal state")
+            lastDetectedUrl = null
+            lastDetectionType = null
+            sessionBroadcastSignature = null
+            lastShownWifiNotifSignature = null
+            captiveNetworks.clear()
+            websiteNetworks.clear()
+            validatedNetworks.clear()
+            WifiNotificationListener.clearSessionState(this)
+            NetworkStatusManager.resetPortalState()
+            clearWifiNotification()
+        }
+        if (!currentFp.isNullOrBlank()) {
+            activeWifiFingerprint = currentFp
+        }
 
         val captive = capabilities.hasCapability(
             NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL
@@ -473,7 +517,7 @@ class PortalMonitorService : Service() {
         if (!PortalNetworkHelper.isUsablePortalUrl(url)) return
         lastDetectedUrl = url
         lastDetectionType = type
-        WifiNotificationListener.markSessionCaptured(this, url, type)
+        WifiNotificationListener.markSessionCaptured(this, url, type, activeWifiFingerprint)
     }
 
     @Synchronized
@@ -513,8 +557,10 @@ class PortalMonitorService : Service() {
         validatedNetworks.remove(network)
 
         if (wifiNetworks.isEmpty()) {
+            Log.i(TAG, "All Wi-Fi networks lost; clearing portal session state")
             lastDetectedUrl = null
             lastDetectionType = null
+            activeWifiFingerprint = null
             sessionBroadcastSignature = null
             lastShownWifiNotifSignature = null
             WifiNotificationListener.clearSessionState(this)
