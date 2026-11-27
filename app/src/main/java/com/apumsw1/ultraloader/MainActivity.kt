@@ -128,6 +128,7 @@ private var floatingGlowAnimator: ValueAnimator? = null
 private lateinit var ipDetails: TextView
 private lateinit var licenseDetails: TextView
 private lateinit var dataDetails: TextView
+private lateinit var hackingTerminalView: HackingTerminalView
 private lateinit var globeView: GlobeView
 private lateinit var globeLocationDetails: TextView
 private lateinit var cyberRadarView: CyberRadarView
@@ -546,6 +547,7 @@ private val globeUpdater = object : Runnable {
     override fun run() {  
         if (::globeView.isInitialized) globeView.invalidate()  
         if (::cyberRadarView.isInitialized) cyberRadarView.invalidate()
+        if (::hackingTerminalView.isInitialized) hackingTerminalView.invalidate()
         handler.postDelayed(this, 40)  
     }  
 }  
@@ -1065,14 +1067,19 @@ private fun createScreen() {
     fun dp(v: Float): Int = (v * density).toInt().coerceAtLeast(1)
     val screenHeightDp = (resources.displayMetrics.heightPixels / density.coerceAtLeast(1f))
     val radarHeightDp = when {
-        screenHeightDp < 700f -> 82f
-        screenHeightDp < 800f -> 94f
-        else -> 112f
+        screenHeightDp < 700f -> 66f
+        screenHeightDp < 800f -> 80f
+        else -> 98f
+    }
+    val terminalHeightDp = when {
+        screenHeightDp < 700f -> 52f
+        screenHeightDp < 800f -> 62f
+        else -> 76f
     }
     val globeHeightDp = when {
-        screenHeightDp < 700f -> 96f
-        screenHeightDp < 800f -> 110f
-        else -> 128f
+        screenHeightDp < 700f -> 92f
+        screenHeightDp < 800f -> 108f
+        else -> 126f
     }
 
     root = LinearLayout(this).apply {
@@ -1109,20 +1116,21 @@ private fun createScreen() {
 
     val title = TextView(this).apply {
         text = "⚡ ULTRA LOADER ⚡"
-        textSize = 18f
+        textSize = 18.5f
         gravity = Gravity.CENTER
         typeface = Typeface.DEFAULT_BOLD
-        letterSpacing = 0.07f
+        letterSpacing = 0.08f
         setTextColor(cyan)
+        setShadowLayer(10f, 0f, 0f, Color.argb(165, 0, 225, 255))
         setPadding(dp(4f), dp(2f), dp(4f), 0)
     }
 
     val subtitle = TextView(this).apply {
-        text = "CYBER CONTROL CENTER  •  SECURE NETWORK"
+        text = "QUANTUM TUNNEL MATRIX  •  CYBER CONTROL"
         textSize = 8.5f
         gravity = Gravity.CENTER
-        letterSpacing = 0.08f
-        setTextColor(Color.LTGRAY)
+        letterSpacing = 0.10f
+        setTextColor(Color.rgb(160, 215, 235))
         setPadding(dp(4f), 0, dp(4f), dp(4f))
     }
 
@@ -1132,9 +1140,20 @@ private fun createScreen() {
         textSize = 11f
         gravity = Gravity.CENTER
         typeface = Typeface.DEFAULT_BOLD
+        letterSpacing = 0.05f
         setTextColor(cyan)
-        setPadding(dp(8f), dp(5f), dp(8f), dp(5f))
-        background = rounded(panel, cyan)
+        setPadding(dp(14f), dp(5f), dp(14f), dp(5f))
+        background = GradientDrawable(
+            GradientDrawable.Orientation.LEFT_RIGHT,
+            intArrayOf(
+                Color.rgb(6, 26, 48),
+                Color.rgb(9, 36, 62),
+                Color.rgb(6, 26, 48)
+            )
+        ).apply {
+            cornerRadius = 30f * density
+            setStroke((1.5f * density).toInt().coerceAtLeast(1), cyan)
+        }
     }
 
     val dashboardColumns = LinearLayout(this).apply {  
@@ -1159,12 +1178,22 @@ private fun createScreen() {
     ipPanel.addView(ipDetails)  
 
     val dataPanel = createPanel()  
-    dataPanel.addView(panelHeading("📊 DATA USAGE"))  
+    dataPanel.addView(panelHeading("📊 DATA USAGE • LIVE STREAM"))  
 
     dataDetails = panelText(  
-        "DOWNLOAD: --\nUPLOAD: --\nTOTAL: --\nSPEED: --"  
+        "DL: --  •  UL: --\nTOT: --  •  SPD: --"  
     )  
-    dataPanel.addView(dataDetails)  
+    dataPanel.addView(dataDetails)
+
+    hackingTerminalView = HackingTerminalView(this).apply {
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            dp(terminalHeightDp)
+        ).apply {
+            setMargins(0, dp(3f), 0, dp(1f))
+        }
+    }
+    dataPanel.addView(hackingTerminalView)  
 
     val radarPanel = createPanel()
     radarPanel.addView(panelHeading("🛰 NETWORK PULSE"))
@@ -1300,21 +1329,64 @@ private fun createScreen() {
         }
     }.apply {
         tag = "save_login_button"
-        textSize = 11.5f
+        textSize = 10f
+        minHeight = dp(34f)
+        minimumHeight = dp(34f)
         gravity = Gravity.CENTER
-        isSingleLine = false
-        maxLines = 2
-        setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
-        background = rounded(Color.rgb(8, 56, 76), cyan)
-        layoutParams = LinearLayout.LayoutParams(
-            0,
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            1f
+        setSingleLine(true)
+        setPadding(dp(6f), dp(4f), dp(6f), dp(4f))
+        background = GradientDrawable(
+            GradientDrawable.Orientation.LEFT_RIGHT,
+            intArrayOf(
+                Color.rgb(8, 58, 86),
+                Color.rgb(12, 78, 108)
+            )
         ).apply {
-            setMargins(dp(5f), dp(2f), 0, dp(2f))
+            cornerRadius = 12f * density
+            setStroke((1.2f * density).toInt().coerceAtLeast(1), cyan)
+        }
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            dp(34f)
+        ).apply {
+            setMargins(0, dp(2f), 0, dp(2f))
         }
     }
-    defaultAppButton = Button(this)
+
+    defaultAppButton = makeButton("⚙ DEFAULT BROWSER") {
+        openDefaultBrowserSettings()
+    }.apply {
+        tag = "default_browser_button"
+        textSize = 10f
+        minHeight = dp(34f)
+        minimumHeight = dp(34f)
+        gravity = Gravity.CENTER
+        setSingleLine(true)
+        setPadding(dp(6f), dp(4f), dp(6f), dp(4f))
+        background = GradientDrawable(
+            GradientDrawable.Orientation.LEFT_RIGHT,
+            intArrayOf(
+                Color.rgb(10, 42, 68),
+                Color.rgb(16, 62, 88)
+            )
+        ).apply {
+            cornerRadius = 12f * density
+            setStroke((1.2f * density).toInt().coerceAtLeast(1), Color.argb(180, 0, 225, 255))
+        }
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            dp(34f)
+        ).apply {
+            setMargins(0, dp(2f), 0, dp(2f))
+        }
+    }
+
+    val rightActionsColumn = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(saveLoginButton)
+        addView(defaultAppButton)
+    }
 
     val credentialsRow = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -1329,7 +1401,16 @@ private fun createScreen() {
                 setMargins(0, 0, dp(5f), 0)
             }
         )
-        addView(saveLoginButton)
+        addView(
+            rightActionsColumn,
+            LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            ).apply {
+                setMargins(dp(5f), 0, 0, 0)
+            }
+        )
     }
     loginPanel.addView(
         credentialsRow,
@@ -1345,10 +1426,21 @@ private fun createScreen() {
     }.apply {
         tag = "start_loader_button"
         textSize = 14.5f
+        letterSpacing = 0.05f
         minHeight = startBtnHeight
         minimumHeight = startBtnHeight
         setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
-        background = rounded(Color.rgb(0, 90, 115), cyan)
+        background = GradientDrawable(
+            GradientDrawable.Orientation.LEFT_RIGHT,
+            intArrayOf(
+                Color.rgb(0, 88, 128),
+                Color.rgb(0, 126, 134),
+                Color.rgb(0, 148, 108)
+            )
+        ).apply {
+            cornerRadius = 15f * density
+            setStroke((1.5f * density).toInt().coerceAtLeast(2), Color.rgb(0, 240, 200))
+        }
         layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             startBtnHeight
@@ -1490,7 +1582,7 @@ private fun createScreen() {
                     netCheckPageHasError = true
                     if (stage == Stage.CHECK_INTERNET && !googlePageLoadedInWebView && !netWorkingVerified) {
                         handler.removeCallbacks(netCheckPageTimeoutRunnable)
-                        scheduleNextNetCheckRefresh(1500L)
+                        scheduleNextNetCheckRefresh(1000L)
                     } else if (stage == Stage.LOGOUT || stage == Stage.VERIFY_LOGOUT) {
                         scheduleLogoutRetryAfterNetworkError()
                     }
@@ -1512,7 +1604,7 @@ private fun createScreen() {
                     netCheckPageHasError = true
                     if (stage == Stage.CHECK_INTERNET && !googlePageLoadedInWebView && !netWorkingVerified) {
                         handler.removeCallbacks(netCheckPageTimeoutRunnable)
-                        scheduleNextNetCheckRefresh(1500L)
+                        scheduleNextNetCheckRefresh(1000L)
                     } else if (stage == Stage.LOGOUT || stage == Stage.VERIFY_LOGOUT) {
                         scheduleLogoutRetryAfterNetworkError()
                     }
@@ -1527,6 +1619,19 @@ private fun createScreen() {
                 Log.w(TAG, "WebView SSL error stage=$stage primary=${error?.primaryError} url=${error?.url}")
                 netCheckPageHasError = true
                 super.onReceivedSslError(view, sslHandler, error)
+            }
+
+            override fun onPageCommitVisible(view: WebView?, url: String?) {
+                super.onPageCommitVisible(view, url)
+                if (
+                    stage == Stage.CHECK_INTERNET &&
+                    !googlePageLoadedInWebView &&
+                    !netWorkingVerified &&
+                    !netCheckPageHasError &&
+                    isValidGoogleCheckUrl(url)
+                ) {
+                    verifyCheckInternetPageLoaded(url)
+                }
             }
 
             override fun onPageFinished(
@@ -1800,7 +1905,16 @@ private fun createPanel(): LinearLayout {
         orientation = LinearLayout.VERTICAL
         gravity = Gravity.CENTER
         setPadding(dp(7f), dp(5f), dp(7f), dp(5f))
-        background = rounded(panel, cyan)
+        background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(
+                Color.rgb(10, 26, 48),
+                Color.rgb(5, 14, 30)
+            )
+        ).apply {
+            cornerRadius = 12f * d
+            setStroke((1.1f * d).toInt().coerceAtLeast(1), Color.argb(175, 0, 225, 255))
+        }
     }
 }
 
@@ -2073,10 +2187,8 @@ private fun updateDeviceDataUsage() {
     lastTx = tx  
 
     dataDetails.text =  
-        "DOWNLOAD: ${formatSize(download)}\n" +  
-        "UPLOAD: ${formatSize(upload)}\n" +  
-        "TOTAL: ${formatSize(download + upload)}\n" +  
-        "SPEED: ↓${formatSize(rxSpeed)}/s  ↑${formatSize(txSpeed)}/s"  
+        "↓ ${formatSize(download)}  •  ↑ ${formatSize(upload)}\n" +  
+        "TOT: ${formatSize(download + upload)}  •  ${formatSize(rxSpeed + txSpeed)}/s"  
 
     dataDetails.setTextColor(green)  
 
@@ -2090,6 +2202,10 @@ private fun updateDeviceDataUsage() {
     }
 
     val vpnNow = isVpnConnected()
+    if (::hackingTerminalView.isInitialized) {
+        hackingTerminalView.updateLiveTelemetry(rxSpeed, txSpeed, vpnNow, netWorkingVerified)
+    }
+
     if (::cyberRadarView.isInitialized) {
         cyberRadarView.updateTelemetry(rxSpeed, txSpeed, vpnNow)
     }
@@ -2105,6 +2221,29 @@ private fun updateDeviceDataUsage() {
         trafficSummaryText.text =
             "↓ DL: ${formatSize(rxSpeed)}/s  •  ↑ UL: ${formatSize(txSpeed)}/s  •  PEAK: ${formatSize(peakSpeedBps)}/s"
     }
+}
+
+private fun openDefaultBrowserSettings() {
+    val attempts = mutableListOf<Intent>()
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        attempts.add(Intent(android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
+    }
+    attempts.add(
+        Intent(
+            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:$packageName")
+        )
+    )
+    attempts.add(Intent(android.provider.Settings.ACTION_SETTINGS))
+
+    for (intent in attempts) {
+        try {
+            startActivity(intent)
+            return
+        } catch (_: Exception) {
+        }
+    }
+    toast("Unable to open Default Browser settings")
 }  
 
 private fun formatSize(bytes: Long): String {  
@@ -3803,7 +3942,7 @@ private fun startInAppInternetRefreshCheck() {
     }
 }
 
-private fun scheduleNextNetCheckRefresh(delayMs: Long = 1500L) {
+private fun scheduleNextNetCheckRefresh(delayMs: Long = 1000L) {
     if (
         stage != Stage.CHECK_INTERNET ||
         googlePageLoadedInWebView ||
@@ -3838,7 +3977,7 @@ private fun loadNextNetCheckPage() {
 
     webView.stopLoading()
     webView.loadUrl(checkUrl)
-    handler.postDelayed(netCheckPageTimeoutRunnable, 14_000L)
+    handler.postDelayed(netCheckPageTimeoutRunnable, 2200L)
 }
 
 private fun isValidGoogleCheckUrl(url: String?): Boolean {
@@ -3875,7 +4014,7 @@ private fun verifyCheckInternetPageLoaded(url: String?) {
     handler.removeCallbacks(netCheckPageTimeoutRunnable)
 
     if (netCheckPageHasError || !isValidGoogleCheckUrl(url)) {
-        scheduleNextNetCheckRefresh(1500L)
+        scheduleNextNetCheckRefresh(1000L)
         return
     }
 
@@ -3922,7 +4061,7 @@ private fun verifyCheckInternetPageLoaded(url: String?) {
                 }
             }
         } else {
-            scheduleNextNetCheckRefresh(1500L)
+            scheduleNextNetCheckRefresh(1000L)
         }
     }
 }
@@ -4016,11 +4155,15 @@ private fun startLiveNetWorkingCheck() {
                 if (googlePageLoadedInWebView && isVpnConnected()) {
                     markInternetConnected()
                 } else {
-                    workflowStatus("WAITING FOR GOOGLE PAGE LOAD...")
+                    if (::webView.isInitialized && isValidGoogleCheckUrl(webView.url)) {
+                        verifyCheckInternetPageLoaded(webView.url)
+                    } else {
+                        workflowStatus("WAITING FOR GOOGLE PAGE LOAD...")
+                    }
                 }
             } else {
                 workflowStatus("CHECKING INTERNET CONNECTION...")
-                handler.postDelayed(liveNetCheckRunnable, 1500)
+                handler.postDelayed(liveNetCheckRunnable, 1000L)
             }
         }
     }
@@ -4043,8 +4186,8 @@ private fun isRealInternetResponding(): Boolean {
             val urlObj = URL(testUrl)
             conn = (activeNet?.openConnection(urlObj) ?: urlObj.openConnection()) as HttpURLConnection
             conn.instanceFollowRedirects = false
-            conn.connectTimeout = 6000
-            conn.readTimeout = 6000
+            conn.connectTimeout = 2200
+            conn.readTimeout = 2200
             conn.useCaches = false
             conn.requestMethod = "GET"
             val code = conn.responseCode
@@ -5458,6 +5601,127 @@ private inner class CyberRadarView(context: Context) : View(context) {
         val fm = coreTextPaint.fontMetrics
         val textY = cy - (fm.ascent + fm.descent) / 2f
         canvas.drawText(coreLabel, cx, textY, coreTextPaint)
+    }
+}
+
+private inner class HackingTerminalView(context: Context) : View(context) {
+
+    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.rgb(3, 10, 22)
+    }
+    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1.2f
+        color = Color.argb(125, 0, 235, 145)
+    }
+    private val scanlinePaint = Paint().apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1f
+        color = Color.argb(22, 0, 255, 170)
+    }
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = Typeface.MONOSPACE
+    }
+
+    private var rxSpeed = 0L
+    private var txSpeed = 0L
+    private var vpnLocked = false
+    private var netReady = false
+
+    private val visibleLines = ArrayDeque<Pair<String, Int>>()
+    private var commandIndex = 0
+    private var currentCommand = ""
+    private var typedLength = 0
+    private var tickCounter = 0
+
+    init {
+        val seedLines = listOf(
+            "root@ultra:~# init --matrix" to cyan,
+            " > cipher AES-256-GCM ready" to green,
+            " > net.tun0 monitor [LIVE]" to cyan
+        )
+        for (line in seedLines) {
+            visibleLines.addLast(line)
+        }
+        currentCommand = nextCommandLine()
+    }
+
+    fun updateLiveTelemetry(rxBps: Long, txBps: Long, vpn: Boolean, connected: Boolean) {
+        rxSpeed = rxBps
+        txSpeed = txBps
+        vpnLocked = vpn
+        netReady = connected
+    }
+
+    private fun nextCommandLine(): String {
+        commandIndex++
+        val rxStr = formatSize(rxSpeed)
+        val txStr = formatSize(txSpeed)
+        val seqHex = Integer.toHexString(0x1000 + ((commandIndex * 137) % 0xEFFF)).uppercase(Locale.US)
+        return when (commandIndex % 10) {
+            0 -> "> tun0::handshake [0x$seqHex]"
+            1 -> "crypto AES-256-GCM: OK"
+            2 -> "rx=$rxStr/s tx=$txStr/s"
+            3 -> "probe clients3.google: 204"
+            4 -> if (vpnLocked) "route tun0 0.0.0.0/0 [ON]" else "bind wlan0 iface [SYNC]"
+            5 -> "dns_doh --quic 1.1.1.1:443"
+            6 -> "sha256sum /dev/tun #$seqHex"
+            7 -> if (netReady) "status::LINK_VERIFIED [100%]" else "stream::KEEPALIVE_TICK"
+            8 -> "iptables -A FWD -i tun0 -j OK"
+            else -> "pkt_frame #$commandIndex -> SYNC"
+        }
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (width <= 0 || height <= 0) return
+
+        val d = resources.displayMetrics.density
+        val rect = RectF(1f, 1f, width - 1f, height - 1f)
+        canvas.drawRoundRect(rect, 8f * d, 8f * d, bgPaint)
+        canvas.drawRoundRect(rect, 8f * d, 8f * d, borderPaint)
+
+        // Subtle CRT cyber scanlines
+        var sy = 3f * d
+        while (sy < height - 2f * d) {
+            canvas.drawLine(3f * d, sy, width - 3f * d, sy, scanlinePaint)
+            sy += 3f * d
+        }
+
+        tickCounter++
+        if (tickCounter % 2 == 0) {
+            if (typedLength < currentCommand.length) {
+                typedLength = (typedLength + 2).coerceAtMost(currentCommand.length)
+            } else if (tickCounter % 10 == 0) {
+                val color = when {
+                    currentCommand.contains("OK") || currentCommand.contains("VERIFIED") || currentCommand.contains("[ON]") -> green
+                    currentCommand.startsWith("rx=") || currentCommand.startsWith("sha256") -> Color.rgb(125, 255, 210)
+                    else -> cyan
+                }
+                if (visibleLines.size >= 4) visibleLines.removeFirst()
+                visibleLines.addLast(currentCommand to color)
+                currentCommand = nextCommandLine()
+                typedLength = 0
+            }
+        }
+
+        textPaint.textSize = 7.4f * d
+        val lineHeight = 10.2f * d
+        val padX = 6f * d
+        var drawY = 11.5f * d
+
+        for ((line, lineColor) in visibleLines) {
+            if (drawY > height - lineHeight - 2f * d) break
+            textPaint.color = lineColor
+            canvas.drawText(line, padX, drawY, textPaint)
+            drawY += lineHeight
+        }
+
+        val cursor = if ((tickCounter / 6) % 2 == 0) "_" else ""
+        val partial = currentCommand.substring(0, typedLength.coerceAtMost(currentCommand.length))
+        textPaint.color = green
+        canvas.drawText(partial + cursor, padX, drawY.coerceAtMost(height - 4f * d), textPaint)
     }
 }
 }

@@ -790,7 +790,9 @@ class PortalAutomationTest {
             val rootView = getPrivateField<LinearLayout>(activity, "root")
             val userEdit = getPrivateField<android.widget.EditText>(activity, "userInput")
             val saveBtn = getPrivateField<Button>(activity, "saveLoginButton")
+            val defaultBtn = getPrivateField<Button>(activity, "defaultAppButton")
             val startBtn = getPrivateField<Button>(activity, "startLoaderButton")
+            val terminalView = getPrivateField<View>(activity, "hackingTerminalView")
             val radarView = getPrivateField<View>(activity, "cyberRadarView")
             val globeView = getPrivateField<View>(activity, "globeView")
             val banner = getPrivateField<LinearLayout>(activity, "floatingConnectedBanner")
@@ -807,14 +809,20 @@ class PortalAutomationTest {
 
             val userBounds = getBoundsInAncestor(userEdit, rootView)
             val saveBounds = getBoundsInAncestor(saveBtn, rootView)
+            val defaultBounds = getBoundsInAncestor(defaultBtn, rootView)
             val startBounds = getBoundsInAncestor(startBtn, rootView)
 
-            val credentialsRow = saveBtn.parent as LinearLayout
+            val rightActionsCol = saveBtn.parent as LinearLayout
+            val credentialsRow = rightActionsCol.parent as LinearLayout
+            assertEquals(LinearLayout.VERTICAL, rightActionsCol.orientation)
             assertEquals(LinearLayout.HORIZONTAL, credentialsRow.orientation)
+            assertEquals("⚙ DEFAULT BROWSER", defaultBtn.text.toString())
             assertTrue("Save button left (${saveBounds[0]}) must sit to the right of User ID right (${userBounds[2]})", saveBounds[0] > userBounds[2])
-            assertTrue("Start button top (${startBounds[1]}) must sit below Save button bottom (${saveBounds[3]})", startBounds[1] >= saveBounds[3])
+            assertTrue("Default Browser button (${defaultBounds[1]}) must sit below Save button (${saveBounds[3]})", defaultBounds[1] >= saveBounds[3])
+            assertTrue("Start button top (${startBounds[1]}) must sit below Default Browser bottom (${defaultBounds[3]})", startBounds[1] >= defaultBounds[3])
             assertTrue("START button bottom (${startBounds[3]} px) must fit within viewport ($viewportHeightPx px)", startBounds[3] <= viewportHeightPx)
-            assertTrue("Radar view must be enlarged (>= 240px on 3x)", radarView.measuredHeight >= 240)
+            assertTrue("Hacking terminal view must be visible inside Data Usage (>= 150px on 3x)", terminalView.measuredHeight >= 150)
+            assertTrue("Radar view must be enlarged (>= 195px on 3x)", radarView.measuredHeight >= 195)
 
             // Verify GlobeView has countryBorders and no drawLocationBadge rotating text
             val bordersField = globeView.javaClass.getDeclaredField("countryBorders").apply { isAccessible = true }
