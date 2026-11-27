@@ -11,8 +11,8 @@ android {
         applicationId = "com.apumsw1.ultraloader"
         minSdk = 23
         targetSdk = 35
-        versionCode = 5
-        versionName = "3.1"
+        versionCode = 6
+        versionName = "3.2"
     }
 
     val debugKeystoreFile = file("${rootDir}/debug.keystore")
