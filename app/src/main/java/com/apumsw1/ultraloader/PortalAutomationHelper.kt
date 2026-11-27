@@ -1487,6 +1487,12 @@ object PortalJsScripts {
               }
 
               if (!target) {
+                var pfAfterLogout = findVisiblePasswordField();
+                var bodyAfterLogout = (document.body ? (document.body.innerText || '') : '').toLowerCase();
+                var explicitLoggedOut = /logged\s*out|signed\s*out|session\s*(closed|ended|terminated|expired)|you\s*have\s*been\s*(logged|signed)\s*out|please\s*(log|sign)\s*in|login\s*again/.test(bodyAfterLogout);
+                if (!findLogoutCandidate() && (pfAfterLogout || explicitLoggedOut)) {
+                  return 'ALREADY_LOGGED_OUT';
+                }
                 return 'LOGOUT_NOT_FOUND';
               }
 
@@ -1525,7 +1531,7 @@ object PortalJsScripts {
                   if (!isElemVisible(b) || isLogoutElement(b) || !isInteractiveControl(b)) return false;
                   var sig = (b.innerText || '') + ' ' + (b.value || '') + ' ' + (b.id || '') + ' ' + (b.name || '') + ' ' + (b.title || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('href') || '');
                   if (/\b(forgot|reset|register|sign\s*up|create\s*account)\b/i.test(sig)) return false;
-                  return /\b(log\s*in|sign\s*in)\b|login|signin/i.test(sig);
+                  return /\b(log\s*in|sign\s*in|reconnect)\b|login|signin/i.test(sig);
                 });
                 if (loginBtn && !logoutStillThere && !loggedInTextStillThere) {
                   return 'LOGOUT_VERIFIED_LOGIN_BUTTON';
@@ -1542,7 +1548,8 @@ object PortalJsScripts {
               }
 
               var prevUrl = $prevQuoted || '';
-              if (href !== prevUrl && !loggedInTextStillThere && /logout|logoff|signout|login|signin|portal|status/i.test(href)) {
+              if (href !== prevUrl && !loggedInTextStillThere && document.readyState !== 'loading' &&
+                  (/logout|logoff|signout|login|signin|portal|status|index|home|goodbye|disconnected/i.test(href) || bodyTxt.trim().length > 0)) {
                 return 'LOGOUT_VERIFIED_NAVIGATED';
               }
 
@@ -1572,7 +1579,7 @@ object PortalJsScripts {
                   if (!isElemVisible(n) || isLogoutElement(n) || !isInteractiveControl(n)) return false;
                   var sig = (n.innerText || '') + ' ' + (n.value || '') + ' ' + (n.id || '') + ' ' + (n.name || '') + ' ' + (n.title || '') + ' ' + (n.getAttribute('aria-label') || '') + ' ' + (n.getAttribute('href') || '');
                   if (/\b(forgot|reset|register|sign\s*up|create\s*account)\b/i.test(sig)) return false;
-                  return /\b(log\s*in|sign\s*in)\b|login|signin/i.test(sig);
+                  return /\b(log\s*in|sign\s*in|reconnect)\b|login|signin/i.test(sig);
                 });
                 if (x) {
                   try { x.scrollIntoView({ block: 'center' }); } catch (e) {}

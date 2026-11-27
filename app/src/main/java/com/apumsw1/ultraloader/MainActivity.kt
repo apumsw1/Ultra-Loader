@@ -1065,14 +1065,14 @@ private fun createScreen() {
     fun dp(v: Float): Int = (v * density).toInt().coerceAtLeast(1)
     val screenHeightDp = (resources.displayMetrics.heightPixels / density.coerceAtLeast(1f))
     val radarHeightDp = when {
-        screenHeightDp < 700f -> 56f
-        screenHeightDp < 800f -> 66f
-        else -> 80f
+        screenHeightDp < 700f -> 82f
+        screenHeightDp < 800f -> 94f
+        else -> 112f
     }
     val globeHeightDp = when {
-        screenHeightDp < 700f -> 76f
-        screenHeightDp < 800f -> 88f
-        else -> 104f
+        screenHeightDp < 700f -> 96f
+        screenHeightDp < 800f -> 110f
+        else -> 128f
     }
 
     root = LinearLayout(this).apply {
@@ -1270,13 +1270,21 @@ private fun createScreen() {
         setPadding(dp(2f), 0, dp(2f), dp(3f))
     })
 
-    userInput = makeEditText("Portal User ID", false)
-    passwordInput = makeEditText("Portal Password", true)
+    userInput = makeEditText("Portal User ID", false).apply {
+        minHeight = dp(34f)
+        minimumHeight = dp(34f)
+    }
+    passwordInput = makeEditText("Portal Password", true).apply {
+        minHeight = dp(34f)
+        minimumHeight = dp(34f)
+    }
 
-    loginPanel.addView(userInput)
-    loginPanel.addView(passwordInput)
+    val inputsColumn = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(userInput)
+        addView(passwordInput)
+    }
 
-    val btnHeight = dp(44f)
     saveLoginButton = makeButton("SAVE LOGIN DETAILS") {
         val user = userInput.text.toString().trim()
         val pass = passwordInput.text.toString()
@@ -1292,18 +1300,43 @@ private fun createScreen() {
         }
     }.apply {
         tag = "save_login_button"
-        textSize = 12f
-        minHeight = btnHeight
-        minimumHeight = btnHeight
-        setSingleLine(true)
-        setPadding(dp(6f), dp(6f), dp(6f), dp(6f))
+        textSize = 11.5f
+        gravity = Gravity.CENTER
+        isSingleLine = false
+        maxLines = 2
+        setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
         background = rounded(Color.rgb(8, 56, 76), cyan)
-        layoutParams = matchWrap().apply {
-            setMargins(0, dp(3f), 0, dp(3f))
+        layoutParams = LinearLayout.LayoutParams(
+            0,
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            1f
+        ).apply {
+            setMargins(dp(5f), dp(2f), 0, dp(2f))
         }
     }
     defaultAppButton = Button(this)
-    loginPanel.addView(saveLoginButton)
+
+    val credentialsRow = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(
+            inputsColumn,
+            LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            ).apply {
+                setMargins(0, 0, dp(5f), 0)
+            }
+        )
+        addView(saveLoginButton)
+    }
+    loginPanel.addView(
+        credentialsRow,
+        matchWrap().apply {
+            setMargins(0, 0, 0, dp(4f))
+        }
+    )
 
     val startBtnHeight = dp(46f)
     startLoaderButton = makeButton("▶ START ULTRA LOADER") {
@@ -2206,17 +2239,24 @@ private fun updateWebViewStatusDisplay(stageDetail: String? = null) {
 
 private fun showFloatingConnectedStatus() {
     if (!::floatingConnectedBanner.isInitialized || isFinishing || isDestroyed) return
-    if (floatingConnectedBanner.visibility == View.VISIBLE && floatingMoveAnimator?.isRunning == true) return
+    floatingConnectedBanner.visibility = View.VISIBLE
+    floatingConnectedBanner.bringToFront()
+    if (floatingMoveAnimator?.isRunning == true) {
+        floatingConnectedBanner.alpha = 1f
+        return
+    }
 
     val density = resources.displayMetrics.density
-    floatingConnectedBanner.visibility = View.VISIBLE
-    floatingConnectedBanner.translationY = 20f * density
+    floatingConnectedBanner.animate().cancel()
+    floatingConnectedBanner.alpha = 1f
+    floatingConnectedBanner.translationY = 18f * density
     floatingConnectedBanner.animate()
         .alpha(1f)
         .translationY(0f)
-        .setDuration(420L)
+        .setDuration(380L)
         .withEndAction {
             if (isFinishing || isDestroyed || !netWorkingVerified) return@withEndAction
+            floatingConnectedBanner.alpha = 1f
             floatingMoveAnimator?.cancel()
             floatingMoveAnimator = ObjectAnimator.ofFloat(
                 floatingConnectedBanner,
@@ -3491,13 +3531,14 @@ private fun clickPortalLogout() {
         }
         Log.d(TAG, "clickPortalLogout#$logoutSearchAttempts elapsed=${SystemClock.elapsedRealtime() - logoutSearchStartedAt}ms jsResult=$result")
 
-        if (result?.contains("LOGOUT_CLICKED") == true) {
+        if (result?.contains("LOGOUT_CLICKED") == true || result?.contains("ALREADY_LOGGED_OUT") == true) {
             stage = Stage.VERIFY_LOGOUT
             logoutVerifyAttempts = 0
             logoutVerifyRunning = false
             workflowStatus("VERIFYING PORTAL LOGOUT...")
             handler.removeCallbacks(verifyLogoutRunnable)
-            handler.postDelayed(verifyLogoutRunnable, 900L)
+            val verifyDelay = if (result.contains("ALREADY_LOGGED_OUT")) 150L else 900L
+            handler.postDelayed(verifyLogoutRunnable, verifyDelay)
         } else {
             val nowAfter = SystemClock.elapsedRealtime()
             val remainingMs = LOGOUT_SEARCH_TIMEOUT_MS - (nowAfter - logoutSearchStartedAt)
@@ -3629,12 +3670,18 @@ private fun clickPortalLoginAgent() {
 
     handler.removeCallbacks(secondLoginAgentRunnable)
 
-    if (loginActionSearchAttempts >= 60) {
+    if (loginActionSearchAttempts >= 12) {
         stopSecondLoginTimer()
-        connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
-        Log.w(TAG, "Second login action button not found after 60 attempts")
-        secondLoginStageStatus.text = "SECOND LOGIN BUTTON NOT FOUND"
-        secondLoginStageStatus.setTextColor(red)
+        if (stepLogoutVerified && isVpnConnected()) {
+            Log.i(TAG, "Second login action link not required or absent after 12 attempts; proceeding to Google & internet verification")
+            stepSecondSignInCompleted = true
+            startInAppInternetRefreshCheck()
+        } else {
+            connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
+            Log.w(TAG, "Second login action button not found and prerequisites missing")
+            secondLoginStageStatus.text = "SECOND LOGIN BUTTON NOT FOUND"
+            secondLoginStageStatus.setTextColor(red)
+        }
         return
     }
 
@@ -3653,7 +3700,7 @@ private fun clickPortalLoginAgent() {
         Log.d(TAG, "clickPortalLoginAgent#$loginActionSearchAttempts jsResult=$result")
 
         if (result?.contains("PAGE_LOADING") == true) {
-            handler.postDelayed(secondLoginAgentRunnable, 300)
+            handler.postDelayed(secondLoginAgentRunnable, 350)
         } else if (result?.contains("LOGIN_AGENT_FORM_ALREADY_OPEN") == true) {
             secondLoginButtonFound = true
             stepSecondSignInCompleted = true
@@ -3669,14 +3716,20 @@ private fun clickPortalLoginAgent() {
             secondLoginStageStatus.text = "LOGIN BUTTON CLICKED"
 
             handler.postDelayed(secondFormCheckRunnable, 500)
-        } else if (loginActionSearchAttempts < 60) {
-            handler.postDelayed(secondLoginAgentRunnable, 1200)
+        } else if (loginActionSearchAttempts < 12) {
+            handler.postDelayed(secondLoginAgentRunnable, 1000)
         } else {
             stopSecondLoginTimer()
-            connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
-            Log.w(TAG, "Second login action button exhausted after 60 attempts")
-            secondLoginStageStatus.text = "SECOND LOGIN BUTTON NOT FOUND"
-            secondLoginStageStatus.setTextColor(red)
+            if (stepLogoutVerified && isVpnConnected()) {
+                Log.i(TAG, "Second login action button exhausted after 12 attempts; proceeding to Google & internet verification")
+                stepSecondSignInCompleted = true
+                startInAppInternetRefreshCheck()
+            } else {
+                connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
+                Log.w(TAG, "Second login action button exhausted after 12 attempts")
+                secondLoginStageStatus.text = "SECOND LOGIN BUTTON NOT FOUND"
+                secondLoginStageStatus.setTextColor(red)
+            }
         }
     }
 }
@@ -3701,17 +3754,15 @@ private fun checkSecondLoginForm() {
             secondFormCheckRunning = false
             stepSecondSignInCompleted = true
             startInAppInternetRefreshCheck()
-        } else if (secondFormSearchAttempts < 30) {
+        } else if (secondFormSearchAttempts < 10) {
             secondFormCheckRunning = false
             workflowStatus("WAITING FOR SECOND LOGIN FORM...")
             handler.postDelayed(secondFormCheckRunnable, 800)
         } else {
             secondFormCheckRunning = false
-            connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
-            stage = Stage.IDLE
-            secondLoginStageStatus.text = "SECOND LOGIN FORM NOT FOUND"
-            secondLoginStageStatus.setTextColor(red)
-            statusText("● SECOND PORTAL FORM NOT FOUND", red)
+            Log.i(TAG, "Second login form check reached limit ($secondFormSearchAttempts); proceeding to Google & internet verification")
+            stepSecondSignInCompleted = true
+            startInAppInternetRefreshCheck()
         }
     }
 }  
@@ -3777,6 +3828,8 @@ private fun loadNextNetCheckPage() {
     handler.removeCallbacks(netCheckRefreshRunnable)
     handler.removeCallbacks(netCheckPageTimeoutRunnable)
 
+    connectivityManager?.let { PortalNetworkHelper.clearProcessNetworkBinding(it) }
+
     netCheckRefreshAttempt++
     netCheckPageHasError = false
 
@@ -3785,7 +3838,7 @@ private fun loadNextNetCheckPage() {
 
     webView.stopLoading()
     webView.loadUrl(checkUrl)
-    handler.postDelayed(netCheckPageTimeoutRunnable, 8000L)
+    handler.postDelayed(netCheckPageTimeoutRunnable, 14_000L)
 }
 
 private fun isValidGoogleCheckUrl(url: String?): Boolean {
@@ -3835,7 +3888,7 @@ private fun verifyCheckInternetPageLoaded(url: String?) {
           if (document.querySelector('input[type=password]')) return 'PORTAL_PAGE';
           var text = (document.body ? document.body.innerText : '').trim();
           var title = (document.title || '').trim();
-          if (text.length < 10 && title.length === 0) return 'EMPTY_PAGE';
+          if (text.length < 2 && title.length === 0) return 'EMPTY_PAGE';
           return 'PAGE_OPENED';
         })();
     """.trimIndent()
@@ -3890,7 +3943,16 @@ private fun markInternetConnected() {
             realInternetProbeVerified &&
             isVpnConnected()
 
-    if (!allStepsReady) return
+    if (!allStepsReady) {
+        Log.d(
+            TAG,
+            "markInternetConnected blocked: notif=$stepNotificationUrlDetected opened=$stepOriginalPortalOpened " +
+                "login=$stepLoginCompleted logoutCtrl=$stepLogoutControlDetected vpnStep=$stepVpnConnectedConfirmed " +
+                "retVpn=$stepReturnedFromVpnToWebView logoutVer=$stepLogoutVerified second=$stepSecondSignInCompleted " +
+                "google=$googlePageLoadedInWebView netProbe=$realInternetProbeVerified vpnNow=${isVpnConnected()}"
+        )
+        return
+    }
 
     handler.removeCallbacks(netCheckRefreshRunnable)
     handler.removeCallbacks(netCheckPageTimeoutRunnable)
@@ -3967,19 +4029,26 @@ private fun startLiveNetWorkingCheck() {
 private fun isRealInternetResponding(): Boolean {
     val testUrls = listOf(
         "https://clients3.google.com/generate_204",
-        "http://connectivitycheck.gstatic.com/generate_204"
+        "https://connectivitycheck.gstatic.com/generate_204",
+        "http://connectivitycheck.gstatic.com/generate_204",
+        "https://www.google.com/generate_204",
+        "https://www.google.com/"
     )
+    val cm = connectivityManager
+        ?: (getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)
+    val activeNet = cm?.activeNetwork
     for (testUrl in testUrls) {
         var conn: HttpURLConnection? = null
         try {
-            conn = URL(testUrl).openConnection() as HttpURLConnection
+            val urlObj = URL(testUrl)
+            conn = (activeNet?.openConnection(urlObj) ?: urlObj.openConnection()) as HttpURLConnection
             conn.instanceFollowRedirects = false
-            conn.connectTimeout = 3500
-            conn.readTimeout = 3500
+            conn.connectTimeout = 6000
+            conn.readTimeout = 6000
             conn.useCaches = false
             conn.requestMethod = "GET"
             val code = conn.responseCode
-            if (code == 204) {
+            if (code == 204 || (code in 200..299 && testUrl.endsWith("/"))) {
                 return true
             }
         } catch (_: Exception) {
@@ -4404,7 +4473,10 @@ override fun onResume() {
         return
     }
 
-    if (stage == Stage.WAIT_VPN) {
+    if (netWorkingVerified && isVpnConnected()) {
+        statusText("● CONNECTED", green)
+        showFloatingConnectedStatus()
+    } else if (stage == Stage.WAIT_VPN) {
         checkVpnStatus()
     } else if (stage == Stage.LOGOUT && !vpnReturnDelayPending && !secondLoginTimerRunning && !logoutSearchRunning && !awaitingLogoutPageReload) {
         if (isVpnConnected()) {
@@ -4419,6 +4491,25 @@ override fun onResume() {
             }
         } else {
             onVpnStateChanged(false)
+        }
+    } else if (stage == Stage.CHECK_INTERNET && !netWorkingVerified) {
+        if (hasValidatedInternet()) {
+            realInternetProbeVerified = true
+        }
+        if (googlePageLoadedInWebView && realInternetProbeVerified && isVpnConnected()) {
+            markInternetConnected()
+        } else {
+            if (!realInternetProbeVerified) {
+                startLiveNetWorkingCheck()
+            }
+            if (!googlePageLoadedInWebView && ::webView.isInitialized) {
+                val curUrl = webView.url
+                if (isValidGoogleCheckUrl(curUrl)) {
+                    verifyCheckInternetPageLoaded(curUrl)
+                } else {
+                    loadNextNetCheckPage()
+                }
+            }
         }
     }
 }
@@ -4507,41 +4598,36 @@ private inner class GlobeView(context: Context) : View(context) {
     private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val landFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = Color.rgb(68, 118, 82)
+        color = Color.rgb(44, 114, 78)
     }
     private val landStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 1.6f
+        strokeWidth = 1.5f
         strokeJoin = Paint.Join.ROUND
-        color = Color.rgb(140, 225, 170)
+        color = Color.rgb(130, 232, 175)
+    }
+    private val countryBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1.1f
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+        color = Color.argb(185, 185, 255, 215)
     }
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 1f
-        color = Color.argb(65, 130, 235, 255)
+        strokeWidth = 0.85f
+        color = Color.argb(48, 120, 230, 255)
     }
     private val shinePaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pulsePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 2.5f
-    }
-    private val badgeBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-        color = Color.argb(215, 4, 18, 38)
-    }
-    private val badgeStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 1.8f
-    }
-    private val badgeTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        typeface = Typeface.DEFAULT_BOLD
-        textAlign = Paint.Align.CENTER
+        strokeWidth = 2.4f
     }
 
     private val clipPath = Path()
     private val polyPath = Path()
+    private val borderPath = Path()
     private val graticulePath = Path()
 
     private var rotation = 75f
@@ -4557,91 +4643,94 @@ private inner class GlobeView(context: Context) : View(context) {
     private val cosTilt = kotlin.math.cos(axialTiltRad)
     private val sinTilt = kotlin.math.sin(axialTiltRad)
 
-    // World continent polygons in (lon, lat) degrees
+    // Higher-resolution world continent & major island polygons in (lon, lat) degrees
     private val continents: List<List<Pair<Double, Double>>> = listOf(
         // North America
         listOf(
-            -168.0 to 66.0, -160.0 to 71.0, -135.0 to 69.0, -110.0 to 72.0,
-            -82.0 to 68.0, -65.0 to 60.0, -53.0 to 47.0, -66.0 to 44.0,
-            -75.0 to 35.0, -81.0 to 25.0, -87.0 to 21.0, -83.0 to 10.0,
-            -78.0 to 8.0, -85.0 to 11.0, -92.0 to 15.0, -105.0 to 20.0,
-            -110.0 to 24.0, -117.0 to 32.0, -124.0 to 41.0, -125.0 to 49.0,
-            -137.0 to 58.0, -152.0 to 60.0, -165.0 to 60.0
+            -168.0 to 65.5, -162.0 to 70.5, -148.0 to 70.5, -135.0 to 69.5, -120.0 to 72.5,
+            -95.0 to 71.5, -80.0 to 67.5, -66.0 to 60.0, -54.0 to 47.0, -64.0 to 44.5,
+            -70.5 to 42.0, -75.5 to 35.0, -80.5 to 25.2, -82.5 to 28.0, -89.0 to 30.0,
+            -97.0 to 26.0, -96.0 to 19.0, -87.0 to 21.5, -88.0 to 16.0, -83.5 to 14.5,
+            -83.0 to 10.0, -78.0 to 8.0, -85.0 to 10.5, -92.5 to 15.0, -105.0 to 20.0,
+            -110.0 to 24.0, -114.5 to 31.0, -117.2 to 32.5, -122.5 to 37.8, -124.5 to 43.0,
+            -124.7 to 48.5, -136.0 to 58.0, -151.5 to 60.0, -165.0 to 60.0
         ),
+        // Cuba & Hispaniola
+        listOf(-84.5 to 22.0, -79.0 to 22.5, -74.5 to 20.2, -77.5 to 19.8, -82.5 to 21.6),
         // Greenland
         listOf(
-            -52.0 to 60.0, -42.0 to 60.0, -22.0 to 70.0, -18.0 to 81.0,
-            -45.0 to 83.0, -68.0 to 77.0, -55.0 to 68.0
+            -52.0 to 60.0, -42.0 to 60.0, -32.0 to 68.0, -21.0 to 72.0, -18.0 to 81.5,
+            -35.0 to 83.2, -55.0 to 82.0, -70.0 to 77.0, -56.0 to 68.0
         ),
+        // Iceland
+        listOf(-24.0 to 65.5, -15.0 to 66.2, -14.0 to 64.2, -22.5 to 63.8),
         // South America
         listOf(
-            -78.0 to 9.0, -71.0 to 12.0, -62.0 to 10.0, -50.0 to 1.0,
-            -35.0 to -6.0, -39.0 to -15.0, -42.0 to -23.0, -53.0 to -33.0,
-            -62.0 to -40.0, -67.0 to -54.0, -74.0 to -52.0, -73.0 to -40.0,
-            -71.0 to -30.0, -70.0 to -18.0, -81.0 to -5.0, -79.0 to 2.0
+            -78.0 to 9.0, -72.0 to 12.2, -62.0 to 10.5, -52.0 to 4.0, -50.0 to 0.5,
+            -35.0 to -5.5, -35.0 to -9.0, -39.0 to -15.0, -41.5 to -22.8, -48.5 to -28.0,
+            -53.5 to -33.8, -58.0 to -38.5, -64.0 to -42.5, -67.5 to -54.5, -74.0 to -52.5,
+            -74.5 to -44.0, -71.5 to -33.0, -70.5 to -20.0, -77.5 to -12.0, -81.2 to -4.8,
+            -79.5 to 1.5
         ),
         // Europe
         listOf(
-            -9.0 to 37.0, -9.0 to 43.0, -2.0 to 44.0, -5.0 to 48.0,
-            2.0 to 51.0, 8.0 to 54.0, 10.0 to 58.0, 5.0 to 61.0,
-            15.0 to 69.0, 28.0 to 71.0, 42.0 to 68.0, 55.0 to 67.0,
-            58.0 to 55.0, 45.0 to 45.0, 36.0 to 45.0, 29.0 to 41.0,
-            23.0 to 37.0, 18.0 to 40.0, 13.0 to 44.0, 16.0 to 38.0,
-            12.0 to 42.0, 7.0 to 44.0, 3.0 to 42.0, -5.0 to 36.0
+            -9.5 to 37.0, -9.2 to 43.0, -2.0 to 43.5, -4.8 to 48.4, 2.0 to 51.0,
+            7.5 to 54.0, 9.0 to 57.5, 5.2 to 60.5, 12.0 to 66.0, 20.0 to 70.0,
+            28.5 to 71.2, 42.0 to 68.0, 58.0 to 68.5, 59.0 to 55.0, 48.0 to 45.5,
+            39.0 to 46.5, 34.0 to 44.5, 29.0 to 41.2, 24.0 to 40.5, 23.5 to 37.0,
+            19.5 to 40.0, 15.5 to 40.5, 18.2 to 40.2, 14.0 to 44.5, 16.0 to 38.0,
+            12.0 to 41.5, 7.5 to 43.8, 3.2 to 42.3, -0.5 to 38.5, -5.5 to 36.0
         ),
         // UK & Ireland
-        listOf(
-            -6.0 to 50.0, 1.0 to 51.0, -2.0 to 58.0, -7.0 to 57.0, -9.0 to 52.0
-        ),
+        listOf(-5.5 to 50.1, 1.5 to 51.2, -1.5 to 55.5, -3.0 to 58.6, -6.5 to 57.5, -5.0 to 53.0),
+        listOf(-10.2 to 51.6, -6.2 to 52.2, -6.0 to 55.2, -9.5 to 54.4),
         // Africa
         listOf(
-            -17.0 to 15.0, -13.0 to 28.0, -6.0 to 36.0, 10.0 to 37.0,
-            12.0 to 33.0, 25.0 to 32.0, 33.0 to 31.0, 40.0 to 16.0,
-            51.0 to 12.0, 45.0 to 2.0, 40.0 to -10.0, 35.0 to -24.0,
-            28.0 to -33.0, 18.0 to -35.0, 14.0 to -22.0, 12.0 to -12.0,
-            9.0 to 4.0, 2.0 to 6.0, -8.0 to 5.0, -15.0 to 11.0
+            -17.4 to 14.7, -16.0 to 21.0, -13.0 to 28.0, -6.0 to 35.8, 3.0 to 36.8,
+            10.5 to 37.2, 12.0 to 33.0, 20.0 to 31.0, 25.2 to 31.8, 32.8 to 31.2,
+            36.0 to 24.0, 40.5 to 15.5, 43.5 to 12.5, 51.3 to 11.9, 46.0 to 2.5,
+            40.5 to -4.0, 40.2 to -11.0, 35.0 to -19.5, 35.2 to -24.5, 31.0 to -29.5,
+            27.5 to -33.5, 18.4 to -34.4, 15.0 to -26.0, 12.0 to -16.0, 12.2 to -6.0,
+            9.3 to 4.0, 2.5 to 6.2, -7.5 to 4.5, -13.5 to 8.5, -16.5 to 12.5
         ),
         // Madagascar
-        listOf(
-            44.0 to -25.0, 47.0 to -25.0, 50.0 to -13.0, 48.0 to -15.0, 44.0 to -20.0
-        ),
+        listOf(44.0 to -25.2, 47.2 to -25.0, 50.2 to -15.5, 49.3 to -12.1, 46.5 to -16.0, 43.5 to -21.0),
         // Asia
         listOf(
-            28.0 to 41.0, 36.0 to 37.0, 35.0 to 31.0, 43.0 to 13.0,
-            58.0 to 22.0, 56.0 to 26.0, 62.0 to 25.0, 68.0 to 23.0,
-            77.0 to 8.0, 82.0 to 16.0, 90.0 to 22.0, 98.0 to 15.0,
-            104.0 to 2.0, 105.0 to 10.0, 109.0 to 14.0, 108.0 to 21.0,
-            120.0 to 25.0, 122.0 to 31.0, 119.0 to 39.0, 126.0 to 38.0,
-            129.0 to 35.0, 131.0 to 42.0, 141.0 to 53.0, 155.0 to 60.0,
-            175.0 to 66.0, 160.0 to 70.0, 130.0 to 73.0, 105.0 to 76.0,
-            72.0 to 73.0, 58.0 to 68.0, 58.0 to 55.0, 46.0 to 44.0, 38.0 to 45.0
+            26.5 to 40.8, 35.8 to 36.8, 34.8 to 31.5, 39.0 to 21.5, 43.4 to 12.6,
+            52.0 to 15.5, 59.8 to 22.4, 56.4 to 26.2, 61.5 to 25.2, 68.5 to 23.6,
+            72.8 to 19.0, 77.5 to 8.1, 80.2 to 13.0, 86.0 to 20.0, 90.0 to 22.0,
+            92.3 to 20.8, 97.5 to 16.0, 99.0 to 10.0, 103.8 to 1.3, 104.5 to 9.5,
+            109.2 to 12.5, 108.0 to 21.0, 114.2 to 22.3, 120.5 to 26.0, 121.8 to 31.2,
+            119.5 to 35.0, 122.0 to 37.5, 119.0 to 40.0, 124.5 to 39.8, 126.5 to 35.0,
+            129.2 to 35.2, 128.5 to 38.5, 131.8 to 43.0, 138.0 to 47.0, 141.0 to 53.0,
+            149.0 to 59.5, 162.0 to 59.5, 178.0 to 66.0, 162.0 to 70.0, 135.0 to 72.5,
+            105.0 to 76.5, 80.0 to 73.5, 68.0 to 70.0, 59.0 to 68.5, 59.0 to 55.0,
+            48.0 to 45.5, 40.0 to 43.5, 36.0 to 41.8
         ),
+        // Sri Lanka
+        listOf(79.8 to 9.6, 81.8 to 7.8, 80.7 to 6.0, 79.7 to 7.5),
+        // Taiwan
+        listOf(120.1 to 22.0, 121.6 to 25.1, 121.9 to 24.8, 120.9 to 22.2),
+        // Philippines
+        listOf(120.0 to 18.4, 122.4 to 16.5, 124.0 to 12.5, 126.2 to 7.0, 122.0 to 6.8, 121.8 to 13.5, 119.8 to 15.8),
         // Japan
-        listOf(
-            131.0 to 32.0, 136.0 to 34.0, 141.0 to 38.0, 145.0 to 44.0,
-            140.0 to 42.0, 137.0 to 37.0, 130.0 to 34.0
-        ),
-        // Southeast Asia Islands (Sumatra/Java)
-        listOf(
-            96.0 to 5.0, 105.0 to -6.0, 114.0 to -8.0, 114.0 to -7.0,
-            102.0 to -3.0, 98.0 to 2.0
-        ),
+        listOf(130.5 to 31.5, 134.0 to 33.5, 138.0 to 34.8, 140.9 to 36.2, 141.5 to 41.0, 145.5 to 43.8, 141.8 to 45.4, 139.8 to 41.2, 136.5 to 36.8, 131.0 to 34.2),
+        // Sumatra / Java
+        listOf(95.4 to 5.5, 101.0 to 1.0, 105.8 to -5.8, 114.4 to -8.4, 114.0 to -7.0, 104.0 to -6.0, 98.0 to 1.5),
         // Borneo
-        listOf(
-            109.0 to 1.0, 115.0 to 6.0, 118.0 to 4.0, 117.0 to -3.0, 111.0 to -3.0
-        ),
+        listOf(109.2 to 1.4, 115.2 to 6.2, 118.8 to 5.2, 117.5 to -3.2, 111.0 to -3.3),
+        // Papua New Guinea
+        listOf(132.0 to -2.0, 141.0 to -2.6, 150.5 to -10.2, 143.0 to -8.8, 135.0 to -4.5),
         // Australia
         listOf(
-            114.0 to -22.0, 122.0 to -17.0, 131.0 to -12.0, 136.0 to -12.0,
-            137.0 to -15.0, 142.0 to -11.0, 146.0 to -18.0, 153.0 to -28.0,
-            150.0 to -37.0, 141.0 to -38.0, 136.0 to -35.0, 129.0 to -32.0,
-            116.0 to -34.0, 114.0 to -27.0
+            114.0 to -22.0, 122.2 to -17.8, 130.8 to -12.4, 136.8 to -12.2, 136.5 to -15.5,
+            142.5 to -10.8, 146.5 to -18.5, 153.5 to -27.5, 150.0 to -37.5, 144.8 to -38.4,
+            138.5 to -35.5, 135.5 to -34.8, 129.0 to -31.8, 121.8 to -33.9, 115.2 to -34.2,
+            114.2 to -27.5
         ),
         // New Zealand
-        listOf(
-            172.0 to -35.0, 178.0 to -38.0, 175.0 to -42.0, 168.0 to -46.0,
-            166.0 to -45.0, 172.0 to -41.0
-        ),
+        listOf(172.7 to -34.5, 178.4 to -37.7, 175.2 to -41.5, 168.0 to -46.5, 166.5 to -45.5, 172.5 to -40.8),
         // Antarctica polar cap
         listOf(
             -180.0 to -72.0, -140.0 to -73.0, -100.0 to -72.0, -60.0 to -66.0,
@@ -4650,6 +4739,64 @@ private inner class GlobeView(context: Context) : View(context) {
             60.0 to -88.0, 0.0 to -88.0, -60.0 to -88.0, -120.0 to -88.0,
             -180.0 to -88.0
         )
+    )
+
+    // Country political borders rendered across continents (polyline segments in lon, lat)
+    private val countryBorders: List<List<Pair<Double, Double>>> = listOf(
+        // Bangladesh
+        listOf(88.1 to 26.5, 89.8 to 26.2, 92.2 to 25.1, 92.4 to 23.8, 92.3 to 21.0, 91.2 to 22.8, 89.0 to 21.8, 88.2 to 24.5, 88.1 to 26.5),
+        // India - Pakistan
+        listOf(68.5 to 23.7, 70.8 to 25.5, 73.5 to 28.5, 74.8 to 31.6, 74.2 to 34.5, 77.5 to 35.5),
+        // India - Nepal / China / Bhutan / Myanmar
+        listOf(77.5 to 35.5, 79.5 to 31.0, 81.0 to 30.2, 88.0 to 27.8, 91.5 to 27.9, 97.2 to 28.2, 95.2 to 25.2, 93.8 to 23.0, 92.3 to 21.0),
+        // Nepal box
+        listOf(80.2 to 30.0, 88.1 to 27.8, 88.0 to 26.4, 82.5 to 27.6, 80.1 to 28.9, 80.2 to 30.0),
+        // Pakistan - Afghanistan - Iran
+        listOf(61.5 to 25.2, 62.5 to 29.8, 66.2 to 29.5, 69.5 to 31.8, 71.2 to 35.2, 74.2 to 36.8),
+        // China - Russia / Mongolia / Central Asia
+        listOf(74.2 to 36.8, 76.0 to 40.5, 80.5 to 44.5, 87.5 to 49.0, 95.0 to 44.0, 108.0 to 42.5, 118.0 to 46.5, 121.0 to 53.0, 134.5 to 48.2, 131.5 to 43.0),
+        // Mongolia north border
+        listOf(87.5 to 49.0, 99.0 to 51.8, 112.0 to 50.0, 119.5 to 49.5),
+        // China - Vietnam / Laos / Myanmar
+        listOf(97.2 to 28.2, 98.8 to 24.0, 101.2 to 21.5, 104.5 to 22.8, 108.0 to 21.5),
+        // Myanmar / Thailand / Laos / Vietnam / Cambodia / Malaysia
+        listOf(97.5 to 16.0, 98.5 to 20.5, 100.5 to 20.3, 103.5 to 19.5, 105.5 to 16.5, 107.6 to 14.5, 105.0 to 10.2),
+        listOf(98.3 to 10.5, 100.2 to 6.5, 103.2 to 1.6),
+        // Korean peninsula border
+        listOf(124.5 to 39.8, 126.2 to 38.0, 128.4 to 38.6),
+        // Middle East: Saudi Arabia / Iraq / Iran / Turkey
+        listOf(34.8 to 29.5, 39.0 to 32.0, 42.0 to 31.2, 48.0 to 30.0, 56.2 to 25.0, 52.0 to 19.0, 44.0 to 16.8),
+        listOf(36.0 to 36.8, 42.3 to 37.2, 44.8 to 39.6, 41.5 to 41.5),
+        listOf(44.8 to 39.6, 48.0 to 30.0, 46.0 to 35.0, 42.3 to 37.2),
+        listOf(54.0 to 37.5, 61.2 to 36.5, 61.5 to 25.2),
+        // Central Asia (Kazakhstan / Russia)
+        listOf(48.0 to 46.0, 52.0 to 51.0, 62.0 to 54.0, 74.0 to 54.5, 86.0 to 49.5),
+        // Europe: Portugal / Spain / France / Germany / Italy / Poland / Ukraine / Nordics
+        listOf(-7.5 to 37.2, -6.8 to 41.8),
+        listOf(-1.8 to 43.3, 3.2 to 42.4),
+        listOf(2.5 to 51.0, 6.2 to 49.5, 7.6 to 47.6, 10.5 to 46.8, 13.8 to 45.6),
+        listOf(6.2 to 49.5, 8.6 to 54.8, 14.2 to 53.9, 14.8 to 50.8, 12.1 to 47.7, 7.6 to 47.6),
+        listOf(14.2 to 53.9, 19.8 to 54.4, 23.6 to 52.5, 22.8 to 49.1, 18.8 to 49.5, 14.8 to 50.8),
+        listOf(23.6 to 52.5, 32.0 to 52.2, 39.8 to 49.5, 38.0 to 47.0, 29.5 to 45.2, 23.5 to 48.2, 22.8 to 49.1),
+        listOf(11.2 to 59.0, 15.0 to 65.0, 20.5 to 69.0, 24.0 to 66.0, 29.5 to 69.5, 28.0 to 60.5),
+        // Africa: Morocco / Algeria / Libya / Egypt / Sudan / Ethiopia / Nigeria / DRC / South Africa
+        listOf(-13.0 to 27.7, -8.5 to 27.6, -2.0 to 35.1),
+        listOf(10.5 to 37.2, 9.5 to 30.2, 12.0 to 23.5, 4.0 to 19.0, -5.0 to 25.0, -8.5 to 27.6),
+        listOf(25.2 to 31.8, 25.0 to 22.0, 36.8 to 22.0),
+        listOf(22.0 to 22.0, 24.0 to 16.0, 26.0 to 10.0, 34.5 to 9.5, 36.8 to 15.0, 38.5 to 17.5),
+        listOf(34.5 to 9.5, 33.5 to 4.5, 41.0 to 4.0, 48.0 to 8.0, 43.0 to 11.5, 38.5 to 14.5),
+        listOf(2.8 to 6.5, 3.8 to 13.8, 13.5 to 13.0, 12.0 to 8.0, 8.6 to 4.5),
+        listOf(12.2 to -6.0, 17.5 to -1.5, 27.0 to 4.2, 30.8 to 1.0, 29.0 to -8.5, 22.0 to -11.0, 16.0 to -8.0),
+        listOf(15.2 to -28.8, 20.0 to -26.5, 25.5 to -25.5, 31.5 to -22.5, 32.8 to -26.8),
+        // Americas: Canada / USA / Mexico
+        listOf(-141.0 to 69.5, -141.0 to 60.3),
+        listOf(-123.0 to 49.0, -95.1 to 49.0, -84.0 to 46.5, -75.0 to 45.0, -67.0 to 47.0),
+        listOf(-117.1 to 32.5, -106.5 to 31.8, -101.0 to 29.8, -97.1 to 26.0),
+        // South America: Brazil / Colombia / Peru / Argentina / Chile
+        listOf(-70.0 to 1.5, -60.0 to 5.0, -52.0 to 4.0, -57.5 to -17.5, -54.0 to -25.5, -53.5 to -33.8),
+        listOf(-77.5 to 8.0, -70.0 to 1.5, -67.0 to 6.0, -71.5 to 12.0),
+        listOf(-81.2 to -4.8, -70.0 to -2.0, -69.5 to -18.0),
+        listOf(-68.5 to -54.5, -71.5 to -42.0, -70.0 to -33.0, -67.0 to -22.5, -58.0 to -25.0, -53.8 to -27.5)
     )
 
     fun setLiveLocation(
@@ -4701,7 +4848,7 @@ private inner class GlobeView(context: Context) : View(context) {
 
         val cx = width / 2f
         val cy = height / 2f
-        val radius = minOf(width, height) * 0.44f
+        val radius = minOf(width, height) * 0.47f
 
         rotation = (rotation + 0.85f) % 360f
         pulsePhase = (pulsePhase + 0.055f) % 1f
@@ -4730,8 +4877,8 @@ private inner class GlobeView(context: Context) : View(context) {
             cy - radius * 0.35f,
             radius * 1.5f,
             intArrayOf(
-                Color.rgb(25, 115, 205),
-                Color.rgb(10, 52, 120),
+                Color.rgb(22, 108, 198),
+                Color.rgb(9, 48, 114),
                 Color.rgb(2, 14, 42)
             ),
             null,
@@ -4746,7 +4893,7 @@ private inner class GlobeView(context: Context) : View(context) {
         clipPath.addCircle(cx, cy, radius, Path.Direction.CW)
         canvas.clipPath(clipPath)
 
-        // Subtle latitude/longitude graticule
+        // Finer latitude/longitude graticule (every 30 deg)
         for (lat in listOf(-60.0, -30.0, 0.0, 30.0, 60.0)) {
             graticulePath.reset()
             var started = false
@@ -4765,12 +4912,12 @@ private inner class GlobeView(context: Context) : View(context) {
                 } else {
                     started = false
                 }
-                lon += 10.0
+                lon += 8.0
             }
             canvas.drawPath(graticulePath, gridPaint)
         }
 
-        for (lonLine in 0 until 360 step 45) {
+        for (lonLine in 0 until 360 step 30) {
             graticulePath.reset()
             var started = false
             var lat = -85.0
@@ -4788,19 +4935,19 @@ private inner class GlobeView(context: Context) : View(context) {
                 } else {
                     started = false
                 }
-                lat += 10.0
+                lat += 8.0
             }
             canvas.drawPath(graticulePath, gridPaint)
         }
 
-        // Draw World Continents
+        // Draw detailed World Continents & Islands
         for (poly in continents) {
             var anyFront = false
             val projected = ArrayList<Triple<Float, Float, Float>>(poly.size)
 
             for ((lon, lat) in poly) {
                 val pt = projectPoint(lon, lat, viewLon)
-                if (pt.third >= -0.05f) {
+                if (pt.third >= -0.04f) {
                     anyFront = true
                 }
                 projected.add(pt)
@@ -4836,13 +4983,52 @@ private inner class GlobeView(context: Context) : View(context) {
             canvas.drawPath(polyPath, landStrokePaint)
         }
 
+        // Draw Country Political Borders over visible hemisphere
+        for (border in countryBorders) {
+            borderPath.reset()
+            var started = false
+            var prevPt: Triple<Float, Float, Float>? = null
+
+            for ((lon, lat) in border) {
+                val pt = projectPoint(lon, lat, viewLon)
+                val (px, py, pz) = pt
+                if (pz >= -0.02f) {
+                    if (!started && prevPt != null && prevPt.third < -0.02f) {
+                        val t = (-0.02f - prevPt.third) / (pz - prevPt.third)
+                        val hx = prevPt.first + (px - prevPt.first) * t
+                        val hy = prevPt.second + (py - prevPt.second) * t
+                        borderPath.moveTo(cx + hx * radius, cy - hy * radius)
+                        started = true
+                    }
+                    val sx = cx + px * radius
+                    val sy = cy - py * radius
+                    if (!started) {
+                        borderPath.moveTo(sx, sy)
+                        started = true
+                    } else {
+                        borderPath.lineTo(sx, sy)
+                    }
+                } else if (started && prevPt != null) {
+                    val t = (-0.02f - prevPt.third) / (pz - prevPt.third)
+                    val hx = prevPt.first + (px - prevPt.first) * t
+                    val hy = prevPt.second + (py - prevPt.second) * t
+                    borderPath.lineTo(cx + hx * radius, cy - hy * radius)
+                    started = false
+                } else {
+                    started = false
+                }
+                prevPt = pt
+            }
+            canvas.drawPath(borderPath, countryBorderPaint)
+        }
+
         // Specular sunlight highlight
         shinePaint.shader = RadialGradient(
             cx - radius * 0.38f,
             cy - radius * 0.38f,
             radius * 0.95f,
             intArrayOf(
-                Color.argb(55, 255, 255, 255),
+                Color.argb(50, 255, 255, 255),
                 Color.TRANSPARENT
             ),
             null,
@@ -4858,18 +5044,16 @@ private inner class GlobeView(context: Context) : View(context) {
         rimPaint.color = cyan
         canvas.drawCircle(cx, cy, radius, rimPaint)
 
-        // Live Connected IP Location Marker
+        // Live Connected IP Location Red Dot Only (no rotating location text badge)
         val vpnNow = isVpnConnected() || vpnActive
+        val pinColor = Color.rgb(255, 45, 65)
         if (hasLocation) {
             val (px, py, pz) = projectPoint(locationLon, locationLat, viewLon)
-            val pinColor = Color.rgb(255, 45, 65)
-
             if (pz >= 0f) {
                 val mx = cx + px * radius
                 val my = cy - py * radius
 
-                // Expanding radar ring
-                val pulseRadius = (6f + pulsePhase * 18f) * (resources.displayMetrics.density / 2.5f).coerceAtLeast(1f)
+                val pulseRadius = (6f + pulsePhase * 16f) * (resources.displayMetrics.density / 2.5f).coerceAtLeast(1f)
                 pulsePaint.color = Color.argb(
                     ((1f - pulsePhase) * 230).toInt().coerceIn(0, 255),
                     Color.red(pinColor),
@@ -4878,65 +5062,26 @@ private inner class GlobeView(context: Context) : View(context) {
                 )
                 canvas.drawCircle(mx, my, pulseRadius, pulsePaint)
 
-                // Soft glow + bright core dot
-                dotPaint.color = Color.argb(110, Color.red(pinColor), Color.green(pinColor), Color.blue(pinColor))
-                canvas.drawCircle(mx, my, 11f, dotPaint)
+                dotPaint.color = Color.argb(115, Color.red(pinColor), Color.green(pinColor), Color.blue(pinColor))
+                canvas.drawCircle(mx, my, 10.5f, dotPaint)
 
                 dotPaint.color = Color.WHITE
-                canvas.drawCircle(mx, my, 6.5f, dotPaint)
+                canvas.drawCircle(mx, my, 6.0f, dotPaint)
 
                 dotPaint.color = pinColor
-                canvas.drawCircle(mx, my, 4.5f, dotPaint)
-
-                // Floating location badge next to pin
-                if (locationLabel.isNotBlank()) {
-                    drawLocationBadge(canvas, mx, my - 16f, "📍 $locationLabel", pinColor)
-                }
-            } else if (locationLabel.isNotBlank()) {
-                // Keep live connected location indicator visible while pin rotates around the back
-                drawLocationBadge(canvas, cx, cy + radius - 8f, "↻ $locationLabel", pinColor)
+                canvas.drawCircle(mx, my, 4.4f, dotPaint)
             }
         } else if (vpnNow) {
-            // Fallback pulsing VPN marker if coordinates are still resolving
             val (px, py, pz) = projectPoint(40.0, 22.0, viewLon)
             if (pz >= 0f) {
                 val mx = cx + px * radius
                 val my = cy - py * radius
-                dotPaint.color = green
-                canvas.drawCircle(mx, my, 5.5f, dotPaint)
+                dotPaint.color = Color.argb(115, Color.red(pinColor), Color.green(pinColor), Color.blue(pinColor))
+                canvas.drawCircle(mx, my, 9.5f, dotPaint)
+                dotPaint.color = pinColor
+                canvas.drawCircle(mx, my, 4.5f, dotPaint)
             }
         }
-    }
-
-    private fun drawLocationBadge(
-        canvas: Canvas,
-        anchorX: Float,
-        anchorY: Float,
-        text: String,
-        accentColor: Int
-    ) {
-        val density = resources.displayMetrics.density
-        badgeTextPaint.textSize = 9.5f * density
-
-        val textWidth = badgeTextPaint.measureText(text)
-        val padH = 7f * density
-        val boxW = textWidth + padH * 2f
-        val boxH = 17f * density
-
-        val left = (anchorX - boxW / 2f).coerceIn(4f, (width - boxW - 4f).coerceAtLeast(4f))
-        val top = (anchorY - boxH).coerceIn(4f, (height - boxH - 4f).coerceAtLeast(4f))
-        val right = left + boxW
-        val bottom = top + boxH
-
-        val rect = RectF(left, top, right, bottom)
-        badgeStrokePaint.color = accentColor
-
-        canvas.drawRoundRect(rect, boxH / 2f, boxH / 2f, badgeBgPaint)
-        canvas.drawRoundRect(rect, boxH / 2f, boxH / 2f, badgeStrokePaint)
-
-        val fm = badgeTextPaint.fontMetrics
-        val textY = rect.centerY() - (fm.ascent + fm.descent) / 2f
-        canvas.drawText(text, rect.centerX(), textY, badgeTextPaint)
     }
 }
 
@@ -5141,13 +5286,13 @@ private inner class CyberRadarView(context: Context) : View(context) {
     }
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 1.3f
-        color = Color.argb(85, 0, 225, 255)
+        strokeWidth = 1.4f
+        color = Color.argb(95, 0, 225, 255)
     }
     private val tickPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 1.6f
-        color = Color.argb(140, 0, 225, 255)
+        strokeWidth = 1.7f
+        color = Color.argb(150, 0, 225, 255)
     }
     private val sweepPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
@@ -5198,8 +5343,8 @@ private inner class CyberRadarView(context: Context) : View(context) {
         val density = resources.displayMetrics.density
         val cx = width / 2f
         val cy = height / 2f
-        val maxR = minOf(width, height) * 0.44f
-        val innerR = maxR * 0.80f
+        val maxR = minOf(width, height) * 0.475f
+        val innerR = maxR * 0.84f
 
         sweepAngle = (sweepAngle + 3.8f) % 360f
         pulseWave = (pulseWave + 0.035f) % 1f
@@ -5233,8 +5378,8 @@ private inner class CyberRadarView(context: Context) : View(context) {
         // Outer compass ticks
         for (deg in 0 until 360 step 30) {
             val rad = Math.toRadians(deg.toDouble())
-            val r1 = maxR * 0.84f
-            val r2 = maxR * 0.90f
+            val r1 = maxR * 0.86f
+            val r2 = maxR * 0.92f
             canvas.drawLine(
                 cx + (r1 * kotlin.math.cos(rad)).toFloat(),
                 cy + (r1 * kotlin.math.sin(rad)).toFloat(),
@@ -5268,7 +5413,7 @@ private inner class CyberRadarView(context: Context) : View(context) {
         val waveAlpha = ((1f - pulseWave) * 165).toInt().coerceIn(0, 255)
         ringPaint.color = Color.argb(waveAlpha, Color.red(accent), Color.green(accent), Color.blue(accent))
         canvas.drawCircle(cx, cy, waveRadius, ringPaint)
-        ringPaint.color = Color.argb(85, 0, 225, 255)
+        ringPaint.color = Color.argb(95, 0, 225, 255)
 
         // Blips on radar
         val blips = listOf(
@@ -5283,11 +5428,11 @@ private inner class CyberRadarView(context: Context) : View(context) {
             val bx = cx + (innerR * distFrac * kotlin.math.cos(rad)).toFloat()
             val by = cy + (innerR * distFrac * kotlin.math.sin(rad)).toFloat()
             blipPaint.color = Color.argb(blipAlpha, Color.red(accent), Color.green(accent), Color.blue(accent))
-            canvas.drawCircle(bx, by, 3.2f * density, blipPaint)
+            canvas.drawCircle(bx, by, 3.4f * density, blipPaint)
         }
 
         // Outer Download & Upload live activity gauge arcs
-        val gaugeStroke = 3.2f * density
+        val gaugeStroke = 3.5f * density
         arcBgPaint.strokeWidth = gaugeStroke
         arcPaint.strokeWidth = gaugeStroke
 
@@ -5305,10 +5450,10 @@ private inner class CyberRadarView(context: Context) : View(context) {
         canvas.drawCircle(cx, cy, coreR, corePaint)
         ringPaint.color = accent
         canvas.drawCircle(cx, cy, coreR, ringPaint)
-        ringPaint.color = Color.argb(85, 0, 225, 255)
+        ringPaint.color = Color.argb(95, 0, 225, 255)
 
         coreTextPaint.color = accent
-        coreTextPaint.textSize = 8.5f * density
+        coreTextPaint.textSize = 9.0f * density
         val coreLabel = if (vpnShield) "VPN" else "NET"
         val fm = coreTextPaint.fontMetrics
         val textY = cy - (fm.ascent + fm.descent) / 2f

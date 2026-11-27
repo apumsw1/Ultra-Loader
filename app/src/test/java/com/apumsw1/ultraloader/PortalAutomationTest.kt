@@ -771,6 +771,102 @@ class PortalAutomationTest {
         controller.destroy()
     }
 
+    @Test
+    fun splitCredentialsLeftAndSaveButtonRightWithConnectedBannerAndDetailedRedDotGlobe() {
+        val dm = context.resources.displayMetrics
+        val savedDensity = dm.density
+        val savedWidth = dm.widthPixels
+        val savedHeight = dm.heightPixels
+        try {
+            dm.density = 3.0f
+            dm.widthPixels = 1080
+            dm.heightPixels = 1920
+
+            val controller = Robolectric.buildActivity(MainActivity::class.java)
+            val activity = controller.create().get()
+            callPrivateMethod(activity, "createScreen")
+            setPrivateField(activity, "appInitialized", true)
+
+            val rootView = getPrivateField<LinearLayout>(activity, "root")
+            val userEdit = getPrivateField<android.widget.EditText>(activity, "userInput")
+            val saveBtn = getPrivateField<Button>(activity, "saveLoginButton")
+            val startBtn = getPrivateField<Button>(activity, "startLoaderButton")
+            val radarView = getPrivateField<View>(activity, "cyberRadarView")
+            val globeView = getPrivateField<View>(activity, "globeView")
+            val banner = getPrivateField<LinearLayout>(activity, "floatingConnectedBanner")
+
+            getPrivateField<Button>(activity, "notifAccessButton").visibility = View.GONE
+            getPrivateField<Button>(activity, "vpnAutoAccessButton").visibility = View.GONE
+
+            val viewportHeightPx = 1770
+            rootView.measure(
+                View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(viewportHeightPx, View.MeasureSpec.EXACTLY)
+            )
+            rootView.layout(0, 0, 1080, viewportHeightPx)
+
+            val userBounds = getBoundsInAncestor(userEdit, rootView)
+            val saveBounds = getBoundsInAncestor(saveBtn, rootView)
+            val startBounds = getBoundsInAncestor(startBtn, rootView)
+
+            val credentialsRow = saveBtn.parent as LinearLayout
+            assertEquals(LinearLayout.HORIZONTAL, credentialsRow.orientation)
+            assertTrue("Save button left (${saveBounds[0]}) must sit to the right of User ID right (${userBounds[2]})", saveBounds[0] > userBounds[2])
+            assertTrue("Start button top (${startBounds[1]}) must sit below Save button bottom (${saveBounds[3]})", startBounds[1] >= saveBounds[3])
+            assertTrue("START button bottom (${startBounds[3]} px) must fit within viewport ($viewportHeightPx px)", startBounds[3] <= viewportHeightPx)
+            assertTrue("Radar view must be enlarged (>= 240px on 3x)", radarView.measuredHeight >= 240)
+
+            // Verify GlobeView has countryBorders and no drawLocationBadge rotating text
+            val bordersField = globeView.javaClass.getDeclaredField("countryBorders").apply { isAccessible = true }
+            val borders = bordersField.get(globeView) as List<*>
+            assertTrue("GlobeView must define detailed countryBorders", borders.size >= 30)
+            val hasBadgeMethod = globeView.javaClass.declaredMethods.any { it.name == "drawLocationBadge" }
+            assertFalse("GlobeView must not draw rotating text location badge", hasBadgeMethod)
+
+            // Verify buildClickLogoutScript handles ALREADY_LOGGED_OUT
+            assertTrue(PortalJsScripts.buildClickLogoutScript(null).contains("ALREADY_LOGGED_OUT"))
+
+            // Verify markInternetConnected enables both top status AND bottom animated banner
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val vpnNetwork = ShadowNetwork.newInstance(601)
+            @Suppress("DEPRECATION")
+            val vpnInfo = ShadowNetworkInfo.newInstance(
+                NetworkInfo.DetailedState.CONNECTED,
+                ConnectivityManager.TYPE_VPN,
+                0,
+                true,
+                NetworkInfo.State.CONNECTED
+            )
+            val vpnCaps = ShadowNetworkCapabilities.newInstance()
+            shadowOf(vpnCaps).addTransportType(NetworkCapabilities.TRANSPORT_VPN)
+            shadowOf(vpnCaps).removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            shadowOf(cm).addNetwork(vpnNetwork, vpnInfo)
+            shadowOf(cm).setNetworkCapabilities(vpnNetwork, vpnCaps)
+
+            setPrivateField(activity, "stepNotificationUrlDetected", true)
+            setPrivateField(activity, "stepOriginalPortalOpened", true)
+            setPrivateField(activity, "stepLoginCompleted", true)
+            setPrivateField(activity, "stepLogoutControlDetected", true)
+            setPrivateField(activity, "stepVpnConnectedConfirmed", true)
+            setPrivateField(activity, "stepReturnedFromVpnToWebView", true)
+            setPrivateField(activity, "stepLogoutVerified", true)
+            setPrivateField(activity, "stepSecondSignInCompleted", true)
+            setPrivateField(activity, "googlePageLoadedInWebView", true)
+            setPrivateField(activity, "realInternetProbeVerified", true)
+
+            callPrivateMethod(activity, "markInternetConnected")
+            assertTrue(getPrivateBooleanField(activity, "netWorkingVerified"))
+            assertEquals("● CONNECTED", getPrivateField<TextView>(activity, "status").text.toString())
+            assertEquals(View.VISIBLE, banner.visibility)
+
+            controller.destroy()
+        } finally {
+            dm.density = savedDensity
+            dm.widthPixels = savedWidth
+            dm.heightPixels = savedHeight
+        }
+    }
+
     private fun findTextViewWithExactText(view: View, text: String): TextView? {
         if (view is TextView && view.text?.toString() == text) return view
         if (view is ViewGroup) {
@@ -815,6 +911,18 @@ class PortalAutomationTest {
         val f: Field = target.javaClass.getDeclaredField(name)
         f.isAccessible = true
         return f.getBoolean(target)
+    }
+
+    private fun getBoundsInAncestor(view: View, ancestor: View): IntArray {
+        var left = view.left
+        var top = view.top
+        var curr = view.parent
+        while (curr is View && curr !== ancestor) {
+            left += curr.left - curr.scrollX
+            top += curr.top - curr.scrollY
+            curr = curr.parent
+        }
+        return intArrayOf(left, top, left + view.measuredWidth, top + view.measuredHeight)
     }
 
     private fun setPrivateField(target: Any, name: String, value: Any?) {
